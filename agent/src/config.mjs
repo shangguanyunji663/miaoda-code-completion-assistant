@@ -104,7 +104,7 @@ export const cfg = {
   },
   paths: {
     agentRoot: AGENT_ROOT,
-    // prompt 单一数据源：复用主项目 shared/capabilities 下的两份配置
+    // prompt 单一数据源：复用仓库根 shared/capabilities 下的配置
     capabilitiesDir: path.resolve(
       AGENT_ROOT,
       '..',

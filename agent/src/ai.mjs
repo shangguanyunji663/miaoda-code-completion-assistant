@@ -2,9 +2,9 @@
 //          splitAnalysisAndCode, detectVerdict, listChatModels
 // AI 调用层。
 // 设计要点：
-//   1. prompt 单一数据源 —— 直接读取主项目 shared/capabilities/*.json 中的 prompt 模板，
-//      不做复制粘贴，避免 agent 与主项目两份 prompt 漂移。
-//   2. 成功判定在此做了加固（见 detectVerdict 注释），比主项目 utils.ts 的朴素关键词
+//   1. prompt 单一数据源 —— 直接读取仓库根 shared/capabilities/*.json 中的 prompt 模板，
+//      不做复制粘贴，避免 prompt 多份漂移。
+//   2. 成功判定在此做了加固（见 detectVerdict 注释），比朴素关键词
 //      匹配更保守，避免 "未通过" 命中 "通过" 这类误判。
 
 import fs from 'node:fs';
@@ -184,14 +184,14 @@ export async function reflectAndFix({ problem, previousCode, evalResult }) {
   return splitAnalysisAndCode(content);
 }
 
-/** 与主项目 src/lib/utils.ts 保持一致的代码块抽取 */
+/** 从 AI 输出中抽取 markdown 代码块 */
 export function extractCodeFromMarkdown(markdown) {
   const m = String(markdown ?? '').match(/```[a-zA-Z]*\n([\s\S]*?)```/);
   if (m && m[1]) return m[1].trim();
   return String(markdown ?? '').trim();
 }
 
-/** 与主项目 src/lib/utils.ts 保持一致的分析/代码分离 */
+/** 分离反思输出中的「分析」与「代码」两部分 */
 export function splitAnalysisAndCode(markdown) {
   const s = String(markdown ?? '');
   const m = s.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
@@ -202,7 +202,7 @@ export function splitAnalysisAndCode(markdown) {
 }
 
 // ---- 成功判定 ----
-// 加固说明：主项目 utils.ts 的 detectSuccess 用 includes 朴素匹配，存在两类误判：
+// 加固说明：朴素 includes 关键词匹配存在两类误判：
 //   1. "未通过" / "没有通过" 会命中 "通过"，导致失败被判成成功；
 //   2. "AC" 是子串，英文文本中 "AC" 出现频率高（如 "ACCEPT"、"back" 中的 ac）。
 // 这里先做否定式短路，再匹配肯定词，且 "AC" 要求整词匹配。

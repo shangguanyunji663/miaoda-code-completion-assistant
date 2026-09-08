@@ -1,12 +1,16 @@
 # capabilities
 
-本目录存放 AI 能力插件配置（妙搭平台 capability 格式），是**主项目与 agent 子系统共享的 prompt 单一数据源**——`agent/src/ai.mjs` 直接读取本目录文件渲染 `{{input.xxx}}` 占位符，不在 agent 内复制 prompt。
+本目录存放 AI 能力配置，是 **agent 的 prompt 单一数据源**——`agent/src/ai.mjs` 直接读取本目录文件并渲染 `{{input.xxx}}` 占位符，不在 agent 内复制 prompt。
 
-| 文件 | 用途 | 消费方 |
-|---|---|---|
-| `code_completion_generator_1.json` | 代码补全生成器：根据题目+模板在 Begin/End 之间补全代码 | 主项目 + agent |
-| `code_reflection_fixer_1.json` | 代码反思修复器：根据评测结果分析失败原因并生成修正代码 | 主项目 + agent |
-| `quiz_answer_selector_1.json` | 选择题/填空题单题作答器：只输出答案本身 | agent |
-| `quiz_batch_answer_1.json` | 整页多小题批量作答器：输出「题号:字母」，多选连写 | agent |
+| 文件 | 用途 |
+|---|---|
+| `code_completion_generator_1.json` | 代码补全生成器：根据题目 + 模板在 Begin/End 之间补全代码 |
+| `code_reflection_fixer_1.json` | 代码反思修复器：根据评测结果分析失败原因并生成修正代码 |
+| `quiz_answer_selector_1.json` | 选择题/填空题单题作答器：只输出答案本身 |
+| `quiz_batch_answer_1.json` | 整页多小题批量作答器：输出「题号:字母」，多选连写 |
 
-类型定义见 `../plugin-types.ts`。构建时该目录会被复制到 `dist/output_capabilities/`。
+## 修改约定
+
+- 改 AI 行为**只改本目录的 JSON**，不改 `agent/src/*.mjs`。
+- prompt 中的 `{{input.xxx}}` 由 `agent/src/ai.mjs` 的 `renderPrompt` 渲染，新增占位符需同步传入对应字段。
+- 历史上本目录同时服务一个手动工作台前端，该前端已于 2026-09-09 移除，当前消费方仅 agent。

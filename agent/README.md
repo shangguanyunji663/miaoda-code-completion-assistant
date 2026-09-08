@@ -1,16 +1,16 @@
 # 浏览器自动解题 Agent
 
-> 配套文档：变更日志见 [`CHANGELOG.md`](CHANGELOG.md)；环境与代码踩坑记录见 [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)。AI 能力配置（prompt）的单一数据源在主项目 `shared/capabilities/`，说明见其目录 README。
+> 配套文档：变更日志见 [`CHANGELOG.md`](CHANGELOG.md)；环境与代码踩坑记录见 [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)。AI 能力配置（prompt）的单一数据源在仓库根 `shared/capabilities/`，说明见其目录 README。
 
-在现有「编程题自动补全与评测迭代助手」之上新增的**浏览器执行层**：连上你已登录的 Edge/Chrome，自动读取左侧题目要求、在右侧编辑器写入答案、点击评测、读取结果、失败后反思重试、通过后自动翻到下一题。
+连接你已登录的 Edge/Chrome，自动读取评测页面上的题目要求、在编辑器写入答案、点击评测、读取结果、失败后反思重试、通过后翻到下一题。
 
-与主项目的关系是**分工**而非替代：
+各层职责：
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 交互工作台 | 主项目 `src/` | 手动粘贴题目与代码、版本历史、人工审阅 |
-| AI 能力定义 | 主项目 `shared/capabilities/*.json` | prompt 单一数据源，Agent 直接读取复用 |
+| AI 能力定义 | 仓库根 `shared/capabilities/*.json` | prompt 单一数据源，Agent 直接读取复用 |
 | 浏览器执行层 | 本目录 `agent/` | 感知页面、自动作答、点评测、翻页、反思循环 |
+| 用户入口 | `start-browser.bat` / `start-watch.bat` | 启动带调试端口的浏览器、启动常驻监听 |
 
 ## 前置条件
 
@@ -104,10 +104,10 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 
 ## 设计要点
 
-1. **prompt 单一数据源**：Agent 直接读取主项目 `shared/capabilities/*.json` 中的 prompt 并渲染 `{{input.xxx}}` 占位符，不在 Agent 里复制 prompt，避免两份漂移。新增的题型走 `quiz_answer_selector_1.json`。
-2. **成功判定加固**：主项目 `src/lib/utils.ts` 的 `detectSuccess` 用 `includes` 朴素匹配，`"未通过"` 会命中 `"通过"`、`"AC"` 会命中任意含 ac 的英文单词。Agent 的 `detectVerdict` 改为**否定词优先短路 + 整词匹配**，且**不确定时一律判未通过**（保守策略宁可多试一轮，也不错报成功）。
+1. **prompt 单一数据源**：Agent 直接读取仓库根 `shared/capabilities/*.json` 中的 prompt 并渲染 `{{input.xxx}}` 占位符，不在 Agent 里复制 prompt，避免两份漂移。新增的题型走 `quiz_answer_selector_1.json`。
+2. **成功判定加固**：朴素 `includes` 匹配会让 `"未通过"` 命中 `"通过"`、`"AC"` 命中任意含 ac 的英文单词。Agent 的 `detectVerdict` 改为**否定词优先短路 + 整词匹配**，且**不确定时一律判未通过**（保守策略宁可多试一轮，也不错报成功）。
 3. **写入用键盘而非改 DOM**：`点击 → Ctrl+A → Delete → insertText`，能触发编辑器 change 事件与平台自动保存。直接改 DOM 常导致平台评测到旧代码。
-4. **写入后静置**：写完后点击编辑器外部并等待 `COOLDOWN_MS`，触发平台自动保存（主项目 README 第 65 行同样提示过这一点）。
+4. **写入后静置**：写完后点击编辑器外部并等待 `COOLDOWN_MS`，触发平台自动保存。
 5. **不硬编码站点 selector**：全部走启发式识别，换平台无需改代码；识别不准时用 `npm run dump` 导出快照再加规则。
 
 ## 已知限制与边界（如实标注）

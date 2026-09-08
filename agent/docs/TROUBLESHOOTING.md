@@ -116,7 +116,7 @@ spawn(exe, args, { stdio: ['ignore', logFd, logFd] })
 
 ### C-1. 朴素关键词匹配导致"未通过"被判成功
 
-**现象**：主项目 `src/lib/utils.ts` 的 `detectSuccess` 用 `includes` 匹配成功关键词，`"未通过，3组不匹配"` 会命中 `"通过"`，`"AC"` 会命中任意含 ac 的英文单词。
+**现象**：旧版 `detectSuccess`（朴素 `includes` 关键词匹配）用 `includes` 匹配成功关键词，`"未通过，3组不匹配"` 会命中 `"通过"`，`"AC"` 会命中任意含 ac 的英文单词。
 
 **解决**：`agent/src/ai.mjs` 的 `detectVerdict` 采用三段式：
 
@@ -124,7 +124,7 @@ spawn(exe, args, { stdio: ['ignore', logFd, logFd] })
 2. **肯定词整词匹配**：`AC`、`pass` 用 `\b` 边界
 3. **不确定判负**：没有命中任何信号时保守判 false，宁可多试一轮也不错报成功
 
-已验证用例：`"未通过，3组不匹配" → false` ✓（主项目实现会误判为 true）。
+已验证用例：`"未通过，3组不匹配" → false` ✓（朴素 `includes` 实现会误判为 true）。
 
 **预防**：涉及"成功/失败"二分类的字符串匹配，否定词检测必须在肯定词之前。
 
@@ -230,4 +230,4 @@ spawn(exe, args, { stdio: ['ignore', logFd, logFd] })
 3. **同一命令内验证 vs 跨命令验证**。浏览器类问题要区分"功能坏了"还是"进程死了"——在同一条命令里启动+探测能跑通，说明功能没问题，是进程存活问题（见 E-3）。
 4. **对照实验定位归属**。Edge 不行就换 Chrome 试（见 E-4 与 E-3 的区分），Chrome 也不行说明是通用环境问题，Chrome 行说明是 Edge 特有机制。
 5. **DOM 规则必须来自真实 dump**。`npm run dump` 导出结构快照，按快照写选择器；`probe` 的输出只能说明"识别到了什么"，不能说明"页面长什么样"。
-6. **每个修复写回归用例**。`detectVerdict` 修复时顺带验证了 5 组文本用例，包括主项目会误判的那条。
+6. **每个修复写回归用例**。`detectVerdict` 修复时顺带验证了 5 组文本用例，包括朴素 `includes` 匹配会误判的那条。
