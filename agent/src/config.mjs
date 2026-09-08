@@ -92,9 +92,9 @@ export const cfg = {
   },
   loop: {
     // 单题最大反思重试次数
-    maxRetry: pickNum('MAX_RETRY', 4),
+    maxRetry: pickNum('MAX_RETRY', 2),
     // 等待评测结果的最长时间（毫秒）
-    evalTimeoutMs: pickNum('EVAL_TIMEOUT_MS', 60000),
+    evalTimeoutMs: pickNum('EVAL_TIMEOUT_MS', 25000),
     // 每题之间的间隔（毫秒），避免触发平台风控
     cooldownMs: pickNum('COOLDOWN_MS', 1500),
     // 连续解题数量上限，0 表示不限

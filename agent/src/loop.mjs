@@ -10,7 +10,7 @@ import { cfg } from './config.mjs';
 import { connectBrowser, pickTargetPage } from './browser.mjs';
 import { probePage, writeEditorCode } from './perceive.mjs';
 import { clickEval, clickNext, waitEvalResult, settle, answerChoice, fillBlank, applyAnswers } from './act.mjs';
-import { generateCode, reflectAndFix, answerQuestion, answerBatch, detectVerdict } from './ai.mjs';
+import { generateCode, reflectAndFix, answerQuestion, answerBatch, detectVerdict, spliceIntoTemplate } from './ai.mjs';
 
 const log = (m) => console.log(`[loop] ${m}`);
 
@@ -79,7 +79,7 @@ export async function solveOnce(page, probe) {
       return { ok: false, kind, reason: 'empty-code' };
     }
 
-    await writeEditorCode(page, code);
+    await writeEditorCode(page, spliceIntoTemplate(probe.code, code));
     await settle(page);
 
     const clicked = await clickEval(page);
@@ -215,7 +215,7 @@ export function taskKey(url) {
  */
 export async function watchLoop() {
   const { browser, context } = await connectBrowser();
-  log('监听已启动：切换到题目页即自动作答（Ctrl+C 退出）');
+  log('监听已启动：当前打开或新切换到的题目页即自动作答（Ctrl+C 退出）');
   log(`轮询间隔 ${cfg.watch.pollMs}ms，题目页 URL 模式 ${cfg.watch.taskUrlPattern}`);
 
   const processed = new Set();
@@ -230,15 +230,10 @@ export async function watchLoop() {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  // 启动时已打开的题目页记为已处理，不主动做；只响应之后切换到的新页面。
-  // 这样避免把用户已经做过的题重复提交一遍。
-  for (const p of context.pages()) {
-    const k = taskKey(p.url());
-    if (k) processed.add(k);
-  }
-  if (processed.size > 0) {
-    log(`已跳过当前打开的 ${processed.size} 个题目页，等待你切换到新题目`);
-  }
+  // 起步即处理当前已打开的题目页：不预标记，交给下方轮询在首轮自然捕获并作答，
+  // 作答后记入 processed，避免同一页被反复提交。这样做到"打开页面即做题"，
+  // 之后切到新 URL 才会触发下一题。
+  log('提示：当前已打开的题目页将立即作答，切到新题目页也会自动作答');
 
   while (true) {
     if (!busy) {

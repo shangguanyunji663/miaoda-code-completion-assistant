@@ -1,11 +1,11 @@
 @echo off
+cls
 REM ============================================================
 REM  Start the agent in watch mode (persistent).
 REM
 REM  The process keeps running. Whenever you navigate to a NEW
-REM  task page, it answers automatically and clicks 评测.
-REM  It never clicks "next level" for you - navigation stays
-REM  in your hands.
+REM  task page, it answers automatically and clicks Run / Submit.
+REM  It never clicks Next for you - navigation stays in your hands.
 REM
 REM  Already-open task pages are skipped on startup, so it will
 REM  not resubmit answers you already finished.

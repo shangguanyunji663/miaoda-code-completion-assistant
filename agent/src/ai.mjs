@@ -40,7 +40,7 @@ export async function chat(messages, opts = {}) {
     stream: false,
   };
 
-  const maxAttempts = opts.maxAttempts ?? 3;
+  const maxAttempts = opts.maxAttempts ?? 2;
   let lastErr;
   for (let i = 0; i < maxAttempts; i++) {
     try {
@@ -189,6 +189,63 @@ export function extractCodeFromMarkdown(markdown) {
   const m = String(markdown ?? '').match(/```[a-zA-Z]*\n([\s\S]*?)```/);
   if (m && m[1]) return m[1].trim();
   return String(markdown ?? '').trim();
+}
+
+/**
+ * 模板拼接：把 AI 生成的代码体拼回平台原始模板的 Begin/End 标记之间，
+ * 保证平台脚手架（含 Begin/End 标记、缩进、注释前缀）字节级不变。
+ *
+ * 背景：generateCode 把整段含标记的代码交给 AI，并依赖模型完整复现标记。
+ * 实测模型常漏掉 / 改写标记，导致平台判定"不符合格式"。此处以「原始模板」为权威，
+ * AI 只负责标记之间的代码体，从根上消除格式错。
+ *
+ * @param {string} originalTemplate 写入前从编辑器读取的原始模板（含 Begin/End 标记）
+ * @param {string} aiOutput AI 返回的完整输出（可能含标记，也可能仅含代码体）
+ * @returns {string} 可直接写入编辑器的最终代码
+ */
+export function spliceIntoTemplate(originalTemplate, aiOutput) {
+  const orig = String(originalTemplate ?? '');
+  const ai = String(aiOutput ?? '');
+
+  const origBegin = findMarkerLine(orig, 'Begin');
+  const origEnd = findMarkerLine(orig, 'End');
+  // 原始模板无标记：纯编辑器，直接信任 AI 输出（已做 markdown 抽取）
+  if (origBegin < 0 || origEnd < 0 || origEnd <= origBegin) {
+    return ai.trim();
+  }
+
+  const origLines = orig.split(/\r?\n/);
+  const head = origLines.slice(0, origBegin + 1); // 含 Begin 标记行
+  const tail = origLines.slice(origEnd);           // 含 End 标记行
+
+  // 从 AI 输出里取标记之间的代码体；若 AI 也未带标记，则把整段当作代码体
+  const aiBegin = findMarkerLine(ai, 'Begin');
+  const aiEnd = findMarkerLine(ai, 'End');
+  let body;
+  if (aiBegin >= 0 && aiEnd >= 0 && aiEnd > aiBegin) {
+    body = ai.split(/\r?\n/).slice(aiBegin + 1, aiEnd).join('\n');
+  } else {
+    body = ai;
+  }
+
+  return [...head, body.trim(), ...tail].join('\n');
+}
+
+/**
+ * 定位 Begin/End 标记行号。
+ * 容错：不限定 # 注释前缀、星号数量；但要求行内同时含一个 ≥3 的装饰符串
+ * （* / = / # / -），以区分平台标记与代码里可能出现的 begin/end 关键字
+ * （如 Redis 事务里的 "BEGIN"）。
+ * @returns {number} 行号，未找到返回 -1
+ */
+function findMarkerLine(text, keyword) {
+  const kw = keyword === 'Begin' ? /\bbegin\b/i : /\bend\b/i;
+  const deco = /[*=#-]{3,}/;
+  const lines = String(text ?? '').split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (kw.test(lines[i]) && deco.test(lines[i])) return i;
+  }
+  return -1;
 }
 
 /** 分离反思输出中的「分析」与「代码」两部分 */

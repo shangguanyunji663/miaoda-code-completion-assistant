@@ -1,4 +1,5 @@
 @echo off
+cls
 REM ============================================================
 REM  Start Edge with remote debugging for the coding agent.
 REM
@@ -9,8 +10,6 @@ REM     Launching from Explorer keeps it alive across commands.
 REM  2. Edge must NOT already be running. Edge merges a newly launched
 REM     instance into the existing one even with a different
 REM     --user-data-dir, silently dropping --remote-debugging-port.
-REM     Verified: 16 Edge processes running, none carried the debug
-REM     flag, port 9333 never bound.
 REM
 REM  This script therefore closes all Edge processes first, waits for
 REM  them to fully exit, then starts a clean debug instance.
@@ -19,7 +18,7 @@ REM  Usage:
 REM  1. Double-click this file. All Edge windows will be CLOSED.
 REM  2. A new Edge window opens with an isolated profile. Log in to
 REM     your judge platform and open a task page.
-REM  3. Run: npm run probe
+REM  3. Double-click start-watch.bat to start the listener.
 REM
 REM  Note: isolated profile means you must log in once. Afterwards the
 REM  session is remembered in .browser-profile.
@@ -68,8 +67,10 @@ echo Starting Edge with debug port %PORT% ...
 start "" "%BROWSER%" --remote-debugging-port=%PORT% --user-data-dir="%PROFILE%" --no-first-run --no-default-browser-check --disable-features=StartupBoost
 
 echo.
-echo Browser started.
+echo Browser started on port %PORT% (isolated profile).
 echo Next: log in to your judge platform, open a task page,
-echo       then run  npm run probe  in the agent directory.
+echo       then double-click start-watch.bat.
 echo.
-timeout /t 8 >nul
+echo This window will stay open. Press any key to close it
+echo (the browser keeps running).
+pause >nul
