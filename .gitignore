@@ -1,0 +1,80 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Production builds
+dist/
+*/dist/
+build/
+*/build/
+
+# Environment files
+.env
+.env.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+/logs/
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary folders
+tmp/
+temp/
+.playwright-cli/
+
+# Lock files (keep package-lock.json for consistent installs)
+yarn.lock
+pnpm-lock.yaml
+
+# Cache files
+.eslintcache
+*.tsbuildinfo
+
+# swc wasm
+.swc
+
+# Agent files
+.agent/
+
+# ===== agent/ 子系统的本地隐私数据（密钥 / 登录态 / 个人信息），严禁提交 =====
+# 浏览器独立 profile，含评测平台登录 Cookie
+agent/.browser-profile/
+agent/.browser-profile-chrome/
+# 页面结构快照，含姓名、学号等个人信息
+agent/dumps/
+# 浏览器与运行日志，可能含页面 URL 与个人数据
+agent/logs/
+
+# WorkBuddy 工作区数据（本地记忆笔记，含个人信息）
+.workbuddy/
+
+# 上传的页面截图，可能含姓名学号
+uploaded_image.png

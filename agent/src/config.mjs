@@ -1,0 +1,145 @@
+// EXPORTS: cfg, loadEnv, AI_DEFAULTS
+// 配置层：优先读 agent/.env.local，其次读进程环境变量。
+// 注意：.env.local 含密钥，已在 .gitignore 中排除，禁止提交。
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+export const AGENT_ROOT = path.resolve(__dirname, '..');
+const ENV_FILE = path.join(AGENT_ROOT, '.env.local');
+
+/** 极简 .env 解析：KEY=VALUE，忽略 # 注释与空行 */
+export function loadEnv() {
+  const out = {};
+  if (!fs.existsSync(ENV_FILE)) return out;
+  const raw = fs.readFileSync(ENV_FILE, 'utf8');
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const eq = t.indexOf('=');
+    if (eq === -1) continue;
+    const k = t.slice(0, eq).trim();
+    let v = t.slice(eq + 1).trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+      v = v.slice(1, -1);
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
+const env = loadEnv();
+
+function pick(key, fallback = undefined) {
+  return process.env[key] ?? env[key] ?? fallback;
+}
+
+function pickNum(key, fallback) {
+  const v = pick(key);
+  if (v === undefined || v === '') return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export const AI_DEFAULTS = {
+  // 端点与模型不设默认值：这些是部署相关的个人配置，统一放 .env.local，
+  // 避免任何个人信息随源码进入版本库（安全要求，见 docs/TROUBLESHOOTING.md）。
+  baseUrl: '',
+  // 模型留空时由 ai.mjs 报错提示配置；实测记录（2026-09-08）：
+  // agnes-2.0-flash 走 chat/completions 正常约 3.4s；qwen3.8-flash-free 可用约 10.8s；
+  // deepseek-v4-flash-0731-free-2 当时 502 不可用。模型可用性随时变化，用 npm run models 实测。
+  model: '',
+  temperature: 0.3,
+  maxTokens: 8192,
+};
+
+// 默认不用 9222：实测该机 Windows 把 9137-9236 划为保留端口区间，
+// Edge bind() 会失败并报 0x271D(WSAEACCESS)。9333 在保留区间之外。
+// 即便如此，launch-browser 仍会做一次保留区间检测并自动顺延。
+const DEBUG_PORT = pickNum('DEBUG_PORT', 9333);
+
+export const cfg = {
+  ai: {
+    baseUrl: pick('AI_BASE_URL', AI_DEFAULTS.baseUrl),
+    apiKey: pick('AI_API_KEY', ''),
+    model: pick('AI_MODEL', AI_DEFAULTS.model),
+    temperature: pickNum('AI_TEMPERATURE', AI_DEFAULTS.temperature),
+    maxTokens: pickNum('AI_MAX_TOKENS', AI_DEFAULTS.maxTokens),
+  },
+  browser: {
+    // 连接用户已登录的浏览器（Edge / Chrome），需以 --remote-debugging-port 启动
+    cdpEndpoint: pick('CDP_ENDPOINT', `http://127.0.0.1:${DEBUG_PORT}`),
+    debugPort: DEBUG_PORT,
+    // 浏览器可执行文件；留空则自动探测 Edge -> Chrome
+    browserPath: pick('EDGE_PATH', pick('BROWSER_PATH', '')),
+    // 独立 profile 目录。必须与日常使用的 profile 隔离，否则调试端口不生效
+    userDataDir: pick('USER_DATA_DIR', path.join(AGENT_ROOT, '.browser-profile')),
+    // 目标页面 URL 匹配片段，用于从多个标签页中挑出评测页
+    urlHint: pick('TARGET_URL_HINT', ''),
+  },
+  // ---- 常驻监听（watch）模式 ----
+  // 程序持续运行，检测用户切换到的新题目页并自动作答；只做题、不翻页，
+  // 导航权始终留给用户。
+  watch: {
+    // 轮询间隔
+    pollMs: pickNum('WATCH_POLL_MS', 2000),
+    // 题目页 URL 正则。默认匹配形如 /tasks/<courseId>/<num>/<slug> 的路径
+    taskUrlPattern: pick('TASK_URL_PATTERN', '/tasks/[^/]+/\\d+/[A-Za-z0-9]+'),
+    // 等待题目区渲染完成的超时
+    readyTimeoutMs: pickNum('READY_TIMEOUT_MS', 15000),
+  },
+  loop: {
+    // 单题最大反思重试次数
+    maxRetry: pickNum('MAX_RETRY', 4),
+    // 等待评测结果的最长时间（毫秒）
+    evalTimeoutMs: pickNum('EVAL_TIMEOUT_MS', 60000),
+    // 每题之间的间隔（毫秒），避免触发平台风控
+    cooldownMs: pickNum('COOLDOWN_MS', 1500),
+    // 连续解题数量上限，0 表示不限
+    maxTasks: pickNum('MAX_TASKS', 0),
+    // 干跑模式：只感知与生成，不写入、不点击
+    dryRun: pick('DRY_RUN', '0') === '1',
+  },
+  paths: {
+    agentRoot: AGENT_ROOT,
+    // prompt 单一数据源：复用主项目 shared/capabilities 下的两份配置
+    capabilitiesDir: path.resolve(
+      AGENT_ROOT,
+      '..',
+      'shared',
+      'capabilities',
+    ),
+    dumpDir: path.join(AGENT_ROOT, 'dumps'),
+  },
+};
+
+export function assertAiReady() {
+  if (!cfg.ai.baseUrl) {
+    throw new Error(
+      `缺少 AI_BASE_URL 配置。请在 ${ENV_FILE} 中设置，例如：AI_BASE_URL=https://your-openai-compatible-endpoint/v1`,
+    );
+  }
+  if (!cfg.ai.apiKey) {
+    throw new Error(
+      `缺少 AI_API_KEY。请在 ${ENV_FILE} 中配置，或设置环境变量 AI_API_KEY。`,
+    );
+  }
+}
+
+export function printConfig() {
+  const masked = cfg.ai.apiKey
+    ? `${cfg.ai.apiKey.slice(0, 6)}...${cfg.ai.apiKey.slice(-4)}`
+    : '(未配置)';
+  return [
+    `AI_BASE_URL      = ${cfg.ai.baseUrl || '(未配置)'}`,
+    `AI_MODEL         = ${cfg.ai.model || '(未配置)'}`,
+    `AI_API_KEY       = ${masked}`,
+    `AI_TEMPERATURE   = ${cfg.ai.temperature}`,
+    `CDP_ENDPOINT     = ${cfg.browser.cdpEndpoint}`,
+    `TARGET_URL_HINT  = ${cfg.browser.urlHint || '(未配置，自动选择第一个标签页)'}`,
+    `MAX_RETRY        = ${cfg.loop.maxRetry}`,
+    `DRY_RUN          = ${cfg.loop.dryRun ? 'yes' : 'no'}`,
+  ].join('\n');
+}

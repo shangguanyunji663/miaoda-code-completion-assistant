@@ -1,0 +1,40 @@
+{
+  "id": "code_completion_generator_1",
+  "pluginKey": "@official-plugins/ai-text-generate",
+  "pluginVersion": "1.0.21",
+  "name": "代码补全生成器",
+  "description": "基于算法题题目描述与代码模板，在Begin/End标记之间补全代码实现，输出完整可提交代码，注重边界情况处理与代码风格一致性",
+  "icon": "",
+  "paramsSchema": {
+    "type": "object",
+    "properties": {
+      "additional_requirements": {
+        "type": "string",
+        "description": "额外的代码实现要求（可选）"
+      },
+      "problem_description": {
+        "type": "string",
+        "description": "算法题题目描述，包含输入输出要求、示例等"
+      },
+      "code_template": {
+        "description": "代码模板，包含Begin和End标记，需要在标记之间补全代码",
+        "type": "string"
+      }
+    },
+    "required": [
+      "problem_description",
+      "code_template"
+    ]
+  },
+  "formValue": {
+    "modelParams": {
+      "maxTokens": 8192,
+      "temperature": 0.5
+    },
+    "prompt": "你是一位资深算法工程师，擅长各类编程题的代码实现，代码风格严谨，注重边界情况处理和性能优化。\n\n请根据以下题目描述和代码模板，在标记的Begin和End之间补全代码实现，输出完整的可直接提交的代码：\n\n### 题目描述\n{{input.problem_description}}\n\n### 代码模板\n{{input.code_template}}\n\n### 额外要求\n{{input.additional_requirements}}\n\n### 实现要求\n1. 严格保持与模板已有代码的风格、缩进、命名规范一致\n2. 函数签名和返回值必须完全符合模板定义，不得修改模板中除Begin/End之间的任何代码\n3. 充分考虑所有边界情况，包括空输入、极端值、异常场景等\n4. 代码逻辑清晰，注释必要的关键步骤\n5. 确保代码可以正确编译和运行，通过所有测试用例\n6. 输出只包含完整的代码，不需要额外的解释说明",
+    "modelID": "2015"
+  },
+  "createdAt": 1788869230608,
+  "updatedAt": 1788869230608,
+  "createdBy": 7575625665181912282
+}

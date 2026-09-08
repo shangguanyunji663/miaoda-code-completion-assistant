@@ -1,0 +1,11 @@
+# 本地密钥（含 API key）——切勿提交
+.env.local
+
+# 浏览器独立 profile（含登录态 Cookie）——切勿提交
+.browser-profile/
+
+# 页面结构快照
+dumps/
+
+node_modules/
+package-lock.json
