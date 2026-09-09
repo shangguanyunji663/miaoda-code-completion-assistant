@@ -178,6 +178,10 @@ const READ_EVAL_PANEL = () => {
   const sel =
     'div, section, pre, article, code, [class*="result"], [class*="output"], [class*="eval"], [class*="console"], [class*="message"], [class*="modal"], [class*="panel"], [class*="toast"]';
   const cands = Array.from(document.querySelectorAll(sel)).filter((el) => {
+    // 内嵌终端/编辑器的容器一律排除：它们是"终端区/编辑器区+结果区"的
+    // 跨栏包裹器——终端回显持续滚动会让捕获文本永不稳定（0.7.0 实测：
+    // 嵌套上限放宽后此类包裹器胜出，烧满超时才出结果），且其内容不是判定词来源
+    if (el.querySelector('.xterm, .monaco-editor')) return false;
     const t = (el.innerText ?? '').trim();
     if (t.length < 10) return false;
     const r = el.getBoundingClientRect();
