@@ -121,7 +121,7 @@ spawn(exe, args, { stdio: ['ignore', logFd, logFd] })
 **解决**：`agent/src/ai.mjs` 的 `detectVerdict` 采用三段式：
 
 1. **否定词优先短路**：命中「未通过 / 失败 / 错误 / Wrong Answer / WA...」直接判负
-2. **肯定词整词匹配**：`AC`、`pass` 用 `\b` 边界
+2. **肯定词匹配 + 裸「通过」兜底**：`AC`、`pass` 用 `\b` 边界；否定词筛完后仍出现的裸「通过」判通过——兼容 EduCoder 的「测试集1 通过」文风（0.3.0 补入，见 `agent/src/ai.mjs` 的 `POSITIVE_PATTERNS` 末位）
 3. **不确定判负**：没有命中任何信号时保守判 false，宁可多试一轮也不错报成功
 
 已验证用例：`"未通过，3组不匹配" → false` ✓（朴素 `includes` 实现会误判为 true）。

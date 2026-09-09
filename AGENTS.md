@@ -17,7 +17,6 @@
 - `launch-browser.mjs` — 启动带调试端口的浏览器，含 Windows 保留端口区间自动顺延
 - `perceive.mjs` — 页面感知：编辑器探测、题干提取、题型分类（选择/填空按结构信号；代码/命令行由 AI 按题干意图判定）、按钮枚举、课程列表卡片/板块收集
 - `act.mjs` — 执行层：写入代码、勾选选项、点击评测、等待结果、翻页、课程导航（退出/返回/开始学习/跳转检测）、切换「命令行/代码文件」工作区标签、向 xterm 终端逐条键入命令
-- `act.mjs` — 执行层：写入代码、勾选选项、点击评测、等待结果、翻页、课程导航（退出/返回/开始学习/跳转检测）
 - `loop.mjs` — 编排：生成 → 评测 → 反思循环；`watchLoop` 常驻监听；`liteLoop` 刷新触发监听；`courseLoop` 课程自动驾驶
 - `cli.mjs` — CLI 入口：`browser | my-edge | probe | dump | once | run | watch | lite | course | course-probe | models`
 

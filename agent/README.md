@@ -66,7 +66,10 @@ npm run probe
 | `AI_API_KEY` | 密钥，必填 | 无默认 |
 | `AI_MODEL` | 模型名，`npm run models` 查看全部，必填 | 无默认 |
 | `AI_TEMPERATURE` | 采样温度 | `0.3` |
+| `AI_MAX_TOKENS` | 单次生成的最大 token 数 | `8192` |
 | `DEBUG_PORT` | 调试端口 | `9333` |
+| `CDP_ENDPOINT` | CDP 连接地址，留空由 `DEBUG_PORT` 拼出 | `http://127.0.0.1:9333` |
+| `USER_DATA_DIR` | 独立 profile 目录（须与日常使用 profile 隔离，否则调试端口不生效） | `agent/.browser-profile` |
 | `EDGE_PATH` / `BROWSER_PATH` | 浏览器路径，留空自动探测 | 自动 |
 | `TARGET_URL_HINT` | 评测页 URL 特征片段，多标签页时用于定位 | 留空取第一个 |
 | `AUTO_LAUNCH` | 连不上调试端口时自动拉起浏览器（独立 profile） | `1` |
@@ -158,7 +161,7 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 
 ## 设计要点
 
-1. **prompt 单一数据源**：Agent 直接读取仓库根 `shared/capabilities/*.json` 中的 prompt 并渲染 `{{input.xxx}}` 占位符，不在 Agent 里复制 prompt，避免两份漂移。新增的题型走 `quiz_answer_selector_1.json`。
+1. **prompt 单一数据源**：Agent 直接读取仓库根 `shared/capabilities/*.json` 中的 prompt 并渲染 `{{input.xxx}}` 占位符，不在 Agent 里复制 prompt，避免两份漂移。题型分流：选择/填空按结构信号分类（`classifyTask`），代码/命令行由 `task_router_1.json` 按题干意图判定后分流至各自生成与反思配置。
 2. **成功判定加固**：朴素 `includes` 匹配会让 `"未通过"` 命中 `"通过"`、`"AC"` 命中任意含 ac 的英文单词。Agent 的 `detectVerdict` 改为**否定词优先短路 + 整词匹配**，不确定时一律判未通过；否定词筛完后裸「通过」也判通过（兼容 EduCoder 的「测试集1 通过」文风）。
 3. **模板拼接防格式错**：代码题写入前以**编辑器原始模板**为权威，把 AI 代码体拼回 Begin/End 标记之间（`spliceIntoTemplate`），平台脚手架字节级不变——不依赖 AI 完整复现标记。
 4. **写入用键盘而非改 DOM**：`点击 → Ctrl+A → Delete → insertText`，能触发编辑器 change 事件与平台自动保存。直接改 DOM 常导致平台评测到旧代码。
