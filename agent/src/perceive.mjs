@@ -101,6 +101,14 @@ const READ_PROBLEM = () => {
       best = { text, rect: { left: Math.round(r.left), top: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) } };
     }
   }
+  if (best) {
+    // 剥头部导航噪声（v0.8 实测）：平台页眉（用户名/积分/实验计时/资源中心/
+    // 菜单标签）会混进最长文本块的头部，对关思考的模型是纯干扰。从首个
+    // 「第N关 / 本关任务」行起保留；非关卡类平台无此行则原样返回。
+    const lines = best.text.split(/\r?\n/);
+    const s = lines.findIndex((l) => /第\s*\d+\s*关|本关任务/.test(l));
+    if (s > 0) best.text = lines.slice(s).join('\n');
+  }
   return best;
 };
 
