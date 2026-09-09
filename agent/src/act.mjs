@@ -1,6 +1,7 @@
 // EXPORTS: clickEval, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
 //          readTaskNo, waitTaskAdvance, clickExitTask, clickBackArrow,
-//          clickContinueChallenge, clickStartLearning, switchTaskTab, runTerminalCommands
+//          clickContinueChallenge, clickStartLearning, switchTaskTab, runTerminalCommands,
+//          collectTestSetDetails
 // 执行层：所有真实点击 / 输入动作。受 DRY_RUN 控制——干跑时只打日志不动页面。
 
 import { cfg } from './config.mjs';
@@ -411,4 +412,137 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   }
   log(`已向终端键入 ${commands.length} 条命令（每条间隔 ${gapMs}ms）`);
   return { executed: commands.length };
+}
+
+/**
+ * 在浏览器上下文执行：采集已展开的「测试集N」区块，抽取预期/实际输出。
+ * 策略：找同时含三要素（测试集N 标题 + 预期输出 + 实际输出）的元素，
+ * 按文本长度升序取最小容器（嵌套包裹去重），按标签位置切分两栏文本。
+ * 截断上限为字面量（evaluate 序列化约束）：单栏 1200 字符、最多 8 组。
+ */
+const COLLECT_TEST_SETS = () => {
+  const NOISE_TAIL = ['本关最大执行时间', '显示/隐藏测试结果', '下一关'];
+  const cut = (s) => {
+    for (const kw of NOISE_TAIL) {
+      const k = s.indexOf(kw);
+      if (k >= 0) s = s.slice(0, k);
+    }
+    return s.trim();
+  };
+  const all = Array.from(document.querySelectorAll('div, section, li, td'))
+    .filter((el) => {
+      const t = el.innerText ?? '';
+      return t.includes('预期输出') && t.includes('实际输出') && /测试集\s*\d+/.test(t);
+    })
+    .sort((a, b) => (a.innerText?.length ?? 0) - (b.innerText?.length ?? 0));
+  const picked = [];
+  for (const el of all) {
+    // 升序遍历后，后到的元素要么是已选块的外层包裹、要么是并列块；包含即去重
+    if (picked.some((p) => p._el.contains(el) || el.contains(p._el))) continue;
+    const t = el.innerText ?? '';
+    const title = (t.match(/测试集\s*\d+/) || [''])[0];
+    const iE = t.indexOf('预期输出');
+    const iA = t.indexOf('实际输出');
+    if (iE < 0 || iA < 0 || iA === iE) continue;
+    // 右栏「展示原始输出」是链接文本混在栏目头行，按 token 剔除而非截断；
+    // 左右栏 DOM 顺序一般 预期在前，但按实际出现位置切分以兼容颠倒的渲染顺序
+    let expected = '';
+    let actual = '';
+    if (iE < iA) {
+      expected = cut(t.slice(iE + 4, iA)).slice(0, 1200);
+      actual = cut(t.slice(iA + 4).replace(/展示原始输出/g, '')).slice(0, 1200);
+    } else {
+      actual = cut(t.slice(iA + 4, iE).replace(/展示原始输出/g, '')).slice(0, 1200);
+      expected = cut(t.slice(iE + 4)).slice(0, 1200);
+    }
+    if (!expected && !actual) continue;
+    picked.push({ _el: el, title, expected, actual });
+    if (picked.length >= 8) break;
+  }
+  return picked.map(({ title, expected, actual }) => ({ title, expected, actual }));
+};
+
+/**
+ * 展开「测试集N」折叠块并抓取每组的 预期输出 / 实际输出 明细。
+ *
+ * 背景：首次评测大概率不匹配，而定位失败的关键证据（预期 vs 实际差异）
+ * 收在默认折叠的「测试集N」块里——只靠 readEvalPanel 的面板摘要（甚至空文本）
+ * 喂反思等于盲改。本函数把折叠块逐个展开后结构化抽取差异。
+ *
+ * 通用启发式（不硬编码站点 selector）：
+ *   - 折叠头：文本匹配 /测试集\s*\d+/ 的叶子元素（EduCoder 系文风）；
+ *   - 展开判定：向上爬 ≤10 层祖先，容器文本含 预期输出/实际输出 即已展开，
+ *     跳过不点（避免把已展开的块点收起）；父级容器文本较长的不算叶子；
+ *   - 结果可能在 iframe 内：与 readEvalPanel 一致逐 frame 扫描。
+ *
+ * @param {import('playwright-core').Page} page
+ * @param {{maxSets?: number, perSetCap?: number, totalCap?: number}} opts
+ * @returns {Promise<string>} 拼装好的差异明细文本；页面无该结构时返回 ''（零影响）
+ */
+export async function collectTestSetDetails(page, opts = {}) {
+  const maxSets = opts.maxSets ?? 8;
+  const perSetCap = opts.perSetCap ?? 1200;
+  const totalCap = opts.totalCap ?? 8000;
+  const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
+
+  // 1) 展开所有未展开的折叠头（dryRun 下跳过点击，仅采集已展开内容）
+  let clicked = 0;
+  if (guard('展开测试集折叠块')) {
+    for (const f of frames) {
+      const headers = f.locator('text=/测试集\\s*\\d+/');
+      const n = await headers.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 20); i++) {
+        const h = headers.nth(i);
+        if (!(await h.isVisible().catch(() => false))) continue;
+        const info = await h
+          .evaluate((el) => {
+            const own = (el.textContent ?? '').trim();
+            const leaf = own.length > 0 && own.length <= 24;
+            let expanded = false;
+            let p = el.parentElement;
+            for (let d = 0; d < 10 && p; d++) {
+              const t = p.innerText ?? '';
+              if (t.includes('预期输出') || t.includes('实际输出')) {
+                expanded = true;
+                break;
+              }
+              p = p.parentElement;
+            }
+            return { leaf, expanded };
+          })
+          .catch(() => null);
+        if (!info?.leaf || info.expanded) continue;
+        await h.click({ timeout: 3000 }).catch(() => {});
+        clicked++;
+        await page.waitForTimeout(400);
+      }
+    }
+  }
+  if (clicked > 0) await page.waitForTimeout(600); // 等最后一批展开渲染落定
+
+  // 2) 逐 frame 采集结构化明细
+  const sets = [];
+  for (const f of frames) {
+    const part = await f.evaluate(COLLECT_TEST_SETS).catch(() => []);
+    sets.push(...part);
+    if (sets.length >= maxSets) break;
+  }
+  if (!sets.length) return '';
+
+  // 标签行切分后会残留「——」装饰破折号行，过滤纯符号行保持喂给反思的文本干净
+  const dropDashLines = (s) =>
+    s
+      .split(/\r?\n/)
+      .filter((l) => !/^[—\-–\s]*$/.test(l))
+      .join('\n')
+      .trim();
+  const text = sets
+    .slice(0, maxSets)
+    .map(
+      (s) =>
+        `【${s.title || '测试集'}】\n预期输出：\n${dropDashLines(s.expected.slice(0, perSetCap))}\n实际输出：\n${dropDashLines(s.actual.slice(0, perSetCap))}`,
+    )
+    .join('\n\n');
+  log(`已展开 ${clicked} 个折叠块，抓取 ${sets.length} 组预期/实际输出明细（${text.length} 字符）`);
+  return text.slice(0, totalCap);
 }

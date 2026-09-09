@@ -45,16 +45,38 @@ export async function chat(messages, opts = {}) {
   let lastErr;
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${cfg.ai.apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${cfg.ai.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          // 端点挂起兜底：超时按失败处理并触发下方重试，避免 loop 永久停摆
+          signal: AbortSignal.timeout(cfg.ai.timeoutMs),
+        });
+      } catch (e) {
+        if (e?.name === 'TimeoutError') {
+          throw new Error(
+            `AI 请求超时（${cfg.ai.timeoutMs}ms）：推理模型生成较慢时可用 AI_TIMEOUT_MS 调大`,
+          );
+        }
+        throw e;
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => '');
+        // 防御：部分端点对超过模型单次输出上限的 max_tokens 会直接报 400
+        //（vLLM 系常见）。命中特征时把预算降到保守值 8192，让下一次重试
+        // 立即生效。该路径为防御性设计，截至本次修改尚未在实测中触发过。
+        if (
+          res.status === 400 &&
+          body.max_tokens > 8192 &&
+          /(max_tokens|max_output_tokens|max_model_len|context)/i.test(text)
+        ) {
+          body.max_tokens = 8192;
+        }
         throw new Error(`HTTP ${res.status} ${text.slice(0, 300)}`);
       }
       const json = await res.json();
@@ -62,7 +84,18 @@ export async function chat(messages, opts = {}) {
       // 空内容必须视为失败：上游偶发会返回 200 + 空字符串，若不判空会被当成
       // 正常结果放行（实测曾导致批量答案整体为空）。判空后可触发下面的重试。
       if (typeof content !== 'string' || !content.trim()) {
-        throw new Error(`AI 返回内容为空：${JSON.stringify(json).slice(0, 300)}`);
+        // finish_reason=length 且 content 为空：token 预算被推理模型的思考
+        // （reasoning_content）耗尽，属确定性失败、重试无效，给出可定位提示。
+        const finish = json?.choices?.[0]?.finish_reason ?? '';
+        const hasReasoning =
+          typeof json?.choices?.[0]?.message?.reasoning_content === 'string';
+        const hint =
+          finish === 'length'
+            ? `finish_reason=length：max_tokens=${body.max_tokens} 预算耗尽${
+                hasReasoning ? '（推理模型的思考占用了 reasoning_content）' : ''
+              }，请调大该调用的 maxTokens`
+            : '上游返回 200 + 空内容';
+        throw new Error(`AI 返回内容为空（${hint}）：${JSON.stringify(json).slice(0, 300)}`);
       }
       return { content, raw: json };
     } catch (err) {
@@ -350,9 +383,12 @@ export async function classifyProblemIntent({ problem }) {
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
   });
+  // 预算从能力配置读取（单一数据源）。max_tokens 只是上限、不预扣费用：
+  // 推理模型（输出 reasoning_content）会先花预算思考，过小的上限会让
+  // content 恒为空（finish_reason=length），重试也无法恢复。
   const { content } = await chat([{ role: 'user', content: prompt }], {
-    temperature: 0,
-    maxTokens: 16,
+    temperature: cap.formValue?.modelParams?.temperature ?? 0,
+    maxTokens: cap.formValue?.modelParams?.maxTokens ?? 2048,
   });
   // 只认 cmdline 为命令行；其余（code/无法解析/超长噪声）一律保守回落代码题
   return /\bcmdline\b/i.test(content.trim()) ? 'cmdline' : 'code';

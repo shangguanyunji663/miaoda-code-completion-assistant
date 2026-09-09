@@ -349,6 +349,8 @@ export function findClickable(page, keywords) {
  * 写入代码到编辑器。
  * 策略：聚焦 → 全选 → 键盘插入。对 CodeMirror / Monaco / textarea 均适用，
  * 且能触发编辑器的 change 事件与平台自动保存（比直接改 DOM 更可靠）。
+ * 写入后回读验证：确证为空自动重试一次；虚拟渲染编辑器（Monaco）回读偏短
+ * 视为近似值，不盲目重试（详见函数内注释）。
  * @param {import('playwright-core').Page} page
  * @param {string} code
  */
@@ -372,12 +374,43 @@ export async function writeEditorCode(page, code) {
   if (!sel) throw new Error(`不支持的编辑器类型：${probe.editor.type}`);
 
   const el = target.locator(sel).first();
-  await el.click({ timeout: 10000 });
-  // 全选后整体覆盖输入
-  await page.keyboard.press('Control+A');
-  await page.keyboard.press('Delete');
-  await page.keyboard.insertText(code);
-  return { type: probe.editor.type, length: code.length };
+
+  // 键盘写入（点击聚焦 → 全选 → 删除 → 插入，触发 change 事件与平台自动保存），
+  // 写完回读验证是否真实落进编辑器；确证失败自动重试一次。
+  const typeOnce = async () => {
+    await el.click({ timeout: 10000 });
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
+    await page.keyboard.insertText(code);
+    // 等编辑器 change 事件与渲染落定后再回读
+    await page.waitForTimeout(400);
+    return target.evaluate(READ_CODE, probe.editor.type);
+  };
+
+  const strip = (s) => String(s ?? '').replace(/\s+/g, '');
+  const want = strip(code).length;
+
+  let landed = await typeOnce();
+  let got = strip(landed).length;
+  if (got >= want * 0.6) {
+    return { type: probe.editor.type, length: code.length, verified: true };
+  }
+
+  // 注意：Monaco 等虚拟渲染编辑器的 view-lines 只含可见行，回读偏短可能是假阴性，
+  // 不能据此盲目重试；但「回读为空」是确定性失败信号（全选删除后插入没落进
+  // 编辑器，典型于焦点丢失/编辑器重挂载），必须重试一次。
+  if (got === 0) {
+    log(`写入回读为空（键盘输入未落进编辑器，预期 ${code.length} 字符），重试一次`);
+    landed = await typeOnce();
+    got = strip(landed).length;
+    if (got === 0) {
+      log('写入二次回读仍为空 —— 请保持页面状态并立即 npm run dump 辅助定位');
+      return { type: probe.editor.type, length: 0, verified: false };
+    }
+  }
+  // 非空但明显偏短：虚拟渲染下的近似回读，不再重试，如实记录后继续评测
+  log(`写入回读 ${got}/${want} 非空白字符（虚拟渲染编辑器为近似值，继续评测）`);
+  return { type: probe.editor.type, length: got, verified: 'approx' };
 }
 
 /**

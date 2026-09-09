@@ -37,6 +37,7 @@ import {
   clickStartLearning,
   switchTaskTab,
   runTerminalCommands,
+  collectTestSetDetails,
 } from './act.mjs';
 import {
   generateCode,
@@ -118,9 +119,13 @@ export async function solveOnce(page, probe) {
     let lastEval = '';
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
       if (cmds === null) {
+        // 生成期间无中间日志可打，必须提前预告静默期，否则推理模型 1~2 分钟
+        // 的思考+生成会被用户当成"卡死/不作答"。
+        log('正在调用 AI 生成命令…（推理模型先思考后作答，可能需要 1~2 分钟）');
+        const t0 = Date.now();
         cmds = await generateCommands({ problem });
         log(
-          `第 ${attempt} 次生成命令（${cmds.length} 条）：${cmds
+          `第 ${attempt} 次生成命令（${cmds.length} 条，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）：${cmds
             .slice(0, 4)
             .join(' ; ')
             .slice(0, 140)}`,
@@ -146,6 +151,14 @@ export async function solveOnce(page, probe) {
       lastEval = await waitEvalResult(page);
       const v = detectVerdict(lastEval);
       log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
+      if (!v.passed) {
+        // 失败差异增强：展开「测试集N」折叠块抓预期/实际明细喂给反思。
+        // 没有差异证据的反思等于盲改（页面无该结构时返回空串，零影响）。
+        const detail = await collectTestSetDetails(page);
+        if (detail) {
+          lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
+        }
+      }
       if (v.passed) {
         return { ok: true, kind: 'cmdline', attempts: attempt, verdict: v, commands: cmds };
       }
@@ -180,11 +193,16 @@ export async function solveOnce(page, probe) {
 
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     if (code === null) {
+      // 同命令行分支：预告静默期 + 统计耗时，消除"切完 tab 就没动静"的观感
+      log('正在调用 AI 生成代码…（推理模型先思考后作答，可能需要 1~3 分钟）');
+      const t0 = Date.now();
       code = await generateCode({
         problem,
         codeTemplate: codeProbe.code ?? '',
       });
-      log(`第 ${attempt} 次生成代码（${code.length} 字符）`);
+      log(
+        `第 ${attempt} 次生成代码（${code.length} 字符，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`,
+      );
     } else {
       log(`第 ${attempt} 次尝试（沿用反思后的代码，${code.length} 字符）`);
     }
@@ -206,6 +224,14 @@ export async function solveOnce(page, probe) {
     lastEval = await waitEvalResult(page);
     const v = detectVerdict(lastEval);
     log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
+
+    if (!v.passed) {
+      // 同命令行分支：失败时先抓「测试集N」预期/实际差异明细再反思
+      const detail = await collectTestSetDetails(page);
+      if (detail) {
+        lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
+      }
+    }
 
     if (v.passed) {
       return { ok: true, kind: 'code', attempts: attempt, verdict: v, code };

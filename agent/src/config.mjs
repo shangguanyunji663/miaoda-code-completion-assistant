@@ -53,6 +53,10 @@ export const AI_DEFAULTS = {
   model: '',
   temperature: 0.3,
   maxTokens: 8192,
+  // 单次 AI 请求超时（毫秒）。推理模型思考+生成可达数分钟，默认 5 分钟兜底：
+  // 端点挂起时请求按失败处理并重试，而不是整个 loop 永久停摆
+  //（实测表现即"切完 tab 后毫无动作、再无任何日志"）。
+  timeoutMs: 300000,
 };
 
 // 默认不用 9222：实测该机 Windows 把 9137-9236 划为保留端口区间，
@@ -67,6 +71,7 @@ export const cfg = {
     model: pick('AI_MODEL', AI_DEFAULTS.model),
     temperature: pickNum('AI_TEMPERATURE', AI_DEFAULTS.temperature),
     maxTokens: pickNum('AI_MAX_TOKENS', AI_DEFAULTS.maxTokens),
+    timeoutMs: pickNum('AI_TIMEOUT_MS', AI_DEFAULTS.timeoutMs),
   },
   browser: {
     // 连接用户已登录的浏览器（Edge / Chrome），需以 --remote-debugging-port 启动
