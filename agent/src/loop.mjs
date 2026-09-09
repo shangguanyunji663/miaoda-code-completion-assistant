@@ -56,6 +56,13 @@ import {
 
 const log = (m) => console.log(`[loop] ${m}`);
 
+/** 反思用瘦身题干：以「编程要求」段为锚取前后文（约 1500 字），避免全量题干撑大反思输入 */
+function slimForReflection(p) {
+  const idx = p.indexOf('编程要求');
+  if (idx === -1) return p.slice(0, 1500);
+  return p.slice(Math.max(0, idx - 400), idx + 1100);
+}
+
 /**
  * 解当前页面这一道题。
  * 选择/填空题按结构信号直接作答；代码题与命令行题先按题干内容做 AI 意图判定
@@ -185,7 +192,7 @@ export async function solveOnce(page, probe) {
         //（2026-09-09 用户明确要求）
         const termEcho = await readTerminalText(page);
         if (termEcho) {
-          lastEval = `${lastEval || '（评测输出未捕获，以下为终端回显）'}\n\n=== 终端回显（本轮全部显示内容） ===\n…${termEcho.slice(-5000)}`;
+          lastEval = `${lastEval || '（评测输出未捕获，以下为终端回显）'}\n\n=== 终端回显（本轮全部显示内容） ===\n…${termEcho.slice(-2000)}`;
         }
       }
       if (v.passed) {
@@ -198,7 +205,7 @@ export async function solveOnce(page, probe) {
       log(`正在调用 AI 命令反思（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
       const rt0 = Date.now();
       const fixed = await reflectCommands({
-        problem,
+        problem: slimForReflection(problem),
         previousCommands: cmds,
         evalResult: lastEval || '（未捕获到评测输出，请对照任务要求自查命令）',
       });
@@ -287,7 +294,7 @@ export async function solveOnce(page, probe) {
     log(`正在调用 AI 代码反思（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
     const rt0 = Date.now();
     const fixed = await reflectAndFix({
-      problem,
+      problem: slimForReflection(problem),
       // 反思看的是实际提交评测的代码（模板拼接后、经写入验证的版本）
       previousCode: submitted,
       evalResult: lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）',

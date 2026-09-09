@@ -48,10 +48,12 @@ export async function chat(messages, opts = {}) {
   // 默认档 → 思考马拉松 74955 字击穿预算；medium → 思考 1612 字有界且
   // 命令覆盖全部要求。AI_REASONING_EFFORT 可调 low/medium/high；
   // AI_ENABLE_THINKING=0 全关（极简场景）。参数为本端点探测实证可用。
+  // 推理分级：调用方可按任务降档（反思用 low——证据已在提示词中，无需长思考）
+  const effort = opts.reasoningEffort ?? cfg.ai.reasoningEffort;
   if (!cfg.ai.enableThinking) {
     body.chat_template_kwargs = { enable_thinking: false };
-  } else if (cfg.ai.reasoningEffort) {
-    body.reasoning_effort = cfg.ai.reasoningEffort;
+  } else if (effort) {
+    body.reasoning_effort = effort;
   }
 
   const maxAttempts = opts.maxAttempts ?? 2;
@@ -274,6 +276,7 @@ export async function reflectAndFix({ problem, previousCode, evalResult }) {
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.4,
     maxTokens: cap.formValue?.modelParams?.maxTokens,
+    reasoningEffort: 'low', // 反思降档：证据已在提示词中，low 档思考足够且更快
   });
   return splitAnalysisAndCode(content);
 }
@@ -522,6 +525,7 @@ export async function reflectCommands({ problem, previousCommands, evalResult })
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.2,
     maxTokens: cap.formValue?.modelParams?.maxTokens ?? 4096,
+    reasoningEffort: 'low', // 反思降档：证据已在提示词中，low 档思考足够且更快
   });
   const lines = String(content ?? '')
     .split(/\r?\n/)
