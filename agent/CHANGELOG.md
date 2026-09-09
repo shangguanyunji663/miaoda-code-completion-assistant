@@ -23,7 +23,7 @@
 
 - **命令行题反思可见全部终端显示**：`readTerminalText` 抓取时点移至反思时（评测等待期间终端持续滚动——服务启动/连接超时类报错在键入完成后数秒才出现，键入后立即抓会漏）；按行 `textContent` 读取修复词间空格丢失（innerText 实测把 "No such file" 读成 "Nosuchfile"）；尾部 5000 字符以「终端回显（本轮全部显示内容）」并入反思材料——不止输入的命令，本轮终端显示的一切都在
 - **输入期报错检测**：`runTerminalCommands` 每条命令执行完做行级差分（新增 `readTerminalLines`），新增回显行命中报错特征（command not found / No such file / SyntaxError / Error: / exception / Traceback / refused / timeout / 错误 / 失败等）立即记为 `命令 N 输入期报错` 并打日志；评测失败时以「=== 输入期报错 ===」优先并入反思材料
-- **命令行提示词防御加固（MongoDB 双实例题复盘产出，`mkdir -p` 父目录缺失类根治）**：`cmdline_runner_1` 新增生成期要求——写文件/建配置必须先 `mkdir -p` 父目录并 `ls` 验证、多行文件用单条 heredoc 写入（EOF 独占一行顶格）、服务启动前配置与数据目录必须就绪、启动后紧跟连通/进程检查；`cmdline_reflection_fixer_1` 自查清单新增两条失败映射——`No such file or directory` → 父目录缺失（mkdir 后重写并验证）、`Connection refused` → 回查服务启动命令自身的报错（配置缺失 / dbPath 目录缺失）后再启动验证
+- **命令行提示词防御加固（MongoDB 双实例题复盘产出，`mkdir -p` 父目录缺失类根治）**：`cmdline_runner_1` 新增生成期要求——写文件/建配置必须先 `mkdir -p` 父目录并 `ls` 验证、多行文件用单条 heredoc 写入（EOF 独占一行顶格）、服务启动前配置与数据目录必须就绪、启动后紧跟连通/进程检查、**JS 类 shell（mongo 等）中中文值一律 `\uXXXX` 转义代替明文（键入保真双保险：执行层合成 paste + 生成层转义）**；`cmdline_reflection_fixer_1` 自查清单新增三条失败映射——`No such file or directory` → 父目录缺失（mkdir 后重写并验证）、`Connection refused` → 回查服务启动命令自身的报错（配置缺失 / dbPath 目录缺失）后再启动验证、**插入的中文值变空串 → JS shell 改用 `\uXXXX` 转义重写**
 
 ### Notes
 
