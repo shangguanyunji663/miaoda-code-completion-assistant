@@ -34,7 +34,7 @@
 
 - **prompt 单一数据源**：AI 行为的 prompt 只存在于 `shared/capabilities/*.json`，agent 直接读取并渲染 `{{input.xxx}}`。**不得在 agent 内复制 prompt 造成两份漂移**。改 AI 行为优先改 JSON，而非代码。
 - **不硬编码站点 selector**：识别全部走通用启发式（编辑器按 Monaco/Ace/CodeMirror/textarea 优先级探测；题干取排除编辑器后最长且偏左的文本块）。针对具体平台调整前先 `npm run dump` 拿真实结构，不要凭假设写规则。
-- **写入用键盘而非改 DOM**：`点击 → Ctrl+A → Delete → insertText`，以触发编辑器 change 事件与平台自动保存；写入后点编辑器外部并静置。
+- **写入优先编辑器 API，键盘为回退**：Monaco/CodeMirror5 先 `model.setValue`/`cm.setValue`（触发内容变化事件、平台自动保存不受影响，且字节级精确——实测 Monaco 的 formatOnPaste/autoIndent 会把 insertText 进来的预缩进 Python 逐行重排致评测不匹配）；API 不可用再走 `点击 → Ctrl+A → Delete → insertText`；写入后回读验证；写完点编辑器外部并静置。
 - **浏览器连接**：连不上调试端口时自动拉起独立 profile 浏览器（`AUTO_LAUNCH=0` 关闭）；要接管"用户自己的 Edge"须用 `my-edge`（junction 绕过 136+ 默认目录禁令，且必须先关闭运行中的实例——同 profile 旧实例会合并新命令）。沙箱/受限执行环境里脚本拉起的浏览器活不过命令边界，需由资源管理器（双击 bat）启动。
 - **安全**：端点 / 密钥 / 模型名等个人配置只允许存在于 `agent/.env.local`（已被 .gitignore 排除），源码与 `.env.example` 中不得出现真实值；`agent/.browser-profile*/`（登录态）、`agent/dumps/`（含个人信息的页面快照）、`agent/logs/` 同样严禁提交。
 - **如实标注验证边界**：未验证的能力不得在文档中声称可用。

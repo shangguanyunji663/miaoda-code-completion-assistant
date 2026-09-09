@@ -20,6 +20,7 @@ import {
   dumpCourseProbe,
   waitForTerminal,
   waitForEditor,
+  readTerminalText,
 } from './perceive.mjs';
 import {
   clickEval,
@@ -143,6 +144,11 @@ export async function solveOnce(page, probe) {
       }
       await settle(page);
 
+      // 抓终端回显：命令在输入/执行阶段就可能报错（REPL 语法错误、
+      // command not found、连接被拒等），这些证据不会进入平台评测输出，
+      // 反思必须看得到（2026-09-09 用户指出）
+      const termEcho = await readTerminalText(page);
+
       const clicked = await clickEval(page);
       if (!clicked.clicked) {
         log('未找到评测按钮，终止本题');
@@ -157,6 +163,10 @@ export async function solveOnce(page, probe) {
         const detail = await collectTestSetDetails(page);
         if (detail) {
           lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
+        }
+        // 终端回显取尾部：最近的输入/执行期错误对反思最有价值
+        if (termEcho) {
+          lastEval = `${lastEval || '（评测输出未捕获，以下为终端回显）'}\n\n=== 终端回显（输入/执行期） ===\n…${termEcho.slice(-3000)}`;
         }
       }
       if (v.passed) {
@@ -212,7 +222,10 @@ export async function solveOnce(page, probe) {
       return { ok: false, kind: 'code', reason: 'empty-code' };
     }
 
-    await writeEditorCode(page, spliceIntoTemplate(codeProbe.code, code));
+    // 实际提交评测的是"模板拼接后"的版本；反思必须带上它而不是 AI 原始
+    // 输出，否则 AI 审的是一份没提交过的文本（2026-09-09 用户指出）
+    const submitted = spliceIntoTemplate(codeProbe.code, code);
+    await writeEditorCode(page, submitted);
     await settle(page);
 
     const clicked = await clickEval(page);
@@ -241,7 +254,8 @@ export async function solveOnce(page, probe) {
 
     const fixed = await reflectAndFix({
       problem,
-      previousCode: code,
+      // 反思看的是实际提交评测的代码（模板拼接后、经写入验证的版本）
+      previousCode: submitted,
       evalResult: lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）',
     });
     if (fixed.analysis) log(`反思分析：${String(fixed.analysis).replace(/\s+/g, ' ').slice(0, 160)}`);

@@ -2,6 +2,33 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [0.5.0] - 2026-09-09
+
+推理模型适配与「写入 → 评测 → 反思」全链路加固。当日多轮真机排障驱动，全部根因经 CDP 只读探测与用户截图实锤定位。
+
+### Fixed
+
+- **推理模型 max_tokens 预算耗尽（lite 全链路失败的首要根因）**：AI_MODEL 换用推理模型（先输出 `reasoning_content` 再输出 `content`，思考与回答共享预算）后，意图路由 16 token 预算全被思考耗尽、`content` 恒空 → 确定性失败。`task_router_1` 16→8192，其余能力配置整体调大（quiz/cmdline 2048/4096→8192，代码生成/反思 8192→16384）；`classifyProblemIntent` 弃硬编码改读能力配置，消除参数双份漂移
+- **写入排版错乱（代码题作答失败主因）**：Monaco 的 formatOnPaste/autoIndent 会把 `insertText` 进来的预缩进 Python 逐行重排（阶梯状缩进 → 评测 IndentationError）。`writeEditorCode` 改为分层写入：优先编辑器/平台 API——CDP 实探发现平台把 monaco 命名空间暴露为大写 `window.Monaco`（另有平台自有设值入口 `window.updateMonacoValue`），命名空间按 `window.monaco ?? window.Monaco` 解析，逐级尝试 monaco/CM5 `setValue` → 平台 setter，键盘路径降为回退；每次写入后做「去空白逐字符相等」强验证。`AGENTS.md` / `agent/README.md` 写入约束同步改写
+- **评测结果面板误抓题干（60s 空等与"空结果"误报根因）**：题干区也含"测试说明/运行"等宽泛关键词且以长度优势在"取最长匹配块"启发式下稳定胜出，题干文本评测前后不变 → 判变化逻辑失效。`READ_EVAL_PANEL` 改为结果面板专属标记优先（`共有N组测试集` / `本关最大执行时间` / `测试结果`，含"任务描述"签名的题干块直接排除），旧关键词启发式降为兜底
+- **"同错复现"空等**：新评测结果与点击前面板完全一致（同代码同错误）时"等变化"永远等不到——结果标记命中且连续 3 次采样稳定（约 5s）即直接采用，不再烧满超时预算后误报"空结果"
+- **测试集明细抓空**：`collectTestSetDetails` 曾命中纯标签行迷你容器（仅百余字符空壳喂给反思）；增加正文门槛（预期+实际去空白 ≥20 字符），采集为空时强制展开全部折叠头重采自愈
+- **回读验证 ReferenceError**：写入回读验证引用 perceive.mjs 中不存在的 `log` 致运行时中断评测；补 `[perceive]` logger。回读升级为 Monaco 模型 API 优先（view-lines 虚拟渲染只含可见行、长代码回读必然偏短的假阴性根治），未暴露全局时退回可见区近似读取
+- `agent/.env.local` 生效值 `EVAL_TIMEOUT_MS` 60000→30000（`config.mjs` 默认 25000 不变）
+
+### Added
+
+- **评测失败差异增强**：新增 `collectTestSetDetails`（act.mjs）——失败后自动展开「测试集N」折叠块，结构化抓取预期输出 vs 实际输出（多 frame 扫描、防误折叠已展开块、剔除「展示原始输出」/页脚噪音、8 组×1200 字符上限）；代码题与命令行题的反思均携带
+- **命令行题反思可见输入/执行期错误**：新增 `readTerminalText`（perceive.mjs，读 xterm `.xterm-rows` 回显），命令键入后立即抓取，失败时以「终端回显（输入/执行期）」（尾部 3000 字符）并入反思材料——REPL 语法错误、command not found、连接被拒等只存在于终端的证据不再丢失
+- **代码题反思携带实际提交代码**：`spliceIntoTemplate` 后的提交版（实际写入并评测的那份）作为 `previous_code` 传给反思，替代 AI 原始输出
+- **请求超时**：新增 `AI_TIMEOUT_MS`（默认 5 分钟），端点挂起按失败重试，loop 不再永久停摆
+- **生成期可观测性**：代码/命令生成前预告静默期（推理模型 1~3 分钟）、完成后输出耗时；写入日志标注写入方式（API/键盘）与回读验证结果
+
+### Notes
+
+- 已验证：全部源文件 `node --check` 与模块导入冒烟、7 个能力 JSON 可解析、结果面板标记与测试集切分算法按 CDP 只读探测的真实页面结构验证、平台 Monaco 全局结构实探确认
+- 端到端作答成功率取决于 AI 生成质量，本版本未做统计性验证；版本号维持 0.x（1.0 待端到端稳定性验证后再发布）
+
 ## [0.4.0] - 2026-09-09
 
 ### Added

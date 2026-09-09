@@ -83,10 +83,14 @@ export async function clickNext(page) {
  */
 export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
   const before = await readEvalPanel(page);
-  const deadline = Date.now() + timeoutMs;
+  const start = Date.now();
+  const deadline = start + timeoutMs;
   let last = before;
   let stableCount = 0;
   let best = '';
+  // 与 readEvalPanel 的结果标记策略配套：判定捕获文本是否带结果面板特征
+  const hasResultMarker = (t) =>
+    /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/.test(t ?? '');
 
   while (Date.now() < deadline) {
     await page.waitForTimeout(800);
@@ -103,6 +107,16 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
       }
       best = now;
       last = now;
+    } else if (now && hasResultMarker(now) && Date.now() - start > 3000) {
+      // 同错复现场景（2026-09-09 实测 60s 空等）：新评测结果与点击前面板
+      // 完全一致（同代码同错误），"等变化"永远等不到。文本带结果面板标记
+      // 且连续 3 次采样稳定即直接采用，避免烧满超时预算后误报"空结果"。
+      stableCount++;
+      if (stableCount >= 3) {
+        best = now;
+        log('结果面板文本与点击前一致（同错复现），连续 3 次稳定后直接采用');
+        break;
+      }
     }
   }
 
@@ -456,6 +470,10 @@ const COLLECT_TEST_SETS = () => {
       expected = cut(t.slice(iE + 4)).slice(0, 1200);
     }
     if (!expected && !actual) continue;
+    // 只认带正文的区块：纯标签行迷你容器（只有栏目头+耗时行、无实际内容）
+    // 会以"最小容器"胜出，喂给反思的只是百余字符的空壳（2026-09-09 实测）
+    const bodyLen = (expected + actual).replace(/\s+/g, '').length;
+    if (bodyLen < 20) continue;
     picked.push({ _el: el, title, expected, actual });
     if (picked.length >= 8) break;
   }
@@ -485,47 +503,67 @@ export async function collectTestSetDetails(page, opts = {}) {
   const totalCap = opts.totalCap ?? 8000;
   const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
 
-  // 1) 展开所有未展开的折叠头（dryRun 下跳过点击，仅采集已展开内容）
-  let clicked = 0;
-  if (guard('展开测试集折叠块')) {
+  // 1) 展开：只点「未展开」的折叠头（已展开的容器文本含 预期输出/实际输出）；
+  //    force=true 无视展开判定全部点一遍（采集为空时用于纠正误判后重试）。
+  //    dryRun 下跳过点击，仅采集已展开内容。
+  const expandAll = async (force) => {
+    let clicked = 0;
     for (const f of frames) {
       const headers = f.locator('text=/测试集\\s*\\d+/');
       const n = await headers.count().catch(() => 0);
       for (let i = 0; i < Math.min(n, 20); i++) {
         const h = headers.nth(i);
         if (!(await h.isVisible().catch(() => false))) continue;
-        const info = await h
-          .evaluate((el) => {
-            const own = (el.textContent ?? '').trim();
-            const leaf = own.length > 0 && own.length <= 24;
-            let expanded = false;
-            let p = el.parentElement;
-            for (let d = 0; d < 10 && p; d++) {
-              const t = p.innerText ?? '';
-              if (t.includes('预期输出') || t.includes('实际输出')) {
-                expanded = true;
-                break;
+        if (!force) {
+          const info = await h
+            .evaluate((el) => {
+              const own = (el.textContent ?? '').trim();
+              const leaf = own.length > 0 && own.length <= 24;
+              let expanded = false;
+              let p = el.parentElement;
+              for (let d = 0; d < 10 && p; d++) {
+                const t = p.innerText ?? '';
+                if (t.includes('预期输出') || t.includes('实际输出')) {
+                  expanded = true;
+                  break;
+                }
+                p = p.parentElement;
               }
-              p = p.parentElement;
-            }
-            return { leaf, expanded };
-          })
-          .catch(() => null);
-        if (!info?.leaf || info.expanded) continue;
+              return { leaf, expanded };
+            })
+            .catch(() => null);
+          if (!info?.leaf || info.expanded) continue;
+        }
         await h.click({ timeout: 3000 }).catch(() => {});
         clicked++;
         await page.waitForTimeout(400);
       }
     }
-  }
+    return clicked;
+  };
+
+  const collectAll = async () => {
+    const sets = [];
+    for (const f of frames) {
+      const part = await f.evaluate(COLLECT_TEST_SETS).catch(() => []);
+      sets.push(...part);
+      if (sets.length >= maxSets) break;
+    }
+    return sets;
+  };
+
+  let clicked = 0;
+  if (guard('展开测试集折叠块')) clicked = await expandAll(false);
   if (clicked > 0) await page.waitForTimeout(600); // 等最后一批展开渲染落定
 
-  // 2) 逐 frame 采集结构化明细
-  const sets = [];
-  for (const f of frames) {
-    const part = await f.evaluate(COLLECT_TEST_SETS).catch(() => []);
-    sets.push(...part);
-    if (sets.length >= maxSets) break;
+  let sets = await collectAll();
+  // 采集为空（折叠态被误判为已展开等场景）：强制全点一遍再采一次自愈
+  if (!sets.length && guard('强制展开全部折叠块')) {
+    const clicked2 = await expandAll(true);
+    if (clicked2 > 0) {
+      await page.waitForTimeout(600);
+      sets = await collectAll();
+    }
   }
   if (!sets.length) return '';
 
