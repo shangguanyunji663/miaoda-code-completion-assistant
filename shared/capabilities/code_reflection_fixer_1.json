@@ -32,7 +32,7 @@
     "modelID": "2015",
     "modelParams": {
       "temperature": 0.5,
-      "maxTokens": 16384
+      "maxTokens": 32768
     }
   },
   "createdAt": 1788869304450,
