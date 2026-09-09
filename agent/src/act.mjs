@@ -1,7 +1,7 @@
 // EXPORTS: clickEval, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
 //          readTaskNo, waitTaskAdvance, clickExitTask, clickBackArrow,
 //          clickContinueChallenge, clickStartLearning, switchTaskTab, runTerminalCommands,
-//          collectTestSetDetails
+//          collectTestSetDetails, dismissPassModal
 // 执行层：所有真实点击 / 输入动作。受 DRY_RUN 控制——干跑时只打日志不动页面。
 
 import { cfg } from './config.mjs';
@@ -460,6 +460,50 @@ export async function runTerminalCommands(page, commands, opts = {}) {
     `已向终端键入 ${commands.length} 条命令（自适应间隔 ${gapMin}~${gapMax}ms、键速 ${typeDelay}ms/字符${termErrors.length ? `，输入期报错 ${termErrors.length} 条` : ''}）`,
   );
   return { executed: commands.length, termErrors };
+}
+
+/**
+ * 通过后关闭「恭喜您通过本关」庆祝弹窗（2026-09-09 用户新增需求）。
+ * 弹窗不关会一直遮挡编辑器与结果面板；关闭后 watch/lite 自然回到等待态
+ * （watch 等切换下一题、lite 等刷新），导航权保留给用户——本函数只关
+ * 弹窗，绝不触发任何导航。
+ * 关闭顺序：「完成」按钮（平台标准收尾动作）→ ⊗ 关闭叉（class 含
+ * close/Close 的可见元素）→ Escape 兜底；每步失败静默，不影响主流程。
+ * 页面无弹窗时直接返回，零副作用。
+ * @param {import('playwright-core').Page} page
+ * @returns {Promise<{dismissed: boolean, way?: string, reason?: string}>}
+ */
+export async function dismissPassModal(page) {
+  const marker = page.getByText('恭喜您通过', { exact: false }).first();
+  if (!(await marker.isVisible().catch(() => false))) {
+    return { dismissed: false, reason: 'no-modal' };
+  }
+  // ① 「完成」按钮：平台标准收尾动作（按钮角色优先，退化为精确文本）
+  const doneCandidates = [
+    page.getByRole('button', { name: '完成', exact: true }),
+    page.getByText('完成', { exact: true }),
+  ];
+  for (const c of doneCandidates) {
+    if (await c.first().isVisible().catch(() => false)) {
+      if (!guard('点击「完成」关闭通过弹窗')) return { dismissed: false, reason: 'dry-run' };
+      await c.first().click({ timeout: 3000 }).catch(() => {});
+      log('已点击「完成」关闭通过弹窗，返回等待态');
+      return { dismissed: true, way: 'done-button' };
+    }
+  }
+  // ② 关闭叉：class 含 close/Close 的可见元素（⊗ 图标容器）
+  const x = page.locator('[class*="close"], [class*="Close"]').first();
+  if (await x.isVisible().catch(() => false)) {
+    if (!guard('点击关闭叉关闭通过弹窗')) return { dismissed: false, reason: 'dry-run' };
+    await x.click({ timeout: 3000 }).catch(() => {});
+    log('已点击关闭叉关闭通过弹窗，返回等待态');
+    return { dismissed: true, way: 'close-icon' };
+  }
+  // ③ Escape 兜底（多数模态层监听键盘退出）
+  if (!guard('Escape 关闭通过弹窗')) return { dismissed: false, reason: 'dry-run' };
+  await page.keyboard.press('Escape').catch(() => {});
+  log('通过弹窗未找到关闭控件，已尝试 Escape');
+  return { dismissed: false, reason: 'escape' };
 }
 
 /**

@@ -39,6 +39,7 @@ import {
   switchTaskTab,
   runTerminalCommands,
   collectTestSetDetails,
+  dismissPassModal,
 } from './act.mjs';
 import {
   generateCode,
@@ -99,6 +100,10 @@ export async function solveOnce(page, probe) {
     const ev = await waitEvalResult(page);
     const v = detectVerdict(ev);
     log(`评测判定：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
+    if (v.passed) {
+      // 通过收尾：关闭庆祝弹窗（如有），返回等待用户操作
+      await dismissPassModal(page);
+    }
     return { ok: v.passed, kind, verdict: v, evalText: ev };
   }
 
@@ -176,6 +181,8 @@ export async function solveOnce(page, probe) {
         }
       }
       if (v.passed) {
+        // 通过收尾：关闭庆祝弹窗（如有），返回等待用户操作
+        await dismissPassModal(page);
         return { ok: true, kind: 'cmdline', attempts: attempt, verdict: v, commands: cmds };
       }
       if (attempt === cfg.loop.maxRetry) break;
@@ -253,6 +260,8 @@ export async function solveOnce(page, probe) {
     }
 
     if (v.passed) {
+      // 通过收尾：关闭庆祝弹窗（如有），返回等待用户操作
+      await dismissPassModal(page);
       return { ok: true, kind: 'code', attempts: attempt, verdict: v, code };
     }
 
