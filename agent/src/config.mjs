@@ -98,8 +98,8 @@ export const cfg = {
     readyTimeoutMs: pickNum('READY_TIMEOUT_MS', 15000),
   },
   loop: {
-    // 单题最大反思重试次数
-    maxRetry: pickNum('MAX_RETRY', 2),
+    // 单题最大反思重试次数（用户指定 10；注意失败题最坏耗时与 token 消耗随重试线性放大）
+    maxRetry: pickNum('MAX_RETRY', 10),
     // 等待评测结果的最长时间（毫秒）
     evalTimeoutMs: pickNum('EVAL_TIMEOUT_MS', 25000),
     // 每题之间的间隔（毫秒），避免触发平台风控
@@ -108,6 +108,15 @@ export const cfg = {
     maxTasks: pickNum('MAX_TASKS', 0),
     // 干跑模式：只感知与生成，不写入、不点击
     dryRun: pick('DRY_RUN', '0') === '1',
+  },
+  // ---- 终端键入（命令行题） ----
+  terminal: {
+    // 每字符键入延迟：xterm 真实键盘输入，10ms 对逐字符处理已足够稳
+    typeDelayMs: pickNum('TERMINAL_TYPE_DELAY_MS', 10),
+    // 自适应命令间隔：回车后轮询终端提示符返回即下一条（快命令 ~200ms 放行）；
+    // 输出仍在滚动就继续等，上限防前台阻塞类命令（如未 fork 的 mongod）卡死节奏
+    gapMinMs: pickNum('TERMINAL_GAP_MIN_MS', 200),
+    gapMaxMs: pickNum('TERMINAL_GAP_MAX_MS', 2500),
   },
   // ---- 课程自动驾驶（course）模式 ----
   // 遍历「课堂实验 → 板块 → 开始学习」，逐关作答；评测通过后点「下一关」，

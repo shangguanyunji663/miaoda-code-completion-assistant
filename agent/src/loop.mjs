@@ -144,11 +144,6 @@ export async function solveOnce(page, probe) {
       }
       await settle(page);
 
-      // 抓终端回显：命令在输入/执行阶段就可能报错（REPL 语法错误、
-      // command not found、连接被拒等），这些证据不会进入平台评测输出，
-      // 反思必须看得到（2026-09-09 用户指出）
-      const termEcho = await readTerminalText(page);
-
       const clicked = await clickEval(page);
       if (!clicked.clicked) {
         log('未找到评测按钮，终止本题');
@@ -164,9 +159,20 @@ export async function solveOnce(page, probe) {
         if (detail) {
           lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
         }
-        // 终端回显取尾部：最近的输入/执行期错误对反思最有价值
+        // 输入期报错优先呈现（键入/执行即报错的命令与回现行，键入时逐条检测）
+        const inputErrors = (r.termErrors ?? [])
+          .map((e) => `命令 ${e.no}: ${e.cmd}\n${e.errs.map((l) => `  ${l}`).join('\n')}`)
+          .join('\n');
+        if (inputErrors) {
+          lastEval = `${lastEval || '（评测输出未捕获，以下为输入期报错）'}\n\n=== 输入期报错 ===\n${inputErrors}`;
+        }
+        // 终端回显在反思时点抓取（而非键入后立刻抓）：sleep/服务启动/连接
+        // 超时类命令的报错可能在键入完成后数秒才陆续输出，评测等待期间
+        // 终端持续滚动，此时抓取 = 本轮全部显示内容，而非只有输入的命令
+        //（2026-09-09 用户明确要求）
+        const termEcho = await readTerminalText(page);
         if (termEcho) {
-          lastEval = `${lastEval || '（评测输出未捕获，以下为终端回显）'}\n\n=== 终端回显（输入/执行期） ===\n…${termEcho.slice(-3000)}`;
+          lastEval = `${lastEval || '（评测输出未捕获，以下为终端回显）'}\n\n=== 终端回显（本轮全部显示内容） ===\n…${termEcho.slice(-5000)}`;
         }
       }
       if (v.passed) {

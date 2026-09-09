@@ -1,6 +1,6 @@
 // EXPORTS: probePage, readEditorCode, findClickable, writeEditorCode, dumpProbe,
 //          collectCards, collectSections, collectCardCandidates, readEvalPanel, dumpCourseProbe,
-//          waitForTerminal, waitForEditor, readTerminalText
+//          waitForTerminal, waitForEditor, readTerminalText, isTerminalAtPrompt, readTerminalLines
 // 页面感知层。
 //
 // 设计原则：**不硬编码任何站点 selector**。所有识别走启发式——
@@ -542,29 +542,79 @@ export async function writeEditorCode(page, code) {
 }
 
 /**
+ * 读取 xterm 终端的行数组（按行 textContent，空格保真，同 readTerminalText 判据）。
+ * 供输入期报错检测做行级差分使用。无终端返回 []。
+ * @returns {Promise<string[]>}
+ */
+export async function readTerminalLines(page) {
+  const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
+  for (const f of frames) {
+    const lines = await f
+      .evaluate(() => {
+        const rows = document.querySelector('.xterm-rows');
+        if (!rows) return null;
+        return Array.from(rows.children).map((d) => d.textContent ?? '');
+      })
+      .catch(() => null);
+    if (lines) return lines;
+  }
+  return [];
+}
+
+/**
  * 读取 xterm 终端当前可见的回显文本。
  * 用途：命令在输入/执行阶段就可能报错（REPL 语法错误、command not found、
  * 连接被拒等），这些证据不会进入平台评测输出；反思修复必须看得到。
- * 实现：xterm.js 的行容器是 .xterm-rows（DOM 渲染器，实测本平台主 frame），
- * 读其 innerText——只有视口内已渲染的行，通常恰含最近命令与报错，
- * 正是反思需要的"尾部"。逐 frame 扫描以兼容 iframe 嵌入。
+ * 实现：xterm.js 的行容器是 .xterm-rows（DOM 渲染器，实测本平台主 frame）。
+ * 注意：DOM 渲染器逐词分片，innerText 会丢失词间空格（实测 "No such file"
+ * → "Nosuchfile"）；按行取 textContent 再拼接则空格换行全保真（CDP 实测）。
+ * .xterm-rows 缺失时退回 .xterm-screen 的 innerText。逐 frame 扫描兼容 iframe。
  * @returns {Promise<string>} 终端回显文本；无终端或为空返回 ''
  */
 export async function readTerminalText(page) {
+  const lines = await readTerminalLines(page);
+  const t = lines.join('\n');
+  if (t.trim()) return t.trim();
   const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
   for (const f of frames) {
-    const t = await f
+    const t2 = await f
       .evaluate(() => {
-        const rows = document.querySelector('.xterm-rows');
-        if (rows) return rows.innerText ?? '';
         const screen = document.querySelector('.xterm-screen');
-        if (screen) return screen.innerText ?? '';
-        return '';
+        return screen ? screen.innerText ?? '' : '';
       })
       .catch(() => '');
-    if (t && t.trim()) return t.trim();
+    if (t2 && t2.trim()) return t2.trim();
   }
   return '';
+}
+
+/**
+ * 判断 xterm 终端是否已回到提示符（命令执行完毕的信号）。
+ * 判据：.xterm-rows 最后一个非空行以 # / $ / > 结尾
+ * （bash `root@…#`、普通 `$`、REPL `>`）。命令回显行（如 `…# sleep 3`）
+ * 不满足；前台阻塞类命令永不满足，由调用方的间隔上限兜底。
+ * 无终端的 frame 返回 null 跳过，全部无终端返回 false。
+ * @returns {Promise<boolean>}
+ */
+export async function isTerminalAtPrompt(page) {
+  const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
+  for (const f of frames) {
+    const r = await f
+      .evaluate(() => {
+        const rows = document.querySelector('.xterm-rows');
+        if (!rows) return null;
+        const lines = Array.from(rows.children).map((d) => d.textContent ?? '');
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const t = lines[i].trimEnd();
+          if (!t) continue;
+          return /[#>$]\s*$/.test(t);
+        }
+        return false;
+      })
+      .catch(() => null);
+    if (r !== null) return r;
+  }
+  return false;
 }
 
 /**

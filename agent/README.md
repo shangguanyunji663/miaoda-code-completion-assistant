@@ -76,9 +76,11 @@ npm run probe
 | `WATCH_POLL_MS` | watch/lite：标签页轮询间隔 | `2000` |
 | `TASK_URL_PATTERN` | 题目页 URL 正则（换平台改这里） | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `READY_TIMEOUT_MS` | 等题目区渲染完成的超时 | `15000` |
-| `MAX_RETRY` | 单题最大反思重试次数 | `2` |
+| `MAX_RETRY` | 单题最大反思重试次数 | `10` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果上限 | `25000` |
 | `COOLDOWN_MS` | 每题间隔，避免触发平台风控 | `1500` |
+| `TERMINAL_TYPE_DELAY_MS` | 命令行题：每字符键入延迟 | `10` |
+| `TERMINAL_GAP_MIN_MS` / `TERMINAL_GAP_MAX_MS` | 命令行题：回车后等提示符返回的最短/最长时间（自适应） | `200` / `2500` |
 | `MAX_TASKS` | 连续解题上限，`0` 不限 | `0` |
 | `DRY_RUN` | `1` = 只感知与生成，不写入不点击 | `0` |
 | `NAV_TIMEOUT_MS` | course：点「下一关」后等待跳转上限 | `10000` |
@@ -97,7 +99,7 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 
 - **题型自动分类**：选择题/填空题按结构信号识别（`choice` 检测到 radio/checkbox、`blank` 检测到文本输入框）；代码题与**命令行题**先读左侧题干做 **AI 意图判定**（`task_router_1`：`code` 写代码文件 / `cmdline` 敲命令），判定后自动切换到对应工作区 tab 再执行
 - **代码题**：生成 → 评测 → 失败则带着「题目 + 上一版代码 + 评测输出」反思修复 → 重评，最多 `MAX_RETRY` 次
-- **命令行题**（头歌类平台的数据库/运维任务）：生成命令序列 → 逐条真实键入 xterm 终端（每条回车，间隔 1.2s）→ 评测；未通过时由 `cmdline_reflection_fixer_1` 结合评测输出重新生成完整命令序列再重试
+- **命令行题**（头歌类平台的数据库/运维任务）：生成命令序列 → 逐条真实键入 xterm 终端（每条回车后自适应等提示符返回，`TERMINAL_GAP_MIN_MS`~`TERMINAL_GAP_MAX_MS`）→ 评测；未通过时由 `cmdline_reflection_fixer_1` 结合评测输出重新生成完整命令序列再重试
 - **选择题/填空题**：直接作答后评测；当前版本不做多轮反思
 
 ## 常驻监听模式（推荐用法）

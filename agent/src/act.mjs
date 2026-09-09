@@ -5,7 +5,7 @@
 // 执行层：所有真实点击 / 输入动作。受 DRY_RUN 控制——干跑时只打日志不动页面。
 
 import { cfg } from './config.mjs';
-import { readEvalPanel } from './perceive.mjs';
+import { readEvalPanel, isTerminalAtPrompt, readTerminalLines } from './perceive.mjs';
 
 // 按钮文本关键词（按优先级排序，模糊匹配）。
 // 不同平台用词不同，这里给一份较全的兜底列表，实际按站点精调时改这里即可。
@@ -393,14 +393,21 @@ export async function switchTaskTab(page, tabText) {
 /**
  * 向 xterm 终端逐条键入命令（每条后回车）。
  * 写入方式遵循项目约束：真实键盘输入（type 逐字符触发 xterm 的 keydown 捕获），
- * 不改 DOM。执行间隙留出命令运行时间（数据库类命令可能较慢）。
+ * 不改 DOM。命令间隔为**自适应**：回车后轮询终端最后非空行，提示符返回
+ * （bash `#`/`$`、REPL `>`）即立即下一条——快命令 ~200ms 放行、慢命令等输出
+ * 滚完；上限 gapMaxMs 兜底前台阻塞类命令。替代旧版固定 1200ms（32 条命令
+ * 仅间隔就 ~38s，且对秒级快命令纯浪费、对慢命令又不够）。
  * @param {import('playwright-core').Page} page
  * @param {string[]} commands 按执行顺序的命令列表
- * @param {{gapMs?: number}} opts 每条命令后的等待，默认 1200ms
- * @returns {Promise<{executed: number, dryRun?: boolean, reason?: string}>}
+ * @param {{typeDelay?: number, gapMin?: number, gapMax?: number}} opts
+ * @returns {Promise<{executed: number, dryRun?: boolean, reason?: string,
+ *   termErrors?: Array<{no: number, cmd: string, errs: string[]}>}>}
+ *   termErrors：输入期报错（键入/执行即报错的命令与回现行），供反思材料使用
  */
 export async function runTerminalCommands(page, commands, opts = {}) {
-  const gapMs = opts.gapMs ?? 1200;
+  const typeDelay = opts.typeDelay ?? cfg.terminal.typeDelayMs;
+  const gapMin = opts.gapMin ?? cfg.terminal.gapMinMs;
+  const gapMax = opts.gapMax ?? cfg.terminal.gapMaxMs;
   if (!guard(`终端键入 ${commands.length} 条命令`)) {
     return { executed: 0, dryRun: true };
   }
@@ -419,13 +426,40 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   }
 
   await target.click({ timeout: 8000 }).catch(() => {}); // 聚焦终端
-  for (const cmd of commands) {
-    await page.keyboard.type(cmd, { delay: 25 });
+  // 输入期报错检测（2026-09-09 用户要求）：每条命令执行完做行级差分，
+  // 新增回显行命中报错特征立即记录并打日志，随返回值交给反思材料
+  const ERROR_PATTERN =
+    /(command not found|not found|No such file|SyntaxError|Syntax error|Error:|error:|exception|Traceback|refused|timed? ?out|无法识别|错误|失败)/i;
+  let prevCount = 0;
+  const termErrors = [];
+  for (let ci = 0; ci < commands.length; ci++) {
+    const cmd = commands[ci];
+    await page.keyboard.type(cmd, { delay: typeDelay });
     await page.keyboard.press('Enter');
-    await page.waitForTimeout(gapMs);
+    // 自适应等待：先给最短间隔让回显落定，再轮询提示符返回
+    await page.waitForTimeout(gapMin);
+    const deadline = Date.now() + gapMax;
+    while (Date.now() < deadline) {
+      if (await isTerminalAtPrompt(page)) break;
+      await page.waitForTimeout(150);
+    }
+    // 行级差分：只检查本条命令新增的回显行
+    const lines = await readTerminalLines(page);
+    const newLines = lines
+      .slice(prevCount)
+      .map((s) => s.trimEnd())
+      .filter(Boolean);
+    prevCount = lines.length;
+    const errs = newLines.filter((l) => ERROR_PATTERN.test(l));
+    if (errs.length) {
+      termErrors.push({ no: ci + 1, cmd, errs });
+      log(`命令 ${ci + 1} 输入期报错（${errs.length} 行）：${errs[0].slice(0, 100)}`);
+    }
   }
-  log(`已向终端键入 ${commands.length} 条命令（每条间隔 ${gapMs}ms）`);
-  return { executed: commands.length };
+  log(
+    `已向终端键入 ${commands.length} 条命令（自适应间隔 ${gapMin}~${gapMax}ms、键速 ${typeDelay}ms/字符${termErrors.length ? `，输入期报错 ${termErrors.length} 条` : ''}）`,
+  );
+  return { executed: commands.length, termErrors };
 }
 
 /**
