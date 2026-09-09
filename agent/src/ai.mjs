@@ -29,6 +29,10 @@ export function renderTemplate(tpl, vars = {}) {
   );
 }
 
+function log(msg) {
+  console.log(`[ai] ${msg}`);
+}
+
 /** OpenAI 兼容 chat/completions，带指数退避重试 */
 export async function chat(messages, opts = {}) {
   assertAiReady();
@@ -44,6 +48,13 @@ export async function chat(messages, opts = {}) {
   const maxAttempts = opts.maxAttempts ?? 2;
   let lastErr;
   for (let i = 0; i < maxAttempts; i++) {
+    const t0 = Date.now();
+    // 心跳：推理模型长思考期间每 30s 打一次等待日志，让"静默"可测量
+    const hb = setInterval(() => {
+      log(
+        `AI 请求仍在等待响应（第 ${i + 1}/${maxAttempts} 轮，已 ${Math.round((Date.now() - t0) / 1000)}s）…`,
+      );
+    }, 30000);
     try {
       let res;
       try {
@@ -54,8 +65,13 @@ export async function chat(messages, opts = {}) {
             Authorization: `Bearer ${cfg.ai.apiKey}`,
           },
           body: JSON.stringify(body),
-          // 端点挂起兜底：超时按失败处理并触发下方重试，避免 loop 永久停摆
-          signal: AbortSignal.timeout(cfg.ai.timeoutMs),
+          // 端点挂起兜底：超时按失败处理并触发下方重试，避免 loop 永久停摆。
+          // 旧版 Node（<17.3）无 AbortSignal.timeout：置空仅失去超时保护，
+          // 心跳日志仍每 30s 可见，不会无限静默
+          signal:
+            typeof AbortSignal.timeout === 'function'
+              ? AbortSignal.timeout(cfg.ai.timeoutMs)
+              : undefined,
         });
       } catch (e) {
         if (e?.name === 'TimeoutError') {
@@ -103,6 +119,8 @@ export async function chat(messages, opts = {}) {
       if (i < maxAttempts - 1) {
         await new Promise((r) => setTimeout(r, 800 * 2 ** i));
       }
+    } finally {
+      clearInterval(hb);
     }
   }
   throw new Error(`AI 调用失败（已重试 ${maxAttempts} 次）：${lastErr?.message}`);
