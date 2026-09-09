@@ -71,6 +71,9 @@ export const cfg = {
     model: pick('AI_MODEL', AI_DEFAULTS.model),
     temperature: pickNum('AI_TEMPERATURE', AI_DEFAULTS.temperature),
     maxTokens: pickNum('AI_MAX_TOKENS', AI_DEFAULTS.maxTokens),
+    // 推理模型思考开关：默认关闭（常规任务不需要深度思考，实测思考可独占
+    // 预算致 finish=length）。置 1 开回思考（复杂调试场景用）
+    enableThinking: pick('AI_ENABLE_THINKING', '0') === '1',
     timeoutMs: pickNum('AI_TIMEOUT_MS', AI_DEFAULTS.timeoutMs),
   },
   browser: {

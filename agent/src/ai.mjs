@@ -44,6 +44,13 @@ export async function chat(messages, opts = {}) {
     max_tokens: opts.maxTokens ?? cfg.ai.maxTokens,
     stream: true,
   };
+  // 推理模型思考默认关闭（v0.8.1）：这类常规运维/编程任务不需要深度思考，
+  // 实测复杂任务思考可独占预算（43173 字仍 finish=length）。参数为本端点
+  // 探测实证：chat_template_kwargs.enable_thinking=false → 思考 119→0 字
+  //（vLLM/Qwen 系部署）。AI_ENABLE_THINKING=1 可开回。
+  if (!cfg.ai.enableThinking) {
+    body.chat_template_kwargs = { enable_thinking: false };
+  }
 
   const maxAttempts = opts.maxAttempts ?? 2;
   let lastErr;
