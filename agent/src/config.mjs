@@ -78,6 +78,8 @@ export const cfg = {
     userDataDir: pick('USER_DATA_DIR', path.join(AGENT_ROOT, '.browser-profile')),
     // 目标页面 URL 匹配片段，用于从多个标签页中挑出评测页
     urlHint: pick('TARGET_URL_HINT', ''),
+    // 连不上调试端口时自动拉起浏览器（独立 profile）。0 = 关闭
+    autoLaunch: pick('AUTO_LAUNCH', '1') === '1',
   },
   // ---- 常驻监听（watch）模式 ----
   // 程序持续运行，检测用户切换到的新题目页并自动作答；只做题、不翻页，
@@ -101,6 +103,17 @@ export const cfg = {
     maxTasks: pickNum('MAX_TASKS', 0),
     // 干跑模式：只感知与生成，不写入、不点击
     dryRun: pick('DRY_RUN', '0') === '1',
+  },
+  // ---- 课程自动驾驶（course）模式 ----
+  // 遍历「课堂实验 → 板块 → 开始学习」，逐关作答；评测通过后点「下一关」，
+  // 点击后 URL/关卡序号无变化即判定本小板块做完，退出并回列表继续下一块。
+  course: {
+    // 点击「下一关」后等待跳转的最长时间
+    navTimeoutMs: pickNum('NAV_TIMEOUT_MS', 10000),
+    // 退出/返回后等待列表页重新出现的最长时间
+    listTimeoutMs: pickNum('LIST_TIMEOUT_MS', 15000),
+    // 单板块最多连续处理的卡片数（防呆上限）
+    maxBoardsPerSection: pickNum('MAX_BOARDS_PER_SECTION', 50),
   },
   paths: {
     agentRoot: AGENT_ROOT,

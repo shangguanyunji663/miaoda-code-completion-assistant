@@ -1,18 +1,29 @@
 // CLI 入口：node src/cli.mjs <command>
 // 命令：
 //   browser  启动带调试端口的 Edge/Chrome（首次使用先跑这个，然后登录评测网站）
+//   my-edge  以"你自己的浏览器配置"重启并带调试端口（保留账号/历史，junction 绕过 136+ 限制）
 //   probe    检查配置、浏览器连接与页面识别情况
 //   dump     导出当前页面结构快照到 agent/dumps/（用于针对站点精调规则）
 //   once     只解当前这一题
 //   run      连续解题，成功后自动翻页
+//   watch    常驻监听，切到新题目页即自动作答
+//   course   课程自动驾驶：遍历「课堂实验→板块→开始学习」，逐关作答直至板块做完
+//   course-probe 只读诊断课程列表页识别结果（不点击），course 卡住时先跑这个
 //   models   列出可用文本模型
 
 import { cfg, printConfig, assertAiReady } from './config.mjs';
 import { connectBrowser, pickTargetPage } from './browser.mjs';
-import { probePage, dumpProbe } from './perceive.mjs';
-import { runLoop, watchLoop } from './loop.mjs';
+import {
+  probePage,
+  dumpProbe,
+  collectCards,
+  collectSections,
+  collectCardCandidates,
+  dumpCourseProbe,
+} from './perceive.mjs';
+import { runLoop, watchLoop, courseLoop } from './loop.mjs';
 import { listChatModels } from './ai.mjs';
-import { launchBrowser, resolveBrowserPath } from './launch-browser.mjs';
+import { launchBrowser, resolveBrowserPath, launchMyEdge } from './launch-browser.mjs';
 
 const cmd = process.argv[2] ?? 'probe';
 
@@ -37,6 +48,13 @@ async function main() {
       console.log(`  独立 profile: ${profileDir}`);
       console.log(`  版本       : ${version?.Browser ?? 'unknown'}`);
       console.log('\n请在该浏览器窗口中登录评测网站并打开题目页，然后再执行 npm run probe');
+      return;
+    }
+
+    case 'my-edge': {
+      // 以"你自己的 Edge 配置"重启并带调试端口（junction 绕过 136+ 限制）
+      const r = await launchMyEdge();
+      console.log('\n端点:', r.endpoint);
       return;
     }
 
@@ -94,6 +112,41 @@ async function main() {
       return;
     }
 
+    case 'course': {
+      assertAiReady();
+      // 课程自动驾驶：需先在该浏览器打开「课堂实验」列表页
+      const r = await courseLoop();
+      console.log('\n结果：', JSON.stringify(r, null, 2));
+      return;
+    }
+
+    case 'course-probe': {
+      // 只读诊断：只识别、不点击。用于 course 模式卡住时定位识别问题
+      await withPage(async (page) => {
+        const sections = await collectSections(page);
+        const cards = await collectCards(page);
+        console.log('\n--- 课程列表页识别结果（只读，未点击任何元素） ---');
+        console.log(`URL  : ${page.url()}`);
+        console.log(`板块(${sections.length})：${sections.join(' | ') || '（未识别到）'}`);
+        console.log(`卡片(${cards.length})：`);
+        for (const [i, c] of cards.entries()) {
+          const btn = c.btnTag ? `  按钮:<${c.btnTag} class="${c.btnCls}">` : '';
+          console.log(`  [${i}] 进度 ${c.done ?? '?'}/${c.total ?? '?'}  ${c.title}${btn}`);
+        }
+        const { file } = await dumpCourseProbe(page, cards, sections);
+        console.log(`\n快照已导出：${file}`);
+        if (cards.length === 0) {
+          const cands = await collectCardCandidates(page);
+          console.log(`\n候选节点采样(${cands.length})——text 为 JSON 转义串，可看到图标字体等不可见字符：`);
+          for (const [i, c] of cands.slice(0, 10).entries()) {
+            console.log(`  <${c.tag} class="${c.cls}"> text=${c.text}`);
+          }
+          console.log('未识别到卡片：请把上面的输出发给开发侧，按真实结构精调识别规则');
+        }
+      });
+      return;
+    }
+
     case 'models': {
       assertAiReady();
       const models = await listChatModels();
@@ -105,7 +158,7 @@ async function main() {
 
     default:
       console.log(`未知命令：${cmd}`);
-      console.log('可用：browser | probe | dump | once | run | watch | models');
+      console.log('可用：browser | my-edge | probe | dump | once | run | watch | course | course-probe | models');
       process.exitCode = 1;
   }
 }

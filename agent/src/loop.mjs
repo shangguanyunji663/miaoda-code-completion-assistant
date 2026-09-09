@@ -1,4 +1,4 @@
-// EXPORTS: solveOnce, runLoop
+// EXPORTS: solveOnce, runLoop, watchLoop, courseLoop
 // 主编排：感知 → 生成/作答 → 提交评测 → 读结果 → 失败反思 → 成功翻页。
 //
 // 单题流程（代码题）：
@@ -8,8 +8,29 @@
 
 import { cfg } from './config.mjs';
 import { connectBrowser, pickTargetPage } from './browser.mjs';
-import { probePage, writeEditorCode } from './perceive.mjs';
-import { clickEval, clickNext, waitEvalResult, settle, answerChoice, fillBlank, applyAnswers } from './act.mjs';
+import {
+  probePage,
+  writeEditorCode,
+  collectCards,
+  collectSections,
+  collectCardCandidates,
+  dumpCourseProbe,
+} from './perceive.mjs';
+import {
+  clickEval,
+  clickNext,
+  waitEvalResult,
+  settle,
+  answerChoice,
+  fillBlank,
+  applyAnswers,
+  readTaskNo,
+  waitTaskAdvance,
+  clickExitTask,
+  clickBackArrow,
+  clickContinueChallenge,
+  clickStartLearning,
+} from './act.mjs';
 import { generateCode, reflectAndFix, answerQuestion, answerBatch, detectVerdict, spliceIntoTemplate } from './ai.mjs';
 
 const log = (m) => console.log(`[loop] ${m}`);
@@ -194,6 +215,20 @@ async function waitTaskReady(page, timeoutMs = cfg.watch.readyTimeoutMs) {
     if (ready) return true;
     await page.waitForTimeout(400);
   }
+  // 超时诊断：区分「页面空白（多半是该平台未登录，如 www.educoder.net 对
+  // 匿名用户渲染空壳）」与「渲染了但不是做题页」
+  const info = await page
+    .evaluate(() => ({
+      textLen: (document.body.innerText || '').trim().length,
+      url: location.href,
+    }))
+    .catch(() => null);
+  if (info && info.textLen < 20) {
+    log(
+      `页面渲染为空（${info.url.slice(0, 80)}）——多半是该平台未登录：` +
+        '请在调试浏览器里登录一次该站点（登录态会持久保存），然后重新触发',
+    );
+  }
   return false;
 }
 
@@ -266,4 +301,193 @@ export async function watchLoop() {
     }
     await new Promise((r) => setTimeout(r, cfg.watch.pollMs));
   }
+}
+
+// ---- 课程自动驾驶（course）模式 ----
+
+/** 在所有标签页中找含「开始学习」的列表页；找不到返回 null */
+async function findListPage(context) {
+  for (const p of context.pages()) {
+    const has = await p
+      .locator('text="开始学习"')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (has) return p;
+  }
+  return null;
+}
+
+/**
+ * 完成一个小板块内的所有关卡：做题 → 评测通过点「下一关」→ 点击后
+ * URL/关卡序号均无变化即止（说明本板块关卡已做完）。
+ * 「下一关」找不到（通常因为本关未通过，平台不放开入口）同样结束本板块。
+ */
+async function solveBoard(page) {
+  let attempts = 0;
+  let passed = 0;
+  while (true) {
+    if (!(await waitTaskReady(page))) {
+      log('题目区未在超时内渲染（可能不是做题页），结束本板块');
+      break;
+    }
+    const probe = await probePage(page);
+    const r = await solveOnce(page, probe);
+    attempts++;
+    if (r?.ok) passed++;
+
+    const before = { url: page.url(), taskNo: await readTaskNo(page) };
+    const next = await clickNext(page);
+    if (!next.clicked) {
+      log('未找到「下一关」，本板块结束');
+      break;
+    }
+    if (!(await waitTaskAdvance(page, before))) {
+      log('「下一关」未跳转，判定本板块关卡已全部完成');
+      break;
+    }
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+  }
+  return { attempts, passed };
+}
+
+/** 退出当前小板块：任务页右上角「退出」→ 详情页左上角返回 → 等列表页出现 */
+async function exitBoard(page) {
+  await clickExitTask(page);
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await page.waitForTimeout(2000);
+  await clickBackArrow(page);
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  const deadline = Date.now() + cfg.course.listTimeoutMs;
+  while (Date.now() < deadline) {
+    const has = await page
+      .locator('text="开始学习"')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (has) return;
+    await page.waitForTimeout(800);
+  }
+  log('警告：返回后未见「开始学习」列表（页面结构可能不同，可 npm run dump 检查）');
+}
+
+/**
+ * 课程自动驾驶：遍历「课堂实验 → 板块 → 卡片(开始学习)」，逐关作答直至全部完成。
+ *
+ * 单块流程：点「开始学习」→（可能落在作业详情页则先点「继续挑战」）→ solveBoard
+ * → 任务页右上角「退出」→ 详情页左上角返回 → 回列表继续下一块。
+ * 已完成卡片（进度 n/n）自动跳过；点击「开始学习」若新开标签页则在新页作答后关闭。
+ */
+export async function courseLoop() {
+  const { browser, context } = await connectBrowser();
+  log('课程模式：自动遍历 课堂实验 → 板块 → 开始学习，逐关作答');
+  const summary = { boards: 0, passed: 0, attempts: 0 };
+
+  try {
+    const listPage = await findListPage(context);
+    if (!listPage) {
+      log('未找到含「开始学习」的列表页：请先在该浏览器打开课堂实验列表页，再运行 course');
+      return summary;
+    }
+    log(`列表页：${listPage.url()}`);
+
+    const processed = new Set();
+    const sections = await collectSections(listPage);
+    const sectionNames = sections.length > 0 ? sections : ['课堂实验'];
+    log(`左侧板块 ${sectionNames.length} 个：${sectionNames.join('、')}`);
+
+    for (const sec of sectionNames) {
+      // 点板块（文本去掉尾部数量角标，如 "Redis初步体验 1" -> "Redis初步体验"）
+      const secBase = sec.replace(/\s*\d+\s*$/, '');
+      const loc = listPage.getByText(secBase, { exact: false }).first();
+      if ((await loc.count().catch(() => 0)) > 0) {
+        await loc.click({ timeout: 8000 }).catch(() => {});
+        await listPage.waitForTimeout(1200);
+      }
+
+      for (let i = 0; i < cfg.course.maxBoardsPerSection; i++) {
+        // 切板块后卡片异步渲染，最多等 5 秒
+        let cards = [];
+        for (let t = 0; t < 5 && cards.length === 0; t++) {
+          cards = await collectCards(listPage);
+          if (cards.length === 0) await listPage.waitForTimeout(1000);
+        }
+        if (cards.length === 0) {
+          log(`板块「${secBase}」未识别到「开始学习」卡片，自动导出诊断信息：`);
+          try {
+            const cands = await collectCardCandidates(listPage);
+            if (cands.length === 0) {
+              log('  页面上没有任何含「开始学习」的候选节点（列表可能在 shadow DOM/特殊容器/iframe 中）');
+            }
+            for (const c of cands.slice(0, 8)) {
+              log(`  候选 <${c.tag} class="${c.cls}"> text=${c.text}`);
+            }
+            const { file } = await dumpCourseProbe(listPage, cards, sections);
+            log(`  结构快照已导出：${file}`);
+            log('  把上面候选行的 text= 原样发回，即可一次性精调识别规则');
+          } catch (e) {
+            log(`  诊断导出失败：${e.message}`);
+          }
+          break;
+        }
+        const next = cards.find(
+          (c) =>
+            !processed.has(c.title) &&
+            !(c.done != null && c.total != null && c.total > 0 && c.done >= c.total),
+        );
+        if (!next) break;
+
+        processed.add(next.title);
+        log(
+          `—— 小板块：${next.title}${next.total ? `（进度 ${next.done ?? 0}/${next.total}）` : ''}`,
+        );
+        const idx = cards.indexOf(next);
+        const beforeUrl = listPage.url();
+        const beforePages = new Set(context.pages());
+        const clicked = await clickStartLearning(listPage, idx);
+        if (!clicked.clicked) continue;
+
+        // 等待导航：新标签页出现或本标签 URL 变化；两者都没发生说明平台
+        // 没有响应点击（可能点到了非可点节点），明确记日志后跳过该卡片
+        let boardPage = null;
+        {
+          const deadline = Date.now() + 12000;
+          while (Date.now() < deadline) {
+            const np = [...context.pages()].find((p) => !beforePages.has(p));
+            if (np) {
+              boardPage = np;
+              break;
+            }
+            if (listPage.url() !== beforeUrl) {
+              boardPage = listPage;
+              break;
+            }
+            await listPage.waitForTimeout(500);
+          }
+        }
+        if (!boardPage) {
+          log(`「开始学习」点击后 12 秒内未发生导航，跳过卡片：${next.title}`);
+          continue;
+        }
+        await boardPage.waitForLoadState('domcontentloaded').catch(() => {});
+        await clickContinueChallenge(boardPage);
+
+        const r = await solveBoard(boardPage);
+        summary.boards++;
+        summary.passed += r.passed;
+        summary.attempts += r.attempts;
+        log(`小板块结束：${next.title}（通过 ${r.passed}/${r.attempts} 关）`);
+
+        await exitBoard(boardPage);
+        if (boardPage !== listPage) await boardPage.close().catch(() => {});
+      }
+    }
+
+    log(
+      `课程模式完成：处理 ${summary.boards} 个小板块，通过 ${summary.passed}/${summary.attempts} 关`,
+    );
+  } finally {
+    await browser.close().catch(() => {});
+  }
+  return summary;
 }

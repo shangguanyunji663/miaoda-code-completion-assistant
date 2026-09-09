@@ -1,8 +1,11 @@
 // EXPORTS: connectBrowser, pickTargetPage
 // 浏览器连接层：通过 CDP 连接用户已登录的 Edge/Chrome，并挑出评测页面标签。
+// 连不上时支持自动拉起（AUTO_LAUNCH=1，默认开）：独立 profile + 调试端口，
+// 在用户桌面环境经 cmd start 启动可脱离父进程存活（见 launch-browser.mjs 坑 3）。
 
 import { chromium } from 'playwright-core';
 import { cfg } from './config.mjs';
+import { launchBrowser } from './launch-browser.mjs';
 
 /**
  * 在本机 CDP 连接期间临时摘除代理环境变量。
@@ -36,7 +39,9 @@ async function withoutProxy(fn) {
 }
 
 /**
- * 连接 CDP 端点
+ * 连接 CDP 端点；连不上且 AUTO_LAUNCH 开启（默认开）时自动拉起浏览器再重连。
+ * 自动拉起用的是独立 profile（安全默认）；想接管"你自己的 Edge（含登录态）"，
+ * 先运行一次 my-edge 命令（见 launch-browser.mjs launchMyEdge）。
  * @returns {Promise<{browser: import('playwright-core').Browser, context: import('playwright-core').BrowserContext}>}
  */
 export async function connectBrowser() {
@@ -47,11 +52,35 @@ export async function connectBrowser() {
       chromium.connectOverCDP(endpoint, { timeout: 10000 }),
     );
   } catch (err) {
-    throw new Error(
-      `无法连接浏览器调试端口 ${endpoint}。\n` +
-        '请先启动带调试端口的浏览器：npm run browser\n' +
-        `原始错误：${err.message}`,
+    if (!cfg.browser.autoLaunch) {
+      throw new Error(
+        `无法连接浏览器调试端口 ${endpoint}。\n` +
+          '请先启动带调试端口的浏览器：npm run browser\n' +
+          `原始错误：${err.message}`,
+      );
+    }
+    console.warn(
+      `[auto] 调试端口 ${endpoint} 未响应，正在自动启动浏览器（独立 profile，登录一次即可）…`,
     );
+    let launched;
+    try {
+      launched = await launchBrowser();
+    } catch (e2) {
+      throw new Error(`自动启动浏览器失败：${e2.message}`);
+    }
+    cfg.browser.cdpEndpoint = launched.endpoint; // 端口顺延时对齐后续使用
+    try {
+      browser = await withoutProxy(() =>
+        chromium.connectOverCDP(launched.endpoint, { timeout: 10000 }),
+      );
+      console.warn(`[auto] 浏览器已启动并连接：${launched.endpoint}`);
+    } catch (e3) {
+      throw new Error(
+        `自动启动后仍无法连接 ${launched.endpoint}：${e3.message}\n` +
+          '（受限/沙箱执行环境里，脚本拉起的浏览器会随命令结束被回收——' +
+          '这种环境请双击 start-browser.bat 或 start-my-edge.bat 由资源管理器启动）',
+      );
+    }
   }
   const context = browser.contexts()[0];
   if (!context) throw new Error('浏览器无可用上下文，请确认浏览器已正常启动。');

@@ -25,6 +25,7 @@
 
 import { spawn, execSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { cfg, AGENT_ROOT } from './config.mjs';
 
@@ -130,7 +131,7 @@ export async function waitForCdp(endpoint, timeoutMs = 20000) {
  */
 export async function launchBrowser(opts = {}) {
   const exe = resolveBrowserPath();
-  const profileDir = cfg.browser.userDataDir;
+  const profileDir = opts.userDataDir || cfg.browser.userDataDir;
   if (!fs.existsSync(profileDir)) fs.mkdirSync(profileDir, { recursive: true });
   if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 
@@ -153,6 +154,7 @@ export async function launchBrowser(opts = {}) {
     '--enable-logging',
     `--log-file=${LOG_PATH}`,
   ];
+  if (opts.profileDirectory) args.push(`--profile-directory=${opts.profileDirectory}`);
   if (opts.url) args.push(opts.url);
 
   // 坑 3 —— 子进程活不过命令边界。
@@ -182,4 +184,96 @@ export async function launchBrowser(opts = {}) {
     throw new Error(`${err.message}\n（浏览器可执行文件：${exe}）`);
   }
   return { exe, profileDir, endpoint, port, version };
+}
+
+/**
+ * 以「用户自己的浏览器配置」重启浏览器并带上调试端口（my-edge 命令）。
+ *
+ * 背景：Chromium/Edge 136+ 禁止在默认 user-data-dir 上开调试端口，但校验是
+ * 路径比较——建一个指向真实 User Data 的目录联接（junction，无需管理员），
+ * 以联接路径启动即可绕过限制：加载的仍是用户原配置（账号/历史/插件全保留）。
+ *
+ * ⚠️ 必须先关闭正在运行的浏览器实例：同 profile 已有实例时，新启动命令会被
+ * 合并进旧进程、端口不生效（见本文件坑 2）。故本流程含 3 秒倒计时 + taskkill。
+ *
+ * @returns {Promise<object>} launchBrowser 结果 + linkPath / reused
+ */
+export async function launchMyEdge(opts = {}) {
+  const exe = resolveBrowserPath();
+  const isEdge = /edge/i.test(exe);
+  const appDataLocal =
+    process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const realDir = opts.userDataDir
+    ? path.resolve(opts.userDataDir)
+    : isEdge
+      ? path.join(appDataLocal, 'Microsoft', 'Edge', 'User Data')
+      : path.join(appDataLocal, 'Google', 'Chrome', 'User Data');
+  if (!fs.existsSync(realDir)) {
+    throw new Error(`未找到浏览器用户数据目录：${realDir}`);
+  }
+  const linkPath =
+    opts.linkDir ||
+    path.join(os.homedir(), isEdge ? '.edge-debug-link' : '.chrome-debug-link');
+
+  // 1. 幂等：调试端口已就绪就直接复用
+  const probeEndpoint = `http://127.0.0.1:${cfg.browser.debugPort}`;
+  try {
+    await waitForCdp(probeEndpoint, 800);
+    console.log('[my-edge] 调试浏览器已在运行，直接复用（无需重启）。');
+    return { exe, linkPath, endpoint: probeEndpoint, reused: true };
+  } catch {
+    /* 未在运行，继续 */
+  }
+
+  // 2. 倒计时后关闭正在运行的浏览器（否则新命令被旧实例合并）
+  const exeName = path.basename(exe);
+  console.log(
+    `[my-edge] 3 秒后将关闭正在运行的 ${exeName} 并以调试模式重启：` +
+      '你的账号/历史/插件全部保留，标签页可由会话恢复。',
+  );
+  for (let i = 3; i > 0; i--) {
+    console.log(`  ${i}…`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  try {
+    execSync(`taskkill /IM ${exeName} /F`, { stdio: 'ignore', timeout: 8000 });
+  } catch {
+    /* 本来就没在运行，忽略 */
+  }
+  await new Promise((r) => setTimeout(r, 1500));
+
+  // 3. 建目录联接（已存在且指向一致则跳过；realpath 可解析联接到真实目标）
+  fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+  let needLink = true;
+  try {
+    const resolved = fs.realpathSync(linkPath);
+    needLink = resolved.toLowerCase() !== realDir.toLowerCase();
+  } catch {
+    needLink = true;
+  }
+  if (needLink) {
+    try {
+      fs.rmSync(linkPath, { force: true });
+    } catch {
+      try {
+        fs.rmdirSync(linkPath);
+      } catch {
+        /* 联接不存在，忽略 */
+      }
+    }
+    fs.symlinkSync(realDir, linkPath, 'junction');
+    console.log(`[my-edge] 已创建目录联接：${linkPath} -> ${realDir}`);
+  }
+
+  // 4. 以联接路径 + 主 profile（Default）启动
+  const r = await launchBrowser({
+    userDataDir: linkPath,
+    profileDirectory: 'Default',
+  });
+  console.log('[my-edge] 完成：这就是你平时的浏览器（账号都在），且已带调试端口。');
+  console.log('[my-edge] 之后双击 start-watch.bat / start-course.bat 即可接管。');
+  console.log(
+    '[my-edge] 注意：日常若从任务栏另开 Edge（不带端口），接管前需再运行一次本命令。',
+  );
+  return { ...r, linkPath };
 }

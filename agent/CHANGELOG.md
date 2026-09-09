@@ -2,6 +2,43 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [0.3.0] - 2026-09-09
+
+### Added
+
+- **课程自动驾驶模式 `npm run course`**（新增 `start-course.bat` 双击入口，纯 ASCII）：遍历「课堂实验 → 板块 → 开始学习」逐关作答。评测通过自动点「下一关」；点击后 URL 与关卡序号均无变化即判定本小板块做完 → 任务页右上角「退出」→ 作业详情页左上角返回 → 回列表继续下一块。进度 `n/n` 的已完成卡片自动跳过；支持新标签页进入关卡（作答完自动关闭）
+- `perceive.mjs` 新增课程列表感知：`collectCards`（卡片标题 + `n/n` 进度）、`collectSections`（左侧板块菜单）
+- `act.mjs` 新增课程导航动作：`readTaskNo` / `waitTaskAdvance`（SPA 切关的 URL/序号双判据）、`clickExitTask`（电源图标启发式）、`clickBackArrow`（找不到时退化为浏览器后退）、`clickContinueChallenge`、`clickStartLearning`
+- 新增配置：`NAV_TIMEOUT_MS`（默认 10000）、`LIST_TIMEOUT_MS`（默认 15000）、`MAX_BOARDS_PER_SECTION`（默认 50）
+- **新增 `my-edge` 命令 / `start-my-edge.bat`**：以"用户自己的浏览器配置"重启并带调试端口——目录联接（junction，无需管理员）绕过 Chromium/Edge 136+ 默认目录调试禁令，账号/历史/插件全保留；含 3 秒倒计时关闭运行中的实例（同 profile 旧实例会合并新命令导致端口失效）
+- `connectBrowser` 支持自动拉起：连不上调试端口时自动启动独立 profile 浏览器并重连（`AUTO_LAUNCH=0` 关闭），watch/course 单 bat 即可跑
+- **新增只读诊断命令 `npm run course-probe`**：在课程列表页打印识别到的板块/卡片并导出 `dumps/course-*.json`，course 卡住时用于精调识别规则
+- course 卡片点击加固：采集时在真实可点节点打 `data-agent-target` 标记（替代 nth 文本序号，避免隐藏同名节点导致错位）；点击超时不抛异常；点击后 12 秒内未发生导航（新标签页/URL 变化）则记日志跳过该卡片，不再静默空转
+- 点击目标明确为「开始学习」按钮本身（书本图标+文字的可点容器）：从文本叶子向上找 `cursor:pointer` 的最近祖先打标记；`course-probe` 输出附带按钮 tag/class 便于与真实页面核对
+- `ai.mjs` 新增 `spliceIntoTemplate`：代码题写入前以**原始模板**为权威，把 AI 生成的代码体拼回 Begin/End 标记之间，平台脚手架字节级不变，消除"写入后不符合平台格式"（标记识别要求 ≥3 装饰符串，避免误判 Redis 事务里的 `BEGIN`）
+- **平台兼容性明确化**：支持任意 EduCoder 系平台（学校私有部署 / 官方 www.educoder.net）——识别全部基于 URL 路径与页面启发式、与域名无关（实测 `/tasks/<id>/<num>/<slug>` 双站匹配）；新增 README「平台兼容性」节
+
+### Changed
+
+- 提速：`MAX_RETRY` 4→2、`EVAL_TIMEOUT_MS` 60000→25000、`chat()` 默认重试 3→2；单题最坏耗时约降一半以上
+
+### Fixed
+
+- **course 列表页采集三大真实结构缺陷**（经 CDP 连真实列表页逐级插桩定位，已回归验证：9 卡片 + 17 板块全识别、按钮标记正中 `actionIcon` 容器）：
+  1. 卡片行上爬判据失效：按钮为三层同文本嵌套容器（`actionIcon > flexBox > div`，innerText 均为"开始学习"），旧"父文本严格更长"判据第一步即断，row 停在叶子 → 0 卡片。改为"当前行不含进度 n/n 且父级仍含开始学习就继续爬"
+  2. 图标字体字符污染匹配：菜单项/按钮 innerText 带私有区字符（如 `\uE8B5`），`startsWith('课堂实验')` 恒假。统一 `clean()`（剔除非字母数字空白字符）后比对；标题提取改用原始 innerText 按行切分（norm 会吞换行致整行成标题）
+  3. `collectSections` 两处硬伤：contains 去重误用全量元素集做排除（任何容器都含别的元素 → 恒为空），修正为仅对通过匹配的集合去重；子板块是 `role="button"` 可拖拽 div（react-rbd），选择器补 `[role="button"]`
+  另：`collectCards`/`clickStartLearning` 支持 iframe 回退；匹配前剔除字母/数字/空白以外字符（附单测）；`course-probe` 与 course 主流程在 0 卡片时自动输出候选节点 JSON 转义采样并导出结构快照
+- **评测结果"空结果"误判与等待过长**：旧版 `waitEvalResult` 每轮跑全页探测（probePage 多次 evaluate，单轮秒级延迟）且只扫主 frame、候选仅 `div/section/pre/article`，结果渲染在 iframe 或带 `result/output/console` 类名的容器里时永远抓空 → 白等满 `EVAL_TIMEOUT_MS` 后保守判"未通过"。现改为轻量探针 `readEvalPanel`：每轮单次 evaluate、全 iframe 扫描、候选扩至含 result/output/eval/console/modal/message/toast 类名容器与 `code/pre`，轮询间隔 1200→800ms；出结果后 ~2.4s 内即可判定，仍抓空时打印 dump 指引
+- **成功判定补裸「通过」兜底**：EduCoder 结果文风如「测试集1 通过」，旧肯定词表（全部通过/测试通过/AC…）一个都命中不了、会误判未通过。否定词（未通过/没有通过/不通过/未全部通过…）仍优先短路，走到兜底才判通过；4 组用例单测 PASS
+- **watch 空白页诊断**：题目区 15 秒未渲染且页面文本近空时，日志明确提示"多半是该平台未登录，请在调试浏览器登录一次"（实测 educoder.net 对匿名用户渲染空壳、无跳转无提示），替代误导性的单纯"跳过本页"
+- watch 模式启动时把已打开的题目页预标记为"已处理"，导致"页面已打开却不作答"；现启动即作答当前页，作答后才去重
+- `README.md` 配置表与实际默认值漂移（`DEBUG_PORT` 9222→9333、`MAX_RETRY`、`EVAL_TIMEOUT_MS`），已同步
+
+### Known Issues
+
+- course 列表采集已在真实页面验证（9 卡片 / 17 板块 / 按钮正中 actionIcon），但**完整端到端（点开始学习→逐关作答→退出返回）尚未跑通验证**；「退出」电源图标与返回箭头仍为启发式，首次全流程运行时留意日志，卡住即 `npm run dump` 反馈
+
 ## [0.2.0] - 2026-09-09
 
 项目聚焦为纯浏览器自动解题 Agent：移除手动粘贴式的 React 工作台前端，agent 成为唯一主体。

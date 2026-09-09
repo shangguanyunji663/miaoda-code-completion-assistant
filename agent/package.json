@@ -1,16 +1,19 @@
 {
   "name": "miaoda-coding-agent",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "浏览器自动化解题 Agent：感知评测页面 -> AI 生成/反思 -> 自动提交 -> 点评测 -> 成功翻页",
   "scripts": {
     "browser": "node src/cli.mjs browser",
+    "my-edge": "node src/cli.mjs my-edge",
     "probe": "node src/cli.mjs probe",
     "dump": "node src/cli.mjs dump",
     "once": "node src/cli.mjs once",
     "run": "node src/cli.mjs run",
     "watch": "node src/cli.mjs watch",
+    "course": "node src/cli.mjs course",
+    "course-probe": "node src/cli.mjs course-probe",
     "models": "node src/cli.mjs models"
   },
   "dependencies": {

@@ -1,8 +1,10 @@
-// EXPORTS: clickEval, waitEvalResult, clickNext, answerChoice, fillBlank, settle
+// EXPORTS: clickEval, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
+//          readTaskNo, waitTaskAdvance, clickExitTask, clickBackArrow,
+//          clickContinueChallenge, clickStartLearning
 // 执行层：所有真实点击 / 输入动作。受 DRY_RUN 控制——干跑时只打日志不动页面。
 
 import { cfg } from './config.mjs';
-import { probePage } from './perceive.mjs';
+import { readEvalPanel } from './perceive.mjs';
 
 // 按钮文本关键词（按优先级排序，模糊匹配）。
 // 不同平台用词不同，这里给一份较全的兜底列表，实际按站点精调时改这里即可。
@@ -72,19 +74,22 @@ export async function clickNext(page) {
 
 /**
  * 等待评测结果出现并稳定。
- * 策略：轮询页面评测面板文本，直到与点击前不同、且连续 3 次采样保持不变。
+ * 策略：用轻量探针（readEvalPanel，含 iframe 扫描）轮询结果面板文本，
+ * 直到与点击前不同、且连续 3 次采样保持不变。
+ * 相比旧版逐轮跑全页探测（probePage，每轮多次 evaluate、秒级延迟），
+ * 现在每轮只做一次 evaluate，出结果后 ~2.4s 内即可判定。
  * @returns {Promise<string>} 评测结果文本
  */
 export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
-  const before = (await probePage(page).catch(() => ({ evalPanel: '' }))).evalPanel ?? '';
+  const before = await readEvalPanel(page);
   const deadline = Date.now() + timeoutMs;
   let last = before;
   let stableCount = 0;
   let best = '';
 
   while (Date.now() < deadline) {
-    await page.waitForTimeout(1200);
-    const now = (await probePage(page).catch(() => ({ evalPanel: '' }))).evalPanel ?? '';
+    await page.waitForTimeout(800);
+    const now = await readEvalPanel(page);
     if (now && now !== before) {
       if (now === last) {
         stableCount++;
@@ -98,6 +103,13 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
       best = now;
       last = now;
     }
+  }
+
+  if (!best) {
+    log(
+      `${Math.round(timeoutMs / 1000)}s 内未捕获到评测结果文本（提交本身可能已成功）。` +
+        '请在题目页保持该状态立即执行 npm run dump，把 dumps JSON 发给开发侧按真实结构精调结果面板识别',
+    );
   }
   return best;
 }
@@ -198,4 +210,123 @@ export async function fillBlank(page, text) {
   await el.fill(String(text));
   log(`已填入：${String(text).slice(0, 40)}`);
   return { filled: true };
+}
+
+// ---- 课程自动驾驶（course）模式的导航动作 ----
+
+/**
+ * 读取当前关卡序号（页面文本中的「第 N 关」），非关卡页返回 null。
+ * 用于「下一关」是否跳转的判定：课程平台切关多为 SPA 局部刷新，URL 不变，
+ * 只有关卡标题里的序号会变，因此 URL 与序号任一变化即算跳转成功。
+ */
+export async function readTaskNo(page) {
+  return page
+    .evaluate(() => {
+      const m = (document.body?.innerText ?? '').match(/第\s*(\d+)\s*关/);
+      return m ? Number(m[1]) : null;
+    })
+    .catch(() => null);
+}
+
+/**
+ * 等待「下一关」产生跳转：URL 或关卡序号任一变化即算成功。
+ * @param {{url: string, taskNo: number|null}} before 点击前快照
+ * @returns {Promise<boolean>} true=已跳转；false=超时未变（判定板块做完）
+ */
+export async function waitTaskAdvance(page, before, timeoutMs = cfg.course.navTimeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(500);
+    const taskNo = await readTaskNo(page);
+    if (page.url() !== before.url) return true;
+    if (before.taskNo != null && taskNo != null && taskNo !== before.taskNo) return true;
+  }
+  return false;
+}
+
+/** 点击任务页右上角「退出」（电源图标；无文字，按 title/aria/class 启发式定位） */
+export async function clickExitTask(page) {
+  const candidates = [
+    () => page.locator('[title*="退出"], [aria-label*="退出"]').first(),
+    () => page.locator('.anticon-power, [class*="power"], [class*="logout"]').first(),
+    () => page.getByText('退出', { exact: true }).first(),
+  ];
+  for (const make of candidates) {
+    const loc = make();
+    if ((await loc.count().catch(() => 0)) === 0) continue;
+    if (!(await loc.isVisible().catch(() => false))) continue;
+    if (!guard('点击任务页右上角「退出」')) return { clicked: false };
+    await loc.click({ timeout: 8000 });
+    log('已点击「退出」');
+    return { clicked: true };
+  }
+  log('未找到「退出」按钮（可 npm run dump 后补充规则）');
+  return { clicked: false };
+}
+
+/** 点击作业详情页左上角返回箭头；找不到时退化为浏览器历史后退 */
+export async function clickBackArrow(page) {
+  const candidates = [
+    () =>
+      page
+        .locator('.anticon-arrow-left, [aria-label*="arrow-left"], [class*="arrow-left"]')
+        .first(),
+    () =>
+      page.locator('[class*="page-header"] [class*="back"], a[class*="back"], [class*="back-arrow"]').first(),
+  ];
+  for (const make of candidates) {
+    const loc = make();
+    if ((await loc.count().catch(() => 0)) === 0) continue;
+    if (!(await loc.isVisible().catch(() => false))) continue;
+    if (!guard('点击左上角返回箭头')) return { clicked: false };
+    await loc.click({ timeout: 8000 });
+    log('已点击左上角返回箭头');
+    return { clicked: true };
+  }
+  if (!guard('浏览器后退（返回箭头未找到）')) return { clicked: false };
+  await page.goBack({ timeout: 10000 }).catch(() => {});
+  log('未找到返回箭头，已执行浏览器后退兜底');
+  return { clicked: true, fallback: true };
+}
+
+/** 点击作业详情页的「继续挑战」进入关卡页（存在才点） */
+export async function clickContinueChallenge(page) {
+  for (const kw of ['继续挑战', '开始挑战']) {
+    const loc = page.getByText(kw, { exact: true }).first();
+    if ((await loc.count().catch(() => 0)) === 0) continue;
+    if (!(await loc.isVisible().catch(() => false))) continue;
+    if (!guard(`点击「${kw}」进入关卡`)) return { clicked: false };
+    await loc.click({ timeout: 8000 });
+    log(`已点击「${kw}」进入关卡`);
+    return { clicked: true };
+  }
+  return { clicked: false };
+}
+
+/**
+ * 点击列表页第 index 个「开始学习」。
+ * 定位用 collectCards 打下的 data-agent-target 标记（而非 nth 文本序号），
+ * 避免页面里存在隐藏的同名文本节点时序号错位点到不可见元素上。
+ * 卡片可能在 iframe 里，因此主 frame 找不到标记时逐 frame 查找。
+ */
+export async function clickStartLearning(page, index) {
+  const sel = `[data-agent-target="${index}"]`;
+  const targets = [
+    page.locator(sel).first(),
+    ...page.frames().map((f) => f.locator(sel).first()),
+  ];
+  for (const loc of targets) {
+    if ((await loc.count().catch(() => 0)) === 0) continue;
+    if (!guard(`点击「开始学习」#${index + 1}`)) return { clicked: false };
+    try {
+      await loc.click({ timeout: 10000 });
+    } catch (e) {
+      log(`「开始学习」点击失败：${String(e.message).slice(0, 120)}`);
+      return { clicked: false };
+    }
+    log(`已点击「开始学习」#${index + 1}`);
+    return { clicked: true };
+  }
+  log(`「开始学习」#${index + 1} 标记丢失（页面可能已重渲染），下一轮会重新采集`);
+  return { clicked: false };
 }

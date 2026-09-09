@@ -23,11 +23,16 @@ npm install                      # 只需一次，依赖仅 playwright-core
 cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_KEY / AI_MODEL
 ```
 
-然后双击两个 bat（**不要用命令行启动浏览器**——脚本拉起的浏览器活不过命令边界）：
+然后启动浏览器（三选一）：
 
-1. **`agent/start-browser.bat`** — 关闭所有 Edge，以独立 profile + 调试端口启动。窗口不要关。
-2. 在弹出的浏览器里**登录评测平台**，打开任意一道题目页。
-3. **`agent/start-watch.bat`** — 常驻监听，之后切到新题目页即自动作答。
+1. **`agent/start-my-edge.bat`** — 重启**你自己的 Edge**并带调试端口（账号/历史/插件全保留；会先关闭正在运行的 Edge，3 秒倒计时）。日常推荐。
+2. **`agent/start-browser.bat`** — 以全新独立 profile + 调试端口启动（首次需在该窗口重新登录各平台）。
+3. 不手动启动也行：直接双击 `start-watch.bat`，连不上调试端口会自动拉起独立 profile 浏览器。
+
+启动后在浏览器里**登录评测平台**、打开题目页（或课堂实验列表页），再：
+
+- **`agent/start-watch.bat`** — 常驻监听，切到新题目页即自动作答。
+- **`agent/start-course.bat`** — 课程自动驾驶：遍历「课堂实验→板块→开始学习」逐关完成。
 
 首次接入新平台务必先跑 `npm run probe` 确认识别正确；识别不准用 `npm run dump` 导出页面结构再调规则。
 
@@ -39,9 +44,12 @@ cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_
 | `npm run watch` | **常驻监听**：切到新题目页就自动作答（推荐） |
 | `npm run once` | 只解当前这一题 |
 | `npm run run` | 连续解题，通过后自动翻页 |
+| `npm run course` | 课程自动驾驶：遍历「课堂实验→板块→开始学习」逐关完成 |
+| `npm run course-probe` | 只读诊断课程列表页识别（course 卡住时先跑） |
+| `npm run my-edge` | 重启"你自己的 Edge"并带调试端口（保留账号/历史） |
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
-| `npm run browser` | 命令行启动带调试端口的浏览器（某些环境下不持久，优先用 bat） |
+| `npm run browser` | 命令行启动带调试端口的浏览器（独立 profile） |
 
 ## 目录结构
 
@@ -49,8 +57,10 @@ cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_
 ├── agent/                    浏览器自动执行层（项目主体）
 │   ├── src/                  config / ai / browser / launch-browser / perceive / act / loop / cli
 │   ├── docs/                 TROUBLESHOOTING.md 问题排查手册
-│   ├── start-browser.bat     启动带调试端口的浏览器（双击）
+│   ├── start-my-edge.bat     重启"你自己的 Edge"并带调试端口（双击）
+│   ├── start-browser.bat     启动独立 profile 调试浏览器（双击）
 │   ├── start-watch.bat       启动常驻监听（双击）
+│   ├── start-course.bat      启动课程自动驾驶（双击）
 │   ├── .env.local            密钥与运行参数（已被 git 忽略）
 │   └── README.md             完整文档（配置项、工作流、已知限制）
 └── shared/capabilities/      AI prompt 单一数据源（4 个能力配置）
@@ -60,7 +70,7 @@ cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_
 
 ## 关键注意
 
-- **浏览器必须双击 bat 启动**：实测由 Agent 脚本 spawn 的浏览器会在命令结束时被一并终止。
+- **浏览器接入方式**：watch/course 连不上调试端口会自动拉起独立 profile 浏览器兜底；要接管"你自己的 Edge"（保留登录态）用 `start-my-edge.bat`——目录联接绕过 Edge 136+ 默认目录调试禁令，且必须先关闭运行中的实例。受限/沙箱执行环境里脚本拉起的浏览器活不过命令边界，此时用双击 bat 启动。
 - **调试端口避开 Windows 保留区间**：本机 9137-9236 被系统保留，默认用 9333，启动脚本会读 `netsh` 自动顺延。
 - **新平台先干跑**：`.env.local` 设 `DRY_RUN=1` 跑一轮，确认识别与生成正确后再关闭。
 - **合规**：自动提交作用于你的真实账号，是否违反目标平台使用条款请自行评估。
