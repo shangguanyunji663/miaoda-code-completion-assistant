@@ -20,8 +20,9 @@
 
 ### Notes
 
-- 自适应提示符判据、输入期报错检测、终端回显读取均经 CDP 只读探测对真实 xterm 结构验证（33 行回显、词间空格保真）；反思收敛率提升幅度待真机多题观察
-- 版本号维持 0.x；1.0 待端到端稳定性验证后发布
+- ✅ **端到端验证通过（2026-09-09 19:58，MongoDB 双实例 cmdline 题真机实测）**：`mkdir -p` → heredoc 写入带缩进配置（`ls -l` 确认 192×2 字节落盘）→ `mongod -f` fork 启动 → `ping` 连通 → 评测通过，修复后全链路一次跑通；此前连续三轮失败的 `cat >` 前缀咬字与缩进剥除两个断层均确认修复
+- 其余验证：全部源文件 `node --check` 与模块导入冒烟、命令解析器 13+6 用例回归全 PASS、结果面板标记与平台 Monaco 全局结构经 CDP 只读探测确认
+- 版本号维持 0.x；单题跑通 ≠ 统计性成功率，1.0 待更多题量持续稳定后发布
 
 ## [0.5.0] - 2026-09-09
 
@@ -29,6 +30,8 @@
 
 ### Fixed
 
+- **🔴 heredoc 正文缩进被剥（同日第二断层，MongoDB 双实例题实测）**：`parseCommandLines` 的 `l.trim()` 会剥掉每行行首缩进，heredoc 写入的 YAML 配置被拍成扁平键值对 → mongod 报 `Unrecognized option: enabled`。改为仅去行尾空白、保留行首缩进（注释过滤改用 trimStart 判定，缩进内注释仍按既有约定过滤）；`Unrecognized option` 加入输入期报错特征表
+- **🔴 命令解析器咬掉 `cat > ` 前缀（命令行题反复失败、反思永不收敛的最终根因）**：`parseCommandLines` 的 REPL 提示符剥离正则 `/^[\w.:@~-]+\s*[>#]\s+/` 把 `cat > file <<'EOF'` 误判为提示符形态，剥掉 `cat > ` 前缀后 `/etc/...` 被 bash 当程序执行 → `No such file or directory` → mongod 起不来 → Connection refused。因解析器是确定性缺陷，反思让 AI 重写 `cat >` 也会被再次咬掉——**反思在原理上无法收敛**。修复：提示符剥离按形态分别匹配（`user@host:#`、`bash-5.1#`、已知 REPL 名 `testdb>/mongo>/mysql>` 等词尾紧跟提示符字符），`cat > file`、`sort > out`、`echo a > b` 等重定向命令不再被误伤；顺带修正 `(x)>`/`(connect)>` 括号形态的正则缺口。13 用例回归全 PASS（含事故原始用例）
 - **推理模型 max_tokens 预算耗尽（lite 全链路失败的首要根因）**：AI_MODEL 换用推理模型（先输出 `reasoning_content` 再输出 `content`，思考与回答共享预算）后，意图路由 16 token 预算全被思考耗尽、`content` 恒空 → 确定性失败。`task_router_1` 16→8192，其余能力配置整体调大（quiz/cmdline 2048/4096→8192，代码生成/反思 8192→16384）；`classifyProblemIntent` 弃硬编码改读能力配置，消除参数双份漂移
 - **写入排版错乱（代码题作答失败主因）**：Monaco 的 formatOnPaste/autoIndent 会把 `insertText` 进来的预缩进 Python 逐行重排（阶梯状缩进 → 评测 IndentationError）。`writeEditorCode` 改为分层写入：优先编辑器/平台 API——CDP 实探发现平台把 monaco 命名空间暴露为大写 `window.Monaco`（另有平台自有设值入口 `window.updateMonacoValue`），命名空间按 `window.monaco ?? window.Monaco` 解析，逐级尝试 monaco/CM5 `setValue` → 平台 setter，键盘路径降为回退；每次写入后做「去空白逐字符相等」强验证。`AGENTS.md` / `agent/README.md` 写入约束同步改写
 - **评测结果面板误抓题干（60s 空等与"空结果"误报根因）**：题干区也含"测试说明/运行"等宽泛关键词且以长度优势在"取最长匹配块"启发式下稳定胜出，题干文本评测前后不变 → 判变化逻辑失效。`READ_EVAL_PANEL` 改为结果面板专属标记优先（`共有N组测试集` / `本关最大执行时间` / `测试结果`，含"任务描述"签名的题干块直接排除），旧关键词启发式降为兜底

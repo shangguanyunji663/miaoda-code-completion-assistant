@@ -404,15 +404,29 @@ export function parseCommandLines(text) {
   t = t.replace(/^```(?:sh|shell|bash|console)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
   return t
     .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#') && !l.startsWith('//'))
-    // 提示符兜底：剥 "(x)>" / "$ " / REPL 式「短词># 」行首（如 testdb> 、root@host:~#）。
-    // 「短词后紧跟空格再 > 」的重定向（echo a > b）不会被误伤：模式要求词后紧跟 #/>
+    // 只去行尾空白：行首缩进必须保留——heredoc 写 YAML/配置时缩进即语法，
+    // 上一版 l.trim() 把缩进剥成扁平键值对 → mongod 报 Unrecognized option
+    .map((l) => l.replace(/\s+$/, ''))
+    .filter((l) => {
+      const s = l.trim();
+      return s && !s.startsWith('#') && !s.startsWith('//');
+    })
+    // 提示符剥离（2026-09-09 修复）：旧通用式 /^[\w.:@~-]+\s*[>#]\s+/ 会把
+    // `cat > file <<'EOF'` 误判为 REPL 提示符，剥掉 "cat > " 前缀致写文件
+    // 命令全灭（-bash: …: No such file or directory），且反射重试永远复现
+    // ——解析器确定性缺陷是反思无法收敛的根因。现按提示符形态分别匹配，
+    // 一律要求提示符字符紧跟词尾（中间无空格），`cat > file`、`sort > out`
+    // 等重定向命令不再被误伤：
     .map((l) =>
       l
-        .replace(/^[($][#>]\s*/, '')
-        .replace(/^\$\s*/, '')
-        .replace(/^[\w.:@~-]+\s*[>#]\s+/, ''),
+        .replace(/^\([^)]*\)[>#]\s*/, '')                     // (x)> / (connect)> 括号形态
+        .replace(/^\$\s*/, '')                                // $ 提示符
+        .replace(/^[\w.:@~-]*@[\w.:@~-]*[#$]\s*/, '')         // user@host:# / user@host:$
+        .replace(/^(?:ba|z|da)?sh-\d[\d.]*[#$]\s*/, '')       // bash-5.1# / sh-4.4#
+        .replace(                                             // 已知 REPL 名（> 紧跟词尾，无空格）
+          /^(?:testdb|mongosh|mongo|mysql|redis-cli|redis|psql|neo4j|cypher-shell|hbase|influx|sqlite3?|duckdb)[>#]\s*/i,
+          '',
+        ),
     )
     .filter((l) => l.length > 0);
 }

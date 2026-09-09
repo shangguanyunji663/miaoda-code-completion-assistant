@@ -429,7 +429,7 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   // 输入期报错检测（2026-09-09 用户要求）：每条命令执行完做行级差分，
   // 新增回显行命中报错特征立即记录并打日志，随返回值交给反思材料
   const ERROR_PATTERN =
-    /(command not found|not found|No such file|SyntaxError|Syntax error|Error:|error:|exception|Traceback|refused|timed? ?out|无法识别|错误|失败)/i;
+    /(command not found|not found|No such file|SyntaxError|Syntax error|Error:|error:|exception|Traceback|refused|timed? ?out|Unrecognized option|无法识别|错误|失败)/i;
   let prevCount = 0;
   const termErrors = [];
   for (let ci = 0; ci < commands.length; ci++) {
