@@ -558,6 +558,85 @@ export async function dismissPassModal(page) {
 export async function ensureTaskPage(page) {
   const pattern = new RegExp(cfg.watch.taskUrlPattern);
   if (pattern.test(page.url())) {
+    // —— SPA 页内「实际输出」结果视图（v0.8 实测：URL 不变，工作区被顶掉，
+    //    0.7.0 的 URL 判据对此失效）——判据：编辑器与终端都不可见 + 页面
+    //    同时含「实际输出」「查看效果」。关闭尝试逐级降级，每步验证工作区
+    //    真实恢复（编辑器或终端重新可见）才算成功。
+    const st = await page
+      .evaluate(() => {
+        const vis = (el) => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+        const ed = document.querySelector('.monaco-editor');
+        const xt = document.querySelector('.xterm-screen');
+        const t = document.body ? document.body.innerText : '';
+        return {
+          workspace: (ed && vis(ed)) || (xt && vis(xt)),
+          inResultView: t.includes('实际输出') && t.includes('查看效果'),
+        };
+      })
+      .catch(() => ({ workspace: true, inResultView: false }));
+    if (st.inResultView && !st.workspace) {
+      let evidence = '';
+      try {
+        const t = await page.evaluate(() => (document.body ? document.body.innerText : ''));
+        if (t.trim()) evidence = t.trim().slice(-3000);
+      } catch {}
+      const workspaceBack = () =>
+        page
+          .evaluate(() => {
+            const vis = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            };
+            const ed = document.querySelector('.monaco-editor');
+            const xt = document.querySelector('.xterm-screen');
+            return (ed && vis(ed)) || (xt && vis(xt));
+          })
+          .catch(() => true);
+      // 尝试 1：⊗ 关闭（class 含 close/Close、位于页面上部的可见元素）
+      const closes = page.locator('[class*="close"], [class*="Close"]');
+      const n = await closes.count().catch(() => 0);
+      for (let k = 0; k < Math.min(n, 8); k++) {
+        const c = closes.nth(k);
+        if (!(await c.isVisible().catch(() => false))) continue;
+        const box = await c.boundingBox().catch(() => null);
+        if (!box || box.top > 300 || box.width > 80) continue;
+        if (!guard('关闭「实际输出」结果视图（关闭图标）')) break;
+        await c.click({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(600);
+        if (await workspaceBack()) {
+          log('已关闭「实际输出」结果视图，工作区已恢复');
+          return { page, navigated: false, evidence, resultViewClosed: true };
+        }
+      }
+      // 尝试 2：点「查看效果」（假设为视图开关）
+      const ck = page.getByText('查看效果', { exact: true }).first();
+      if (await ck.isVisible().catch(() => false)) {
+        if (guard('点击「查看效果」退出结果视图')) {
+          await ck.click({ timeout: 3000 }).catch(() => {});
+          await page.waitForTimeout(600);
+          if (await workspaceBack()) {
+            log('已通过「查看效果」退出结果视图，工作区已恢复');
+            return { page, navigated: false, evidence, resultViewClosed: true };
+          }
+        }
+      }
+      // 尝试 3：Escape 兜底
+      if (guard('Escape 退出结果视图')) {
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(500);
+        if (await workspaceBack()) {
+          log('已通过 Escape 退出结果视图，工作区已恢复');
+          return { page, navigated: false, evidence, resultViewClosed: true };
+        }
+      }
+      log('「实际输出」结果视图未能关闭，按当前页面继续');
+      return { page, navigated: false, evidence };
+    }
     return { page, navigated: false, evidence: '' };
   }
   // 已跳转：先抓结果页文本尾部作为反思证据，再返回题目页
