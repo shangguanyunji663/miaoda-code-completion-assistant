@@ -186,13 +186,15 @@ const READ_EVAL_PANEL = () => {
   let best = null;
   let bestLen = 0;
   // ① 结果标记优先：嵌套/长度上限放宽（展开的测试集嵌套深、文本长）；
-  //    含题干签名的候选直接排除（整页大容器与题干区都不会进结果）
+  //    含题干签名的候选直接排除（整页大容器与题干区都不会进结果）。
+  //    嵌套上限 60→500（2026-09-09 实测：成功面板"1/1 全部通过"挂在
+  //    深层容器里被 60 层上限排除，导致只抓到无判定词的页脚 → 误判未通过）
   for (const el of cands) {
     const t = (el.innerText ?? '').trim();
     if (t.length > 12000) continue;
     if (t.includes('任务描述')) continue;
     if (!RESULT_MARKER.test(t)) continue;
-    if (t.length > bestLen && el.querySelectorAll('div,section,pre').length < 60) {
+    if (t.length > bestLen && el.querySelectorAll('div,section,pre').length < 500) {
       bestLen = t.length;
       best = t;
     }

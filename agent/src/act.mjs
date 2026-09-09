@@ -120,6 +120,17 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
     }
   }
 
+  // 兜底信号（2026-09-09 实测新增）：「恭喜您通过本关」庆祝弹窗是平台的
+  // 权威通过宣告。若捕获文本未含成功词但弹窗在场（面板深层文本偶尔捕获
+  // 不全），把弹窗文本并入 best，detectVerdict 的「通过」兜底即可判过。
+  if (best && !/通过|成功|accepted/i.test(best)) {
+    const modal = page.getByText('恭喜您通过', { exact: false }).first();
+    if (await modal.isVisible().catch(() => false)) {
+      best = `${best}\n恭喜您通过本关`;
+      log('捕获文本无成功词，但检测到「恭喜您通过本关」弹窗，判为通过');
+    }
+  }
+
   if (!best) {
     log(
       `${Math.round(timeoutMs / 1000)}s 内未捕获到评测结果文本（提交本身可能已成功）。` +
@@ -413,10 +424,12 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   }
   // 逐 frame 找可见 xterm 终端（实测在主 frame，遍历以兼容 iframe 嵌入的站点）
   let target = null;
+  let targetFrame = null;
   for (const f of [page.mainFrame(), ...page.frames().filter((x) => x !== page.mainFrame())]) {
     const loc = f.locator('.xterm-screen').first();
     if (await loc.isVisible().catch(() => false)) {
       target = loc;
+      targetFrame = f;
       break;
     }
   }
@@ -424,6 +437,20 @@ export async function runTerminalCommands(page, commands, opts = {}) {
     log('未找到可见的 xterm 终端（.xterm-screen），无法键入命令');
     return { executed: 0, reason: 'terminal-not-found' };
   }
+
+  // 合成 paste 事件：对 xterm 隐藏 textarea（.xterm-helper-textarea）派发
+  // 带 clipboardData 的 paste——直达 xterm 粘贴管线，中文/Unicode 完整上屏。
+  // （2026-09-09 CDP 真机实测：keyboard.type 会把 CJK 丢成空串——name:""
+  // 事故根源；insertText 被 xterm 忽略；剪贴板 API/execCommand 在无用户
+  // 手势下写不进。合成 paste：中文+英文完整上屏。）
+  const XTERM_PASTE = (text) => {
+    const ta = document.querySelector('.xterm-helper-textarea');
+    if (!ta) return false;
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return true;
+  };
 
   await target.click({ timeout: 8000 }).catch(() => {}); // 聚焦终端
   // 输入期报错检测（2026-09-09 用户要求）：每条命令执行完做行级差分，
@@ -434,7 +461,18 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   const termErrors = [];
   for (let ci = 0; ci < commands.length; ci++) {
     const cmd = commands[ci];
-    await page.keyboard.type(cmd, { delay: typeDelay });
+    // 非 ASCII 行（中文文件名/数据值等）走合成 paste；纯 ASCII 仍走键盘
+    // 逐字符（快且稳）。合成 paste 失败回退 keyboard.type 并告警（该路径
+    // 中文会丢字，输入期报错检测会捕获后续异常）
+    if (/[^\x00-\x7F]/.test(cmd)) {
+      const pasted = await targetFrame.evaluate(XTERM_PASTE, cmd).catch(() => false);
+      if (!pasted) {
+        log(`命令 ${ci + 1} 合成粘贴失败，回退 keyboard.type（中文可能丢字）`);
+        await page.keyboard.type(cmd, { delay: typeDelay });
+      }
+    } else {
+      await page.keyboard.type(cmd, { delay: typeDelay });
+    }
     await page.keyboard.press('Enter');
     // 自适应等待：先给最短间隔让回显落定，再轮询提示符返回
     await page.waitForTimeout(gapMin);

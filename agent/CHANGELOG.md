@@ -6,6 +6,13 @@
 
 命令行题可靠性增强：终端证据全量入反思、键入提速、运维知识沉淀进提示词。与 0.5.0 同日迭代，均源于真机排障。
 
+### Fixed
+
+- **🔴 终端键入中文丢字（MongoDB 题 `name:""` 反思循环不收敛的执行层根因）**：`keyboard.type` 对 CJK 被 xterm 丢弃（实测 `insert {_id:1,name:"李小红"}` 落库为 `name:""`）——反思诊断正确但执行层每次都坏，原理上无法收敛。非 ASCII 行改走**合成 paste 事件**直入 xterm 粘贴管线（CDP 真机验证中文完整上屏，测试残留已清理）；备选链 insertText / 剪贴板 API / execCommand 均实测不可用，已记录在代码注释。合成粘贴失败时回退 keyboard.type 并告警
+- **🔴 通过判定漏报（评测成功却判"未命中任何成功信号"）**：成功面板的"1/1 全部通过"挂在深层容器，被标记路径 60 层嵌套上限排除，只抓到无判定词的页脚 → 保守误判未通过。标记路径嵌套上限放宽至 500（整页包裹器因含"任务描述"签名仍被排除）；`waitEvalResult` 新增兜底信号——捕获文本无成功词但页面出现「恭喜您通过本关」庆祝弹窗（平台权威通过宣告）时判为通过
+- **🔴 heredoc 正文缩进被剥（MongoDB 双实例题第二断层）**：`parseCommandLines` 的 `l.trim()` 剥掉行首缩进，heredoc 写入的 YAML 被拍成扁平键值对 → mongod 报 `Unrecognized option: enabled`。改为仅去行尾空白、保留行首缩进；`Unrecognized option` 加入输入期报错特征表
+- **🔴 命令解析器咬掉 `cat > ` 前缀（命令行题反复失败、反思永不收敛的最终根因）**：提示符剥离正则 `/^[\w.:@~-]+\s*[>#]\s+/` 把 `cat > file <<'EOF'` 误判为提示符形态，剥掉前缀后路径被 bash 当程序执行 → `No such file or directory`。按提示符形态分别匹配（`user@host:#`、`bash-5.1#`、已知 REPL 名 `testdb>/mongo>/mysql>` 等），重定向命令不再误伤；顺带修正 `(x)>` 括号形态缺口。13 用例回归全 PASS
+
 ### Changed
 
 - **自适应命令间隔**（替代固定 1200ms）：回车后轮询终端最后非空行，提示符（`#`/`$`/`>`）返回即下一条——快命令 ~200ms 放行，慢命令等输出滚完，前台阻塞类由 `TERMINAL_GAP_MAX_MS`（默认 2500）兜底；键速 25→10ms/字符。32 条快命令场景总耗时约 50s→15s
@@ -30,8 +37,6 @@
 
 ### Fixed
 
-- **🔴 heredoc 正文缩进被剥（同日第二断层，MongoDB 双实例题实测）**：`parseCommandLines` 的 `l.trim()` 会剥掉每行行首缩进，heredoc 写入的 YAML 配置被拍成扁平键值对 → mongod 报 `Unrecognized option: enabled`。改为仅去行尾空白、保留行首缩进（注释过滤改用 trimStart 判定，缩进内注释仍按既有约定过滤）；`Unrecognized option` 加入输入期报错特征表
-- **🔴 命令解析器咬掉 `cat > ` 前缀（命令行题反复失败、反思永不收敛的最终根因）**：`parseCommandLines` 的 REPL 提示符剥离正则 `/^[\w.:@~-]+\s*[>#]\s+/` 把 `cat > file <<'EOF'` 误判为提示符形态，剥掉 `cat > ` 前缀后 `/etc/...` 被 bash 当程序执行 → `No such file or directory` → mongod 起不来 → Connection refused。因解析器是确定性缺陷，反思让 AI 重写 `cat >` 也会被再次咬掉——**反思在原理上无法收敛**。修复：提示符剥离按形态分别匹配（`user@host:#`、`bash-5.1#`、已知 REPL 名 `testdb>/mongo>/mysql>` 等词尾紧跟提示符字符），`cat > file`、`sort > out`、`echo a > b` 等重定向命令不再被误伤；顺带修正 `(x)>`/`(connect)>` 括号形态的正则缺口。13 用例回归全 PASS（含事故原始用例）
 - **推理模型 max_tokens 预算耗尽（lite 全链路失败的首要根因）**：AI_MODEL 换用推理模型（先输出 `reasoning_content` 再输出 `content`，思考与回答共享预算）后，意图路由 16 token 预算全被思考耗尽、`content` 恒空 → 确定性失败。`task_router_1` 16→8192，其余能力配置整体调大（quiz/cmdline 2048/4096→8192，代码生成/反思 8192→16384）；`classifyProblemIntent` 弃硬编码改读能力配置，消除参数双份漂移
 - **写入排版错乱（代码题作答失败主因）**：Monaco 的 formatOnPaste/autoIndent 会把 `insertText` 进来的预缩进 Python 逐行重排（阶梯状缩进 → 评测 IndentationError）。`writeEditorCode` 改为分层写入：优先编辑器/平台 API——CDP 实探发现平台把 monaco 命名空间暴露为大写 `window.Monaco`（另有平台自有设值入口 `window.updateMonacoValue`），命名空间按 `window.monaco ?? window.Monaco` 解析，逐级尝试 monaco/CM5 `setValue` → 平台 setter，键盘路径降为回退；每次写入后做「去空白逐字符相等」强验证。`AGENTS.md` / `agent/README.md` 写入约束同步改写
 - **评测结果面板误抓题干（60s 空等与"空结果"误报根因）**：题干区也含"测试说明/运行"等宽泛关键词且以长度优势在"取最长匹配块"启发式下稳定胜出，题干文本评测前后不变 → 判变化逻辑失效。`READ_EVAL_PANEL` 改为结果面板专属标记优先（`共有N组测试集` / `本关最大执行时间` / `测试结果`，含"任务描述"签名的题干块直接排除），旧关键词启发式降为兜底
@@ -43,17 +48,10 @@
 ### Added
 
 - **评测失败差异增强**：新增 `collectTestSetDetails`（act.mjs）——失败后自动展开「测试集N」折叠块，结构化抓取预期输出 vs 实际输出（多 frame 扫描、防误折叠已展开块、剔除「展示原始输出」/页脚噪音、8 组×1200 字符上限）；代码题与命令行题的反思均携带
-- **命令行题反思可见全部终端显示**：新增 `readTerminalText`（perceive.mjs，按行 `textContent` 读 xterm `.xterm-rows`，词间空格保真——innerText 会丢空格），在反思时点抓取（评测等待期间终端持续滚动，此时抓取 = 本轮全部显示内容而非只输入的命令），以「终端回显（本轮全部显示内容）」（尾部 5000 字符）并入反思材料——REPL 语法错误、服务启动失败、连接被拒等只存在于终端的证据不再丢失
+- **命令行题反思可见终端回显**：新增 `readTerminalText`（perceive.mjs）——读取 xterm 终端回显并入命令行题反思材料，输入/执行期错误不再只留在终端里
 - **代码题反思携带实际提交代码**：`spliceIntoTemplate` 后的提交版（实际写入并评测的那份）作为 `previous_code` 传给反思，替代 AI 原始输出
 - **请求超时**：新增 `AI_TIMEOUT_MS`（默认 5 分钟），端点挂起按失败重试，loop 不再永久停摆
 - **生成期可观测性**：代码/命令生成前预告静默期（推理模型 1~3 分钟）、完成后输出耗时；写入日志标注写入方式（API/键盘）与回读验证结果
-- **通过后自动关闭庆祝弹窗**：新增 `dismissPassModal`（act.mjs）——评测通过且页面出现「恭喜您通过本关」弹窗时，依次尝试「完成」按钮 → ⊗ 关闭叉 → Escape 兜底（每步失败静默、遵循 DRY_RUN 守卫）；watch/lite/run/once 全模式覆盖，关闭后自然回到等待态（watch 等切换下一题、lite 等刷新），**导航权保留给用户**
-- **命令行提示词防御加固（高频失败类根治）**：`cmdline_runner_1` 新增生成期要求——写文件/建配置必须先 `mkdir -p` 父目录并 `ls` 验证、多行文件用单条 heredoc 写入（EOF 独占一行）、服务启动前配置与数据目录必须就绪、启动后紧跟连通/进程检查；`cmdline_reflection_fixer_1` 自查清单新增两条失败映射——`No such file or directory` → 父目录缺失先 mkdir 再写文件、`Connection refused` → 回查服务启动命令自身的报错（配置缺失 / dbPath 目录缺失）后再启动验证
-- **终端键入提速**：命令间隔从固定 1200ms 改为自适应——回车后轮询终端最后非空行、提示符（`#`/`$`/`>`）返回即下一条（快命令 ~200ms 放行，慢命令等输出滚完，上限 `TERMINAL_GAP_MAX_MS`=2500 兜底前台阻塞），键速 25→10ms/字符；32 条快命令场景总耗时约 50s→15s
-
-### Changed
-
-- `MAX_RETRY` 单题反思重试上限 2→10（用户配置；失败题最坏耗时与 token 消耗随重试线性放大，配合失败差异明细增强使用，让每轮反思有据可依而非盲试）
 
 ### Notes
 
