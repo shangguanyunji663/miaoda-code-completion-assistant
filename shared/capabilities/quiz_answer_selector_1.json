@@ -28,7 +28,7 @@
   },
   "formValue": {
     "modelParams": {
-      "maxTokens": 16384,
+      "maxTokens": 1024,
       "temperature": 0.2
     },
     "prompt": "你是一位严谨的技术考试作答助手。请根据题目内容给出正确答案。\n\n### 题目内容\n{{input.question}}\n\n### 选项列表\n{{input.options}}\n\n### 题型\n{{input.question_type}}\n\n### 输出要求\n1. 若题型为 choice：只输出你判定正确的那一个选项的**完整原文**（不要只输出 ABCD 字母，也不要输出解释）；若选项原文较长，也请原样完整输出\n2. 若题型为 blank：只输出填入空白处的内容本身，不要包含题号、引号或解释\n3. 严禁输出任何分析过程、理由说明、markdown 代码块标记或多余标点\n4. 若题目存在多个空，按出现顺序用换行分隔每个空的答案",
