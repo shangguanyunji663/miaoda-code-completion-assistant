@@ -1,7 +1,7 @@
 // EXPORTS: clickEval, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
 //          readTaskNo, waitTaskAdvance, clickExitTask, clickBackArrow,
 //          clickContinueChallenge, clickStartLearning, switchTaskTab, runTerminalCommands,
-//          collectTestSetDetails, dismissPassModal
+//          collectTestSetDetails, dismissPassModal, ensureTaskPage
 // 执行层：所有真实点击 / 输入动作。受 DRY_RUN 控制——干跑时只打日志不动页面。
 
 import { cfg } from './config.mjs';
@@ -542,6 +542,44 @@ export async function dismissPassModal(page) {
   await page.keyboard.press('Escape').catch(() => {});
   log('通过弹窗未找到关闭控件，已尝试 Escape');
   return { dismissed: false, reason: 'escape' };
+}
+
+/**
+ * 评测后确保回到题目页（v0.7.0，2026-09-09 用户新增）。
+ * 背景：有时首次评测提交后平台会跳转到全屏「实际输出」结果页，后续
+ * 反思/重试/再评测都必须回到题目页，此前只能用户手动返回。
+ * 流程：仍在题目页（URL 命中 taskUrlPattern）→ 原样返回零副作用；
+ * 不在 → 先抓结果页文本尾部作为反思证据，再 ① 在浏览器上下文中按
+ * 题目 URL 模式找回原题目页并 bringToFront，② 找不到则 goBack 后退；
+ * 两路都失败时原样返回（调用方按现有流程继续，并有日志提示）。
+ * @param {import('playwright-core').Page} page
+ * @returns {Promise<{page: import('playwright-core').Page, navigated: boolean, evidence: string}>}
+ */
+export async function ensureTaskPage(page) {
+  const pattern = new RegExp(cfg.watch.taskUrlPattern);
+  if (pattern.test(page.url())) {
+    return { page, navigated: false, evidence: '' };
+  }
+  // 已跳转：先抓结果页文本尾部作为反思证据，再返回题目页
+  let evidence = '';
+  try {
+    const t = await page.evaluate(() => document.body?.innerText ?? '');
+    if (t.trim()) evidence = t.trim().slice(-3000);
+  } catch {}
+  const back = page.context().pages().find((p) => pattern.test(p.url()));
+  if (back) {
+    await back.bringToFront().catch(() => {});
+    log('评测后平台跳转到结果页，已定位回原题目页');
+    return { page: back, navigated: true, evidence };
+  }
+  await page.goBack({ timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(800);
+  if (pattern.test(page.url())) {
+    log('评测后平台跳转到结果页，已后退返回原题目页');
+    return { page, navigated: true, evidence };
+  }
+  log(`未能返回原题目页（当前：${page.url().slice(0, 80)}），按当前页面继续`);
+  return { page, navigated: false, evidence };
 }
 
 /**

@@ -40,6 +40,7 @@ import {
   runTerminalCommands,
   collectTestSetDetails,
   dismissPassModal,
+  ensureTaskPage,
 } from './act.mjs';
 import {
   generateCode,
@@ -125,13 +126,13 @@ export async function solveOnce(page, probe) {
     let lastEval = '';
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
       if (cmds === null) {
-        // 生成期间无中间日志可打，必须提前预告静默期，否则推理模型 1~2 分钟
-        // 的思考+生成会被用户当成"卡死/不作答"。
-        log('正在调用 AI 生成命令…（推理模型先思考后作答，可能需要 1~2 分钟）');
+        // 生成期间无中间日志可打，必须提前预告静默期，否则推理模型
+        // 的思考+生成会被用户当成"卡死/不作答"。日志格式四处 AI 调用统一。
+        log(`正在调用 AI 生成命令（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
         const t0 = Date.now();
         cmds = await generateCommands({ problem });
         log(
-          `第 ${attempt} 次生成命令（${cmds.length} 条，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）：${cmds
+          `AI 生成命令完成（第 ${attempt} 次，${cmds.length} 条，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）：${cmds
             .slice(0, 4)
             .join(' ; ')
             .slice(0, 140)}`,
@@ -158,6 +159,13 @@ export async function solveOnce(page, probe) {
       const v = detectVerdict(lastEval);
       log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
       if (!v.passed) {
+        // v0.7.0：评测后平台可能跳转到全屏「实际输出」结果页——先抓证据、
+        // 返回题目页，再继续后续反思（此前需用户手动返回）
+        const nav = await ensureTaskPage(page);
+        if (nav.navigated) page = nav.page;
+        if (nav.evidence) {
+          lastEval = `${lastEval || ''}\n\n=== 评测结果页 ===\n${nav.evidence}`;
+        }
         // 失败差异增强：展开「测试集N」折叠块抓预期/实际明细喂给反思。
         // 没有差异证据的反思等于盲改（页面无该结构时返回空串，零影响）。
         const detail = await collectTestSetDetails(page);
@@ -187,11 +195,14 @@ export async function solveOnce(page, probe) {
       }
       if (attempt === cfg.loop.maxRetry) break;
 
+      log(`正在调用 AI 命令反思（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
+      const rt0 = Date.now();
       const fixed = await reflectCommands({
         problem,
         previousCommands: cmds,
         evalResult: lastEval || '（未捕获到评测输出，请对照任务要求自查命令）',
       });
+      log(`AI 命令反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
       if (fixed.analysis) log(`反思分析：${String(fixed.analysis).slice(0, 160)}`);
       if (!fixed.commands?.length) {
         log('反思未产出命令，终止本题');
@@ -217,14 +228,14 @@ export async function solveOnce(page, probe) {
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     if (code === null) {
       // 同命令行分支：预告静默期 + 统计耗时，消除"切完 tab 就没动静"的观感
-      log('正在调用 AI 生成代码…（推理模型先思考后作答，可能需要 1~3 分钟）');
+      log(`正在调用 AI 生成代码（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
       const t0 = Date.now();
       code = await generateCode({
         problem,
         codeTemplate: codeProbe.code ?? '',
       });
       log(
-        `第 ${attempt} 次生成代码（${code.length} 字符，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`,
+        `AI 生成代码完成（第 ${attempt} 次，${code.length} 字符，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`,
       );
     } else {
       log(`第 ${attempt} 次尝试（沿用反思后的代码，${code.length} 字符）`);
@@ -252,6 +263,12 @@ export async function solveOnce(page, probe) {
     log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
 
     if (!v.passed) {
+      // v0.7.0：评测后平台可能跳转到全屏结果页——抓证据、返回题目页再反思
+      const nav = await ensureTaskPage(page);
+      if (nav.navigated) page = nav.page;
+      if (nav.evidence) {
+        lastEval = `${lastEval || ''}\n\n=== 评测结果页 ===\n${nav.evidence}`;
+      }
       // 同命令行分支：失败时先抓「测试集N」预期/实际差异明细再反思
       const detail = await collectTestSetDetails(page);
       if (detail) {
@@ -267,12 +284,15 @@ export async function solveOnce(page, probe) {
 
     if (attempt === cfg.loop.maxRetry) break;
 
+    log(`正在调用 AI 代码反思（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
+    const rt0 = Date.now();
     const fixed = await reflectAndFix({
       problem,
       // 反思看的是实际提交评测的代码（模板拼接后、经写入验证的版本）
       previousCode: submitted,
       evalResult: lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）',
     });
+    log(`AI 代码反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
     if (fixed.analysis) log(`反思分析：${String(fixed.analysis).replace(/\s+/g, ' ').slice(0, 160)}`);
     if (!fixed.code) {
       log('反思未产出代码，终止本题');
