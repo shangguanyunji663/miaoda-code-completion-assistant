@@ -10,7 +10,7 @@
 |---|---|---|
 | AI 能力定义 | 仓库根 `shared/capabilities/*.json` | prompt 单一数据源，Agent 直接读取复用 |
 | 浏览器执行层 | 本目录 `agent/` | 感知页面、自动作答、点评测、翻页、反思循环 |
-| 用户入口 | `start-my-edge.bat` / `start-browser.bat` / `start-watch.bat` / `start-course.bat` | 用自己的 Edge 启动、独立 profile 启动、常驻监听、课程自动驾驶 |
+| 用户入口 | `start-my-edge.bat` / `start-browser.bat` / `start-watch.bat` / `start-lite.bat` / `start-course.bat` | 用自己的 Edge 启动、独立 profile 启动、常驻监听、刷新触发、课程自动驾驶 |
 
 ## 前置条件
 
@@ -53,6 +53,7 @@ npm run probe
 | `npm run once` | 只解当前这一题 |
 | `npm run run` | 连续解题，通过后自动点「下一关」翻页 |
 | `npm run watch` | **常驻监听**：切到新题目页就自动作答（推荐，导航权在你手里） |
+| `npm run lite` | **刷新触发**：刷新题目页即重新作答，同一题可反复重做（见下方专节） |
 | `npm run course` | **课程自动驾驶**：遍历「课堂实验→板块→开始学习」，逐关作答直至板块做完（见下方专节） |
 | `npm run course-probe` | 只读诊断课程列表页：打印识别到的板块/卡片并导出快照，**course 卡住时先跑这个** |
 | `npm run models` | 列出可用文本模型 |
@@ -69,7 +70,7 @@ npm run probe
 | `EDGE_PATH` / `BROWSER_PATH` | 浏览器路径，留空自动探测 | 自动 |
 | `TARGET_URL_HINT` | 评测页 URL 特征片段，多标签页时用于定位 | 留空取第一个 |
 | `AUTO_LAUNCH` | 连不上调试端口时自动拉起浏览器（独立 profile） | `1` |
-| `WATCH_POLL_MS` | watch：标签页轮询间隔 | `2000` |
+| `WATCH_POLL_MS` | watch/lite：标签页轮询间隔 | `2000` |
 | `TASK_URL_PATTERN` | 题目页 URL 正则（换平台改这里） | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `READY_TIMEOUT_MS` | 等题目区渲染完成的超时 | `15000` |
 | `MAX_RETRY` | 单题最大反思重试次数 | `2` |
@@ -91,8 +92,9 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
                                               通过 → 点击下一题 → 回到 probe
 ```
 
-- **题型自动分类**：`code`（检测到 Monaco/Ace/CodeMirror/textarea）、`choice`（检测到 radio/checkbox）、`blank`（文本输入框）
+- **题型自动分类**：选择题/填空题按结构信号识别（`choice` 检测到 radio/checkbox、`blank` 检测到文本输入框）；代码题与**命令行题**先读左侧题干做 **AI 意图判定**（`task_router_1`：`code` 写代码文件 / `cmdline` 敲命令），判定后自动切换到对应工作区 tab 再执行
 - **代码题**：生成 → 评测 → 失败则带着「题目 + 上一版代码 + 评测输出」反思修复 → 重评，最多 `MAX_RETRY` 次
+- **命令行题**（头歌类平台的数据库/运维任务）：生成命令序列 → 逐条真实键入 xterm 终端（每条回车，间隔 1.2s）→ 评测；未通过时由 `cmdline_reflection_fixer_1` 结合评测输出重新生成完整命令序列再重试
 - **选择题/填空题**：直接作答后评测；当前版本不做多轮反思
 
 ## 常驻监听模式（推荐用法）
@@ -112,6 +114,22 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 > 实测注意：CDP 连接下所有标签页的 `document.visibilityState` **全部返回
 > `visible`**，无法据此判断"用户正在看哪个标签"。因此改为遍历所有标签页 +
 > URL 去重的方案。
+
+## 刷新触发模式（lite）
+
+启动：`npm run lite`，或双击 `start-lite.bat`。
+
+- 程序**一直运行**，轮询所有标签页；**刷新任意题目页（F5）即重新自动作答**
+- 做题流程与 watch 完全一致：生成 → 评测 → 失败反思修复 → 重评（最多 `MAX_RETRY` 轮）
+- 与 watch 的区别：watch 按 URL 去重，同一题只做一次；**lite 每次刷新都重做**——
+  反思重试仍未通过时，F5 即可让 agent 换个思路重新完整做一遍
+- 同样**不替你点「下一关」**，导航权在你手里
+
+适用：想让 agent 自动重试同一道题（刷新 = 人工触发的重做），而不是自动翻页推进。
+
+实现说明：在页面 `window` 上注入 `__liteHandled` 标记，刷新会销毁执行环境、
+标记随之消失，轮询据此判定"这是一次新的刷新"。SPA 软导航不销毁 `window`，
+不会误触发。轮询间隔复用 `WATCH_POLL_MS`。
 
 ## 课程自动驾驶模式（course）
 

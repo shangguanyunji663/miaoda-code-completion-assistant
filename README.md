@@ -13,6 +13,7 @@
 | 评测 | 自动点击「评测」，等待结果，判定通过与否 |
 | 迭代 | 未通过 → 反思修复 → 重新评测，最多 `MAX_RETRY` 轮 |
 | 常驻 | `watch` 模式下你切到哪道题就做哪道题，**不替你点「下一关」**，导航权在你手里 |
+| 重做 | `lite` 模式下**刷新题目页即重新作答**——反思重试仍未通过时，F5 即可让 agent 重做一遍 |
 
 ## 快速开始（Windows）
 
@@ -32,6 +33,7 @@ cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_
 启动后在浏览器里**登录评测平台**、打开题目页（或课堂实验列表页），再：
 
 - **`agent/start-watch.bat`** — 常驻监听，切到新题目页即自动作答。
+- **`agent/start-lite.bat`** — 刷新触发：同一题刷新页面即重新作答（失败后 F5 重试）。
 - **`agent/start-course.bat`** — 课程自动驾驶：遍历「课堂实验→板块→开始学习」逐关完成。
 
 首次接入新平台务必先跑 `npm run probe` 确认识别正确；识别不准用 `npm run dump` 导出页面结构再调规则。
@@ -42,6 +44,7 @@ cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_
 |---|---|
 | `npm run probe` | 检查配置 + 页面识别情况（**首次必跑**） |
 | `npm run watch` | **常驻监听**：切到新题目页就自动作答（推荐） |
+| `npm run lite` | **刷新触发**：刷新题目页即重新作答，同一题可反复重做 |
 | `npm run once` | 只解当前这一题 |
 | `npm run run` | 连续解题，通过后自动翻页 |
 | `npm run course` | 课程自动驾驶：遍历「课堂实验→板块→开始学习」逐关完成 |
@@ -60,6 +63,7 @@ cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_
 │   ├── start-my-edge.bat     重启"你自己的 Edge"并带调试端口（双击）
 │   ├── start-browser.bat     启动独立 profile 调试浏览器（双击）
 │   ├── start-watch.bat       启动常驻监听（双击）
+│   ├── start-lite.bat        启动刷新触发模式（双击）
 │   ├── start-course.bat      启动课程自动驾驶（双击）
 │   ├── .env.local            密钥与运行参数（已被 git 忽略）
 │   └── README.md             完整文档（配置项、工作流、已知限制）

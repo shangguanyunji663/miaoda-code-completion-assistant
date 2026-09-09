@@ -286,6 +286,51 @@ export async function readEditorCode(page) {
 }
 
 /**
+ * 轮询等待可见的 xterm 终端出现（命令行 tab 激活后内容懒渲染）。
+ * 判定特征：.xterm-screen（xterm.js 标准结构，实测本平台为 DOM 渲染器，主 frame）。
+ * @returns {Promise<boolean>} 超时前出现返回 true
+ */
+export async function waitForTerminal(page, timeoutMs = 10000) {
+  const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const f of frames) {
+      const vis = await f
+        .locator('.xterm-screen')
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (vis) return true;
+    }
+    await page.waitForTimeout(400);
+  }
+  return false;
+}
+
+/**
+ * 轮询等待代码编辑器出现（代码文件 tab 激活后内容懒渲染）。
+ * 轻量实现：直接探编辑器 DOM 可见性，不做全页 probePage。
+ * @returns {Promise<boolean>} 超时前出现返回 true
+ */
+export async function waitForEditor(page, timeoutMs = 10000) {
+  const sel = '.monaco-editor, .ace_editor, .CodeMirror, .cm-editor, textarea';
+  const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const f of frames) {
+      const vis = await f
+        .locator(sel)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (vis) return true;
+    }
+    await page.waitForTimeout(400);
+  }
+  return false;
+}
+
+/**
  * 在页面上按文本查找可点击元素，返回 Playwright locator（未点击）
  * 按关键词顺序匹配，返回第一个命中的
  * @param {import('playwright-core').Page} page

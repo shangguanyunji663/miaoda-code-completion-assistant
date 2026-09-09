@@ -1,0 +1,31 @@
+{
+  "id": "task_router_1",
+  "pluginKey": "@official-plugins/ai-text-generate",
+  "pluginVersion": "1.0.21",
+  "name": "题干意图路由器",
+  "description": "根据任务描述判断评测题要求的工作方式：在代码文件中编写程序（code），还是在命令行终端执行命令（cmdline）",
+  "icon": "",
+  "paramsSchema": {
+    "type": "object",
+    "properties": {
+      "problem_description": {
+        "type": "string",
+        "description": "任务描述（左侧题目面板全文）"
+      }
+    },
+    "required": [
+      "problem_description"
+    ]
+  },
+  "formValue": {
+    "modelParams": {
+      "maxTokens": 16,
+      "temperature": 0
+    },
+    "prompt": "判定评测任务要求的工作方式。依据任务描述判断该题要求：\n- code：在代码文件中编写或补全程序代码（题干通常含代码模板、Begin/End 标记、函数实现、编程要求、源码文件等）\n- cmdline：在命令行终端执行命令完成操作（题干通常描述数据库 / 服务 / 文件系统的操作步骤，如连接数据库、创建库表、添加用户、启动服务、执行 shell 命令等，且往往说明评测环境为 Linux）\n\n### 任务描述\n{{input.problem_description}}\n\n### 输出要求\n只输出一个词：code 或 cmdline。不要任何解释、标点或多余内容。",
+    "modelID": "2015"
+  },
+  "createdAt": 1789003200000,
+  "updatedAt": 1789003200000,
+  "createdBy": 7575625665181912282
+}

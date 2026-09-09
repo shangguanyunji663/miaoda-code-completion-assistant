@@ -1,6 +1,6 @@
 {
   "name": "miaoda-coding-agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "浏览器自动化解题 Agent：感知评测页面 -> AI 生成/反思 -> 自动提交 -> 点评测 -> 成功翻页",
@@ -12,6 +12,7 @@
     "once": "node src/cli.mjs once",
     "run": "node src/cli.mjs run",
     "watch": "node src/cli.mjs watch",
+    "lite": "node src/cli.mjs lite",
     "course": "node src/cli.mjs course",
     "course-probe": "node src/cli.mjs course-probe",
     "models": "node src/cli.mjs models"

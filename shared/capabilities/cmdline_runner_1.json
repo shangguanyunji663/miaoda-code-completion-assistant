@@ -1,0 +1,35 @@
+{
+  "id": "cmdline_runner_1",
+  "pluginKey": "@official-plugins/ai-text-generate",
+  "pluginVersion": "1.0.21",
+  "name": "命令行任务执行器",
+  "description": "根据运维/数据库类任务描述，生成在交互终端中逐行执行的完整命令序列（含进入 mongo/redis-cli/mysql 等 REPL 及其子命令）",
+  "icon": "",
+  "paramsSchema": {
+    "type": "object",
+    "properties": {
+      "problem_description": {
+        "type": "string",
+        "description": "任务描述（左侧题目面板全文），包含目标、命名要求与测试说明"
+      },
+      "additional_requirements": {
+        "type": "string",
+        "description": "额外要求（可选）"
+      }
+    },
+    "required": [
+      "problem_description"
+    ]
+  },
+  "formValue": {
+    "modelParams": {
+      "maxTokens": 4096,
+      "temperature": 0.2
+    },
+    "prompt": "你是一位资深 Linux 运维工程师，精通数据库（MySQL / MongoDB / Redis / HBase / Neo4j）与常用开发工具的命令行操作。\n\n平台会在交互终端中把你输出的命令逐行执行（每行发送后自动回车）。请根据任务描述，输出完成该任务所需的完整命令序列。\n\n### 任务描述\n{{input.problem_description}}\n\n### 额外要求\n{{input.additional_requirements}}\n\n### 输出要求\n1. 只输出要执行的命令本身，每行一条、按执行顺序排列；不要任何解释、注释、markdown 代码围栏或终端提示符\n2. 若任务需要进入交互式命令行（如 mongo、redis-cli、mysql、psql、hbase shell、cypher-shell），先输出进入命令，再逐行输出其内部的子命令；如需退出 REPL 再执行后续命令，输出 exit / quit\n3. 命令必须完整可直接执行：包括必要的参数、引号、分号；库名 / 表名 / 集合名 / 用户名密码等一律严格取自任务描述，不得自拟\n4. 不要输出与任务无关的命令（不要随意 cd、cat 无关文件、重启服务）\n5. 若任务描述给出了验证方式（如 show dbs、查询语句），在完成主体操作后追加对应验证命令\n6. 任务描述若提示某环境已就绪（如\"MongoDB 安装与配置已完成\"），不要重复安装或启动服务",
+    "modelID": "2015"
+  },
+  "createdAt": 1789002600000,
+  "updatedAt": 1789002600000,
+  "createdBy": 7575625665181912282
+}

@@ -1,5 +1,6 @@
 // EXPORTS: chat, generateCode, reflectAndFix, extractCodeFromMarkdown,
-//          splitAnalysisAndCode, detectVerdict, listChatModels
+//          splitAnalysisAndCode, detectVerdict, listChatModels,
+//          classifyProblemIntent, generateCommands, reflectCommands, parseCommandLines
 // AI 调用层。
 // 设计要点：
 //   1. prompt 单一数据源 —— 直接读取仓库根 shared/capabilities/*.json 中的 prompt 模板，
@@ -335,4 +336,94 @@ export async function listChatModels() {
     .filter((m) => !otherSkip.test(m.id))
     .map((m) => m.id)
     .sort();
+}
+
+// ---- 命令行题（cmdline）：意图判定 / 命令生成 / 反思修复 ----
+
+/**
+ * 按题干内容判定任务意图（决定"写代码文件"还是"在命令行执行命令"）。
+ * 用户要求：以题干要求为准，而不是当前激活的 tab。
+ * @returns {Promise<'code'|'cmdline'>}
+ */
+export async function classifyProblemIntent({ problem }) {
+  const cap = readCapability('task_router_1');
+  const prompt = renderTemplate(cap.formValue.prompt, {
+    problem_description: problem,
+  });
+  const { content } = await chat([{ role: 'user', content: prompt }], {
+    temperature: 0,
+    maxTokens: 16,
+  });
+  // 只认 cmdline 为命令行；其余（code/无法解析/超长噪声）一律保守回落代码题
+  return /\bcmdline\b/i.test(content.trim()) ? 'cmdline' : 'code';
+}
+
+/** 解析命令序列输出：剥 markdown 围栏，跳过空行、注释行与提示符行。
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function parseCommandLines(text) {
+  let t = String(text ?? '').trim();
+  // 剥 ``` 围栏（宽容处理不配对的围栏）
+  t = t.replace(/^```(?:sh|shell|bash|console)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+  return t
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#') && !l.startsWith('//'))
+    // 提示符兜底：剥 "(x)>" / "$ " / REPL 式「短词># 」行首（如 testdb> 、root@host:~#）。
+    // 「短词后紧跟空格再 > 」的重定向（echo a > b）不会被误伤：模式要求词后紧跟 #/>
+    .map((l) =>
+      l
+        .replace(/^[($][#>]\s*/, '')
+        .replace(/^\$\s*/, '')
+        .replace(/^[\w.:@~-]+\s*[>#]\s+/, ''),
+    )
+    .filter((l) => l.length > 0);
+}
+
+/**
+ * 命令行题命令生成：复用 cmdline_runner_1 的 prompt 与参数
+ * @returns {Promise<string[]>} 按执行顺序排列的命令
+ */
+export async function generateCommands({ problem, extra = '' }) {
+  const cap = readCapability('cmdline_runner_1');
+  const prompt = renderTemplate(cap.formValue.prompt, {
+    problem_description: problem,
+    additional_requirements: extra,
+  });
+  const { content } = await chat([{ role: 'user', content: prompt }], {
+    temperature: cap.formValue?.modelParams?.temperature ?? 0.2,
+    maxTokens: cap.formValue?.modelParams?.maxTokens ?? 4096,
+  });
+  return parseCommandLines(content);
+}
+
+/**
+ * 命令行题反思修复：复用 cmdline_reflection_fixer_1 的 prompt 与参数
+ * @returns {Promise<{analysis: string, commands: string[]}>}
+ */
+export async function reflectCommands({ problem, previousCommands, evalResult }) {
+  const cap = readCapability('cmdline_reflection_fixer_1');
+  const prompt = renderTemplate(cap.formValue.prompt, {
+    problem_description: problem,
+    previous_commands: (previousCommands ?? []).join('\n'),
+    eval_result: evalResult,
+  });
+  const { content } = await chat([{ role: 'user', content: prompt }], {
+    temperature: cap.formValue?.modelParams?.temperature ?? 0.2,
+    maxTokens: cap.formValue?.modelParams?.maxTokens ?? 4096,
+  });
+  const lines = String(content ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  // 约定第一行为「分析: ...」，解析失败时整体当命令处理（分析行会被提示符过滤兜不住，故显式剥）
+  let analysis = '';
+  let body = lines;
+  if (lines.length && /^(分析|analysis)\s*[:：]/i.test(lines[0])) {
+    analysis = lines[0].replace(/^(分析|analysis)\s*[:：]\s*/i, '');
+    body = lines.slice(1);
+  }
+  const commands = parseCommandLines(body.join('\n'));
+  return { analysis, commands };
 }

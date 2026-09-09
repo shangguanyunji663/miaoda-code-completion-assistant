@@ -2,6 +2,23 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [0.4.0] - 2026-09-09
+
+### Added
+
+- **命令行题型支持（cmdline）**：面向头歌类平台的数据库/运维任务（右侧含「命令行」标签 + xterm 终端）。每次作答先读左侧题干，由 AI 意图路由器（`task_router_1`）按**题干内容**判定该题是写代码文件（code）还是敲命令行（cmdline）——判定依据与当前激活的 tab 无关，判定后自动切换到对应工作区
+- `ai.mjs` 新增 `classifyProblemIntent`（意图路由）、`generateCommands`（命令生成，`cmdline_runner_1`）、`reflectCommands`（命令行反思，`cmdline_reflection_fixer_1`）、`parseCommandLines`（剥 markdown 围栏 / 注释行 / `$` 与 REPL 提示符，含 `testdb>`、`root@host:~#` 形态，8 用例单测通过）
+- `act.mjs` 新增 `switchTaskTab`（切换「命令行/代码文件」标签，激活态自检跳过；结构依据真实 dump：`div[class*="item___"]` + 激活类 `active`）与 `runTerminalCommands`（真实键盘逐条键入 xterm，每条回车间隔 1.2s，遵循 DRY_RUN 守卫）
+- `perceive.mjs` 新增 `waitForTerminal` / `waitForEditor`（切 tab 后内容懒渲染的轻量轮询等待）
+- `loop.mjs` `solveOnce` 重构：选择题/填空题仍按结构信号直接作答；代码/命令行题统一先意图判定 → 切 tab → 分流执行，两分支均保留反思修正循环（`MAX_RETRY` 轮）；命令行 tab 激活时编辑器 DOM 不存在（懒渲染），原实现会误判走代码分支导致评测不匹配
+- 新增能力配置：`shared/capabilities/task_router_1.json`、`cmdline_runner_1.json`、`cmdline_reflection_fixer_1.json`（prompt 单一数据源约定不变）
+
+### Added（lite 刷新触发模式）
+
+- **刷新触发模式 `npm run lite`**（新增 `start-lite.bat` 双击入口，纯 ASCII）：常驻监听下**刷新任意题目页（F5）即重新自动作答**。做题流程与 watch 完全一致（生成 → 评测 → 失败反思修复 → 重评，最多 `MAX_RETRY` 轮），同样不替用户翻页
+- 与 watch 模式的核心区别：watch 按 URL 去重、同一题只做一次；lite 每次刷新都重做——反思重试仍未通过时，用户刷新页面即可让 agent 重新完整作答（刷新 = 人工触发的重做信号）
+- `loop.mjs` 新增 `liteLoop`：以 `window.__liteHandled` 注入标记检测页面刷新（刷新销毁执行环境、标记消失即触发；SPA 软导航不销毁 `window` 不会误触发），作答前先补标记防止同一轮询周期内重复触发；轮询间隔 / 题目 URL 模式 / 渲染超时复用 watch 的 `WATCH_POLL_MS` / `TASK_URL_PATTERN` / `READY_TIMEOUT_MS`，零新增配置
+
 ## [0.3.0] - 2026-09-09
 
 ### Added

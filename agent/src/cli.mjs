@@ -7,6 +7,7 @@
 //   once     只解当前这一题
 //   run      连续解题，成功后自动翻页
 //   watch    常驻监听，切到新题目页即自动作答
+//   lite     刷新触发模式：刷新题目页即自动重做（含反思修正循环，同一题可反复重做）
 //   course   课程自动驾驶：遍历「课堂实验→板块→开始学习」，逐关作答直至板块做完
 //   course-probe 只读诊断课程列表页识别结果（不点击），course 卡住时先跑这个
 //   models   列出可用文本模型
@@ -21,7 +22,7 @@ import {
   collectCardCandidates,
   dumpCourseProbe,
 } from './perceive.mjs';
-import { runLoop, watchLoop, courseLoop } from './loop.mjs';
+import { runLoop, watchLoop, liteLoop, courseLoop } from './loop.mjs';
 import { listChatModels } from './ai.mjs';
 import { launchBrowser, resolveBrowserPath, launchMyEdge } from './launch-browser.mjs';
 
@@ -112,6 +113,13 @@ async function main() {
       return;
     }
 
+    case 'lite': {
+      assertAiReady();
+      // 刷新触发模式：常驻运行；刷新题目页即重做，失败后刷新即可再试
+      await liteLoop();
+      return;
+    }
+
     case 'course': {
       assertAiReady();
       // 课程自动驾驶：需先在该浏览器打开「课堂实验」列表页
@@ -158,7 +166,7 @@ async function main() {
 
     default:
       console.log(`未知命令：${cmd}`);
-      console.log('可用：browser | my-edge | probe | dump | once | run | watch | course | course-probe | models');
+      console.log('可用：browser | my-edge | probe | dump | once | run | watch | lite | course | course-probe | models');
       process.exitCode = 1;
   }
 }

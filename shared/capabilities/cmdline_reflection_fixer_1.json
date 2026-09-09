@@ -1,0 +1,41 @@
+{
+  "id": "cmdline_reflection_fixer_1",
+  "pluginKey": "@official-plugins/ai-text-generate",
+  "pluginVersion": "1.0.21",
+  "name": "命令行反思修复器",
+  "description": "命令行任务评测未通过时，根据任务描述、已执行命令与评测输出分析失败原因，重新给出完整命令序列",
+  "icon": "",
+  "paramsSchema": {
+    "type": "object",
+    "properties": {
+      "problem_description": {
+        "type": "string",
+        "description": "任务描述（左侧题目面板全文）"
+      },
+      "previous_commands": {
+        "type": "string",
+        "description": "上一轮已执行的命令序列（每行一条）"
+      },
+      "eval_result": {
+        "type": "string",
+        "description": "平台评测输出的文本"
+      }
+    },
+    "required": [
+      "problem_description",
+      "previous_commands",
+      "eval_result"
+    ]
+  },
+  "formValue": {
+    "modelParams": {
+      "maxTokens": 4096,
+      "temperature": 0.2
+    },
+    "prompt": "你是一位资深 Linux 运维工程师。刚才在交互终端执行的命令未通过平台评测，请分析原因并重新给出完整命令序列。\n\n### 任务描述\n{{input.problem_description}}\n\n### 上一轮已执行的命令（按顺序）\n{{input.previous_commands}}\n\n### 平台评测输出\n{{input.eval_result}}\n\n### 要求\n1. 第一行输出失败分析，格式严格为：分析: <一句话原因>\n2. 从第二行起，重新输出完成任务的完整命令序列（含需要重新执行的命令），每行一条、按执行顺序排列\n3. 常见失败原因自查：命令拼错或参数不全；库名 / 表名 / 集合名 / 用户名密码与任务描述不一致；该进入交互式命令行（mongo、redis-cli、mysql 等）却直接执行了子命令，或进入后忘了逐条执行子命令；操作对象已存在需先删除；验证命令缺失\n4. 除第一行分析外只输出命令本身，不要注释、markdown 围栏或终端提示符",
+    "modelID": "2015"
+  },
+  "createdAt": 1789003200000,
+  "updatedAt": 1789003200000,
+  "createdBy": 7575625665181912282
+}

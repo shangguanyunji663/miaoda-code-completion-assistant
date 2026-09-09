@@ -1,6 +1,6 @@
 // EXPORTS: clickEval, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
 //          readTaskNo, waitTaskAdvance, clickExitTask, clickBackArrow,
-//          clickContinueChallenge, clickStartLearning
+//          clickContinueChallenge, clickStartLearning, switchTaskTab, runTerminalCommands
 // 执行层：所有真实点击 / 输入动作。受 DRY_RUN 控制——干跑时只打日志不动页面。
 
 import { cfg } from './config.mjs';
@@ -329,4 +329,86 @@ export async function clickStartLearning(page, index) {
   }
   log(`「开始学习」#${index + 1} 标记丢失（页面可能已重渲染），下一轮会重新采集`);
   return { clicked: false };
+}
+
+/**
+ * 切换右侧工作区标签（「命令行」/「代码文件」），按题干意图分流后调用。
+ * 结构依据 2026-09-09 真实页面 dump：标签项为 div[class*="item___"]（CSS modules
+ * 哈希前缀稳定），内含 <span>命令行</span> / <span>代码文件</span>，激活态类含 active。
+ * 已激活时不动页面，直接返回。
+ * @param {import('playwright-core').Page} page
+ * @param {string} tabText '命令行' | '代码文件'
+ * @returns {Promise<{clicked: boolean, active: boolean, found: boolean}>}
+ */
+export async function switchTaskTab(page, tabText) {
+  const sel = '[class*="item___"]';
+  let target = page.locator(sel, { hasText: tabText }).first();
+  if (!(await target.isVisible().catch(() => false))) {
+    // 退化：非 CSS modules 结构的站点，退回精确文本节点本身
+    target = page.getByText(tabText, { exact: true }).first();
+  }
+  if (!(await target.isVisible().catch(() => false))) {
+    log(`未找到「${tabText}」标签（可能该平台无此结构）`);
+    return { clicked: false, active: false, found: false };
+  }
+
+  // 激活态判定：目标项自身 class 含 active（激活项无需点击）
+  const cls = (await target.getAttribute('class').catch(() => '')) ?? '';
+  if (/active/i.test(cls)) {
+    return { clicked: false, active: true, found: true };
+  }
+  // 激活类可能挂在子 span 上，再看一眼内部
+  const innerActive = await target
+    .locator('[class*="active"]')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (innerActive) {
+    return { clicked: false, active: true, found: true };
+  }
+
+  if (!guard(`切换标签「${tabText}」`)) {
+    return { clicked: false, active: false, found: true };
+  }
+  await target.click({ timeout: 8000 }).catch(() => {});
+  log(`已切换到「${tabText}」标签`);
+  return { clicked: true, active: true, found: true };
+}
+
+/**
+ * 向 xterm 终端逐条键入命令（每条后回车）。
+ * 写入方式遵循项目约束：真实键盘输入（type 逐字符触发 xterm 的 keydown 捕获），
+ * 不改 DOM。执行间隙留出命令运行时间（数据库类命令可能较慢）。
+ * @param {import('playwright-core').Page} page
+ * @param {string[]} commands 按执行顺序的命令列表
+ * @param {{gapMs?: number}} opts 每条命令后的等待，默认 1200ms
+ * @returns {Promise<{executed: number, dryRun?: boolean, reason?: string}>}
+ */
+export async function runTerminalCommands(page, commands, opts = {}) {
+  const gapMs = opts.gapMs ?? 1200;
+  if (!guard(`终端键入 ${commands.length} 条命令`)) {
+    return { executed: 0, dryRun: true };
+  }
+  // 逐 frame 找可见 xterm 终端（实测在主 frame，遍历以兼容 iframe 嵌入的站点）
+  let target = null;
+  for (const f of [page.mainFrame(), ...page.frames().filter((x) => x !== page.mainFrame())]) {
+    const loc = f.locator('.xterm-screen').first();
+    if (await loc.isVisible().catch(() => false)) {
+      target = loc;
+      break;
+    }
+  }
+  if (!target) {
+    log('未找到可见的 xterm 终端（.xterm-screen），无法键入命令');
+    return { executed: 0, reason: 'terminal-not-found' };
+  }
+
+  await target.click({ timeout: 8000 }).catch(() => {}); // 聚焦终端
+  for (const cmd of commands) {
+    await page.keyboard.type(cmd, { delay: 25 });
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(gapMs);
+  }
+  log(`已向终端键入 ${commands.length} 条命令（每条间隔 ${gapMs}ms）`);
+  return { executed: commands.length };
 }

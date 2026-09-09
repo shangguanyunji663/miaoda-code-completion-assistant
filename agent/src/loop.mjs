@@ -1,9 +1,12 @@
-// EXPORTS: solveOnce, runLoop, watchLoop, courseLoop
-// 主编排：感知 → 生成/作答 → 提交评测 → 读结果 → 失败反思 → 成功翻页。
+// EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop
+// 主编排：感知 → 意图判定 → 生成/作答 → 提交评测 → 读结果 → 失败反思 → 成功翻页。
 //
-// 单题流程（代码题）：
-//   probe → generateCode → writeEditor → settle → clickEval → waitResult
-//        → passed? 结束 : reflectAndFix → 回到 writeEditor（最多 MAX_RETRY 次）
+// 单题流程（代码题 / 命令行题，按题干意图分流）：
+//   probe → classifyProblemIntent(题干) → 切换到对应工作区（命令行 / 代码文件）
+//     code:    generateCode → writeEditor → settle → clickEval → waitResult
+//              → passed? 结束 : reflectAndFix → 回到 writeEditor（最多 MAX_RETRY 次）
+//     cmdline: generateCommands → 逐条键入 xterm → settle → clickEval → waitResult
+//              → passed? 结束 : reflectCommands → 重新键入（最多 MAX_RETRY 次）
 // 选择题 / 填空题走 answerQuestion 分支，题型由 perceive.classifyTask 判定。
 
 import { cfg } from './config.mjs';
@@ -15,6 +18,8 @@ import {
   collectSections,
   collectCardCandidates,
   dumpCourseProbe,
+  waitForTerminal,
+  waitForEditor,
 } from './perceive.mjs';
 import {
   clickEval,
@@ -30,13 +35,28 @@ import {
   clickBackArrow,
   clickContinueChallenge,
   clickStartLearning,
+  switchTaskTab,
+  runTerminalCommands,
 } from './act.mjs';
-import { generateCode, reflectAndFix, answerQuestion, answerBatch, detectVerdict, spliceIntoTemplate } from './ai.mjs';
+import {
+  generateCode,
+  reflectAndFix,
+  answerQuestion,
+  answerBatch,
+  detectVerdict,
+  spliceIntoTemplate,
+  classifyProblemIntent,
+  generateCommands,
+  reflectCommands,
+} from './ai.mjs';
 
 const log = (m) => console.log(`[loop] ${m}`);
 
 /**
- * 解当前页面这一道题
+ * 解当前页面这一道题。
+ * 选择/填空题按结构信号直接作答；代码题与命令行题先按题干内容做 AI 意图判定
+ * （classifyProblemIntent），再自动切到对应工作区（代码文件 / 命令行）执行，
+ * 两条分支均含反思修正循环（最多 cfg.loop.maxRetry 轮）。
  * @param {import('playwright-core').Page} page
  * @param {object} probe probePage 的结果
  */
@@ -80,7 +100,81 @@ export async function solveOnce(page, probe) {
     return { ok: v.passed, kind, verdict: v, evalText: ev };
   }
 
-  // ---- 代码题：生成 → 评测 → 反思循环 ----
+  // ---- 代码题 / 命令行题：先读题干判意图，再分流到对应工作区 ----
+  // 判定依据是题干要求本身（AI 意图路由），而非当前激活的 tab；
+  // 判定后若工作区 tab 不符则自动切换（命令行 / 代码文件）。
+  const intent = await classifyProblemIntent({ problem });
+  log(`题干意图判定：${intent === 'cmdline' ? '命令行操作（cmdline）' : '代码编写（code）'}`);
+
+  if (intent === 'cmdline') {
+    const tab = await switchTaskTab(page, '命令行');
+    if (tab.found && tab.clicked) await settle(page);
+    if (!(await waitForTerminal(page))) {
+      log('命令行终端未在超时内出现，终止本题（可 npm run dump 检查页面）');
+      return { ok: false, kind: 'cmdline', reason: 'no-terminal' };
+    }
+
+    let cmds = null;
+    let lastEval = '';
+    for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
+      if (cmds === null) {
+        cmds = await generateCommands({ problem });
+        log(
+          `第 ${attempt} 次生成命令（${cmds.length} 条）：${cmds
+            .slice(0, 4)
+            .join(' ; ')
+            .slice(0, 140)}`,
+        );
+        if (!cmds.length) {
+          log('生成命令为空，终止本题');
+          return { ok: false, kind: 'cmdline', reason: 'empty-commands' };
+        }
+      }
+
+      const r = await runTerminalCommands(page, cmds);
+      if (!r.executed) {
+        log('终端键入失败，终止本题');
+        return { ok: false, kind: 'cmdline', reason: r.reason ?? 'terminal-input-failed' };
+      }
+      await settle(page);
+
+      const clicked = await clickEval(page);
+      if (!clicked.clicked) {
+        log('未找到评测按钮，终止本题');
+        return { ok: false, kind: 'cmdline', reason: 'no-eval-button' };
+      }
+      lastEval = await waitEvalResult(page);
+      const v = detectVerdict(lastEval);
+      log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
+      if (v.passed) {
+        return { ok: true, kind: 'cmdline', attempts: attempt, verdict: v, commands: cmds };
+      }
+      if (attempt === cfg.loop.maxRetry) break;
+
+      const fixed = await reflectCommands({
+        problem,
+        previousCommands: cmds,
+        evalResult: lastEval || '（未捕获到评测输出，请对照任务要求自查命令）',
+      });
+      if (fixed.analysis) log(`反思分析：${String(fixed.analysis).slice(0, 160)}`);
+      if (!fixed.commands?.length) {
+        log('反思未产出命令，终止本题');
+        break;
+      }
+      cmds = fixed.commands;
+    }
+    return { ok: false, kind: 'cmdline', evalText: lastEval };
+  }
+
+  // ---- 代码题：确保「代码文件」工作区激活后，生成 → 评测 → 反思循环 ----
+  const tab = await switchTaskTab(page, '代码文件');
+  if (tab.found && tab.clicked) await settle(page);
+  if (!(await waitForEditor(page))) {
+    log('代码编辑器未在超时内出现，终止本题');
+    return { ok: false, kind: 'code', reason: 'no-editor' };
+  }
+  const codeProbe = await probePage(page); // 切 tab 后重新探测，拿最新模板
+
   let code = null;
   let lastEval = '';
 
@@ -88,7 +182,7 @@ export async function solveOnce(page, probe) {
     if (code === null) {
       code = await generateCode({
         problem,
-        codeTemplate: probe.code ?? '',
+        codeTemplate: codeProbe.code ?? '',
       });
       log(`第 ${attempt} 次生成代码（${code.length} 字符）`);
     } else {
@@ -97,16 +191,16 @@ export async function solveOnce(page, probe) {
 
     if (!code || !code.trim()) {
       log('生成代码为空，终止本题');
-      return { ok: false, kind, reason: 'empty-code' };
+      return { ok: false, kind: 'code', reason: 'empty-code' };
     }
 
-    await writeEditorCode(page, spliceIntoTemplate(probe.code, code));
+    await writeEditorCode(page, spliceIntoTemplate(codeProbe.code, code));
     await settle(page);
 
     const clicked = await clickEval(page);
     if (!clicked.clicked) {
       log('未找到评测按钮，终止本题');
-      return { ok: false, kind, reason: 'no-eval-button' };
+      return { ok: false, kind: 'code', reason: 'no-eval-button' };
     }
 
     lastEval = await waitEvalResult(page);
@@ -114,7 +208,7 @@ export async function solveOnce(page, probe) {
     log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
 
     if (v.passed) {
-      return { ok: true, kind, attempts: attempt, verdict: v, code };
+      return { ok: true, kind: 'code', attempts: attempt, verdict: v, code };
     }
 
     if (attempt === cfg.loop.maxRetry) break;
@@ -132,7 +226,7 @@ export async function solveOnce(page, probe) {
     code = fixed.code;
   }
 
-  return { ok: false, kind, attempts: cfg.loop.maxRetry, evalText: lastEval };
+  return { ok: false, kind: 'code', attempts: cfg.loop.maxRetry, evalText: lastEval };
 }
 
 /**
@@ -297,6 +391,85 @@ export async function watchLoop() {
         }
       } catch (e) {
         log(`轮询异常：${e.message}`);
+      }
+    }
+    await new Promise((r) => setTimeout(r, cfg.watch.pollMs));
+  }
+}
+
+/**
+ * 刷新触发（lite）模式：常驻监听，用户刷新题目页即重新自动作答。
+ *
+ * 与 watch 的区别：watch 按 URL 去重，同一题 URL 只做一次，刷新同页不重触发；
+ * lite 以「页面刷新」为触发信号——当反思修正循环仍未能通过时，用户 F5 刷新
+ * 即可让 agent 重新完整做一遍（生成 → 评测 → 反思修正循环，与 watch 同一套
+ * solveOnce 流程）。只做题、不翻页，导航权始终在用户手里。
+ *
+ * 触发实现：在页面 window 上注入 __liteHandled 标记；刷新会销毁执行环境，
+ * 标记随之消失，轮询发现「URL 匹配题目页 && 标记不存在」即触发一轮作答，
+ * 作答开始前先补标记防止同一轮询周期内重复触发。SPA 软导航不销毁 window，
+ * 不会误触发。
+ */
+export async function liteLoop() {
+  const { browser, context } = await connectBrowser();
+  log('刷新触发模式已启动：刷新任意题目页即自动重做（Ctrl+C 退出）');
+  log(`轮询间隔 ${cfg.watch.pollMs}ms，题目页 URL 模式 ${cfg.watch.taskUrlPattern}`);
+
+  let busy = false;
+  let solved = 0;
+  let rounds = 0;
+
+  const shutdown = async () => {
+    log(`正在退出，本次累计作答 ${rounds} 轮，通过 ${solved} 题`);
+    await browser.close().catch(() => {});
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  const markHandled = (page) =>
+    page.evaluate(() => {
+      window.__liteHandled = true;
+    }).catch(() => {});
+
+  const isFresh = (page) =>
+    page
+      .evaluate(() => !window.__liteHandled)
+      .catch(() => false);
+
+  while (true) {
+    if (!busy) {
+      for (const page of context.pages()) {
+        if (busy) break;
+        let key = null;
+        try {
+          key = taskKey(page.url());
+        } catch {
+          continue; // 页面可能已关闭或正在销毁
+        }
+        if (!key) continue;
+        if (!(await isFresh(page))) continue;
+
+        busy = true;
+        try {
+          await markHandled(page); // 先打标，防止同一轮询周期内重复触发
+          log(`检测到题目页刷新：${key}`);
+          await page.waitForLoadState('domcontentloaded').catch(() => {});
+          if (!(await waitTaskReady(page))) {
+            log('题目区未在超时内渲染，跳过本轮（可执行 npm run dump 检查页面结构）');
+          } else {
+            const probe = await probePage(page);
+            const r = await solveOnce(page, probe);
+            rounds++;
+            if (r?.ok) solved++;
+            log(`本轮结束：${r?.ok ? '通过' : '未通过'}（累计作答 ${rounds} 轮，通过 ${solved}）`);
+            if (!r?.ok) log('提示：反思重试已用尽仍未通过，刷新本页可让 agent 重新完整作答');
+          }
+        } catch (e) {
+          log(`处理异常：${e.message}`);
+        } finally {
+          busy = false;
+        }
       }
     }
     await new Promise((r) => setTimeout(r, cfg.watch.pollMs));
