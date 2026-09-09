@@ -1,6 +1,6 @@
 # 编程题自动解题 Agent
 
-连接你已登录的浏览器，自动读取评测网页上的题目，AI 生成答案后自动填入编辑器 / 勾选选项、自动点击评测；未通过则带着「题目 + 上一版代码 + 评测输出」反思修复后重评，直至通过。
+连接你已登录的浏览器，自动读取评测网页上的题目，AI 生成答案后自动填入编辑器 / 勾选选项 / 键入命令行、自动点击评测；未通过则带着「题目 + 上一版产物 + 评测输出」反思修复后重评，直至通过。
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
@@ -8,57 +8,99 @@
 
 | 环节 | 行为 |
 |---|---|
-| 感知 | 提取题干、自动判别题型（代码 / 选择 / 填空）、定位编辑器与按钮 |
-| 作答 | 代码题用键盘写入编辑器（触发平台自动保存）；选择题/填空题批量勾选填入 |
+| 感知 | 提取题干，按题干内容判别任务类型（**代码题 / 命令行题 / 选择 / 填空**），定位编辑器、终端与按钮 |
+| 作答 | 代码题用键盘写入编辑器（触发平台自动保存）；命令行题逐条键入 xterm 终端并回车；选择题/填空题批量勾选填入 |
 | 评测 | 自动点击「评测」，等待结果，判定通过与否 |
-| 迭代 | 未通过 → 反思修复 → 重新评测，最多 `MAX_RETRY` 轮 |
-| 常驻 | `watch` 模式下你切到哪道题就做哪道题，**不替你点「下一关」**，导航权在你手里 |
-| 重做 | `lite` 模式下**刷新题目页即重新作答**——反思重试仍未通过时，F5 即可让 agent 重做一遍 |
+| 迭代 | 未通过 → 反思修复（代码或命令序列）→ 重新评测，最多 `MAX_RETRY` 轮 |
+| 常驻 | `watch` / `lite` 模式下**不替你点「下一关」**，导航权始终在你手里 |
 
 ## 快速开始（Windows）
 
+**第 1 步 · 首次配置（只需一次）**
+
 ```bash
 cd agent
-npm install                      # 只需一次，依赖仅 playwright-core
-
-cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_KEY / AI_MODEL
+npm install                      # 依赖仅 playwright-core
+cp .env.example .env.local       # 编辑 .env.local，填三项：
+                                 #   AI_BASE_URL / AI_API_KEY / AI_MODEL
 ```
 
-然后启动浏览器（三选一）：
+**第 2 步 · 启动带调试端口的浏览器（三选一）**
 
-1. **`agent/start-my-edge.bat`** — 重启**你自己的 Edge**并带调试端口（账号/历史/插件全保留；会先关闭正在运行的 Edge，3 秒倒计时）。日常推荐。
-2. **`agent/start-browser.bat`** — 以全新独立 profile + 调试端口启动（首次需在该窗口重新登录各平台）。
-3. 不手动启动也行：直接双击 `start-watch.bat`，连不上调试端口会自动拉起独立 profile 浏览器。
+| 方式 | 双击 | 说明 |
+|---|---|---|
+| 自己的 Edge（日常推荐） | `agent/start-my-edge.bat` | 账号/历史/插件全保留；会先关闭运行中的 Edge（3 秒倒计时） |
+| 全新独立 profile | `agent/start-browser.bat` | 首次需在该窗口重新登录各平台 |
+| 不手动启动 | 直接双击任意模式 bat | 连不上调试端口时自动拉起独立 profile 浏览器 |
 
-启动后在浏览器里**登录评测平台**、打开题目页（或课堂实验列表页），再：
+**第 3 步 · 在浏览器里登录评测平台并打开题目页，然后选一个模式启动**
 
-- **`agent/start-watch.bat`** — 常驻监听，切到新题目页即自动作答。
-- **`agent/start-lite.bat`** — 刷新触发：同一题刷新页面即重新作答（失败后 F5 重试）。
-- **`agent/start-course.bat`** — 课程自动驾驶：遍历「课堂实验→板块→开始学习」逐关完成。
+| 你想要 | 双击入口 | 或命令（`agent/` 下） |
+|---|---|---|
+| 挂着不管，切到哪题做哪题 | `start-watch.bat` | `npm run watch` |
+| 同一题反复重做（失败按 F5 重试） | `start-lite.bat` | `npm run lite` |
+| 整门课自动刷完 | `start-course.bat` | `npm run course` |
+| 只做当前这一题 | — | `npm run once` |
+| 连续解题自动翻页 | — | `npm run run` |
 
-首次接入新平台务必先跑 `npm run probe` 确认识别正确；识别不准用 `npm run dump` 导出页面结构再调规则。
+> 首次接入新平台：先 `npm run probe` 确认识别正确（或在 `.env.local` 设 `DRY_RUN=1` 干跑一轮）；识别不准用 `npm run dump` 导出页面结构再调规则。
 
-## 命令（均在 `agent/` 下执行）
+## 模式怎么选
+
+| 模式 | 触发方式 | 适合场景 |
+|---|---|---|
+| `watch` | 你**切换**到新题目页 | 边做边学，agent 陪跑；同一题只做一次 |
+| `lite` | 你**刷新**当前题目页 | 反思重试仍失败时，F5 让 agent 换思路重做；同一题可反复 |
+| `run` | 自动连续 + 自动翻页 | 不想管，一口气刷完一个章节 |
+| `course` | 全自动遍历课程结构 | 从「课堂实验」列表开始整门课自动完成 |
+| `once` | 只执行一次 | 快速验证单题识别与生成是否正确 |
+
+## 命令速查（均在 `agent/` 下执行）
 
 | 命令 | 作用 |
 |---|---|
-| `npm run probe` | 检查配置 + 页面识别情况（**首次必跑**） |
-| `npm run watch` | **常驻监听**：切到新题目页就自动作答（推荐） |
-| `npm run lite` | **刷新触发**：刷新题目页即重新作答，同一题可反复重做 |
-| `npm run once` | 只解当前这一题 |
-| `npm run run` | 连续解题，通过后自动翻页 |
-| `npm run course` | 课程自动驾驶：遍历「课堂实验→板块→开始学习」逐关完成 |
+| `npm run probe` | 检查配置 + 页面识别情况（**新平台首次必跑**） |
+| `npm run watch` / `lite` / `once` / `run` / `course` | 五种运行模式，见上表 |
 | `npm run course-probe` | 只读诊断课程列表页识别（course 卡住时先跑） |
 | `npm run my-edge` | 重启"你自己的 Edge"并带调试端口（保留账号/历史） |
+| `npm run browser` | 命令行启动带调试端口的浏览器（独立 profile） |
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
-| `npm run browser` | 命令行启动带调试端口的浏览器（独立 profile） |
+
+## 模块说明（用了哪些模块、各管什么）
+
+每次运行命令，模块按以下链条协作（入口 → 编排 → 感知 → 生成 → 执行）：
+
+```
+cli.mjs（入口：解析命令，分发到对应模式）
+  ├─ loop.mjs（编排：solveOnce 单题流程 + watch/lite/course 三种常驻循环）
+  │    ├─ perceive.mjs（感知：提取题干、探测编辑器/终端、读取评测结果、导出快照）
+  │    ├─ ai.mjs（生成：意图判定 / 代码与命令生成 / 反思修复 / 答案判定）
+  │    └─ act.mjs（执行：写编辑器、键终端、勾选项、点评测、翻页、切工作区标签）
+  ├─ browser.mjs（CDP 连接浏览器 + 挑选目标标签页）
+  │    └─ launch-browser.mjs（连不上时拉起浏览器；my-edge 的 junction 接管）
+  └─ config.mjs（读 agent/.env.local 的全部配置）
+```
+
+AI 的行为（prompt）全部来自 `shared/capabilities/*.json`（**7 个能力配置**）：
+
+| 配置 | 用途 |
+|---|---|
+| `task_router_1` | 按题干判定任务类型：写代码（code）还是敲命令行（cmdline） |
+| `code_completion_generator_1` | 代码题生成：按题目 + 模板补全 Begin/End 之间代码 |
+| `code_reflection_fixer_1` | 代码题反思：按评测输出修复代码 |
+| `cmdline_runner_1` | 命令行题生成：按运维/数据库任务描述输出命令序列 |
+| `cmdline_reflection_fixer_1` | 命令行题反思：按评测输出重新给出完整命令序列 |
+| `quiz_answer_selector_1` | 单道选择/填空题作答 |
+| `quiz_batch_answer_1` | 整页多道小题批量作答 |
+
+改 AI 行为请只改 `shared/capabilities/*.json`，agent 直接读取渲染，**不要在 agent 内复制 prompt**。
 
 ## 目录结构
 
 ```
 ├── agent/                    浏览器自动执行层（项目主体）
-│   ├── src/                  config / ai / browser / launch-browser / perceive / act / loop / cli
+│   ├── src/                  cli / loop / perceive / ai / act / browser / launch-browser / config
 │   ├── docs/                 TROUBLESHOOTING.md 问题排查手册
 │   ├── start-my-edge.bat     重启"你自己的 Edge"并带调试端口（双击）
 │   ├── start-browser.bat     启动独立 profile 调试浏览器（双击）
@@ -67,14 +109,12 @@ cp .env.example .env.local       # 编辑 .env.local，填 AI_BASE_URL / AI_API_
 │   ├── start-course.bat      启动课程自动驾驶（双击）
 │   ├── .env.local            密钥与运行参数（已被 git 忽略）
 │   └── README.md             完整文档（配置项、工作流、已知限制）
-└── shared/capabilities/      AI prompt 单一数据源（4 个能力配置）
+└── shared/capabilities/      AI prompt 单一数据源（7 个能力配置）
 ```
-
-改 AI 行为请只改 `shared/capabilities/*.json`，agent 直接读取渲染，**不要在 agent 内复制 prompt**。
 
 ## 关键注意
 
-- **浏览器接入方式**：watch/course 连不上调试端口会自动拉起独立 profile 浏览器兜底；要接管"你自己的 Edge"（保留登录态）用 `start-my-edge.bat`——目录联接绕过 Edge 136+ 默认目录调试禁令，且必须先关闭运行中的实例。受限/沙箱执行环境里脚本拉起的浏览器活不过命令边界，此时用双击 bat 启动。
+- **浏览器接入方式**：watch/lite/course 连不上调试端口会自动拉起独立 profile 浏览器兜底；要接管"你自己的 Edge"（保留登录态）用 `start-my-edge.bat`——目录联接绕过 Edge 136+ 默认目录调试禁令，且必须先关闭运行中的实例。受限/沙箱执行环境里脚本拉起的浏览器活不过命令边界，此时用双击 bat 启动。
 - **调试端口避开 Windows 保留区间**：本机 9137-9236 被系统保留，默认用 9333，启动脚本会读 `netsh` 自动顺延。
 - **新平台先干跑**：`.env.local` 设 `DRY_RUN=1` 跑一轮，确认识别与生成正确后再关闭。
 - **合规**：自动提交作用于你的真实账号，是否违反目标平台使用条款请自行评估。
