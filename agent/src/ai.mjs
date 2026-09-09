@@ -33,7 +33,7 @@ function log(msg) {
   console.log(`[ai] ${msg}`);
 }
 
-/** OpenAI 兼容 chat/completions，带指数退避重试 */
+/** OpenAI 兼容 chat/completions：SSE 流式接收（思考/正文进度实时可见），带指数退避重试 */
 export async function chat(messages, opts = {}) {
   assertAiReady();
   const url = `${cfg.ai.baseUrl.replace(/\/$/, '')}/chat/completions`;
@@ -42,50 +42,45 @@ export async function chat(messages, opts = {}) {
     messages,
     temperature: opts.temperature ?? cfg.ai.temperature,
     max_tokens: opts.maxTokens ?? cfg.ai.maxTokens,
-    stream: false,
+    stream: true,
   };
 
   const maxAttempts = opts.maxAttempts ?? 2;
   let lastErr;
   for (let i = 0; i < maxAttempts; i++) {
     const t0 = Date.now();
-    // 心跳：推理模型长思考期间每 30s 打一次等待日志，让"静默"可测量
+    let content = '';
+    let reasoning = '';
+    let finish = '';
+    // 空闲超时 + 心跳：每收到一块数据就重置空闲计时——"有输出就不断流"，
+    // 端点挂起/断流才触发超时（AbortSignal.timeout 是绝对超时，会误杀长生成）；
+    // 心跳每 30s 汇报已接收的思考/正文量与最新思考尾部，长思考全程可见
+    const ac = new AbortController();
+    let idle = setTimeout(() => ac.abort(), cfg.ai.timeoutMs);
+    const bumpIdle = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => ac.abort(), cfg.ai.timeoutMs);
+    };
     const hb = setInterval(() => {
       log(
-        `AI 请求仍在等待响应（第 ${i + 1}/${maxAttempts} 轮，已 ${Math.round((Date.now() - t0) / 1000)}s）…`,
+        `AI 流式响应中（第 ${i + 1}/${maxAttempts} 轮，已 ${Math.round((Date.now() - t0) / 1000)}s）｜思考 ${reasoning.length} 字、正文 ${content.length} 字${reasoning ? '｜…' + reasoning.slice(-60).replace(/\s+/g, ' ') : ''}`,
       );
     }, 30000);
     try {
-      let res;
-      try {
-        res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${cfg.ai.apiKey}`,
-          },
-          body: JSON.stringify(body),
-          // 端点挂起兜底：超时按失败处理并触发下方重试，避免 loop 永久停摆。
-          // 旧版 Node（<17.3）无 AbortSignal.timeout：置空仅失去超时保护，
-          // 心跳日志仍每 30s 可见，不会无限静默
-          signal:
-            typeof AbortSignal.timeout === 'function'
-              ? AbortSignal.timeout(cfg.ai.timeoutMs)
-              : undefined,
-        });
-      } catch (e) {
-        if (e?.name === 'TimeoutError') {
-          throw new Error(
-            `AI 请求超时（${cfg.ai.timeoutMs}ms）：推理模型生成较慢时可用 AI_TIMEOUT_MS 调大`,
-          );
-        }
-        throw e;
-      }
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cfg.ai.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         // 防御：部分端点对超过模型单次输出上限的 max_tokens 会直接报 400
         //（vLLM 系常见）。命中特征时把预算降到保守值 8192，让下一次重试
-        // 立即生效。该路径为防御性设计，截至本次修改尚未在实测中触发过。
+        // 立即生效。
         if (
           res.status === 400 &&
           body.max_tokens > 8192 &&
@@ -95,31 +90,69 @@ export async function chat(messages, opts = {}) {
         }
         throw new Error(`HTTP ${res.status} ${text.slice(0, 300)}`);
       }
-      const json = await res.json();
-      const content = json?.choices?.[0]?.message?.content;
-      // 空内容必须视为失败：上游偶发会返回 200 + 空字符串，若不判空会被当成
-      // 正常结果放行（实测曾导致批量答案整体为空）。判空后可触发下面的重试。
-      if (typeof content !== 'string' || !content.trim()) {
-        // finish_reason=length 且 content 为空：token 预算被推理模型的思考
-        // （reasoning_content）耗尽，属确定性失败、重试无效，给出可定位提示。
-        const finish = json?.choices?.[0]?.finish_reason ?? '';
-        const hasReasoning =
-          typeof json?.choices?.[0]?.message?.reasoning_content === 'string';
+      // 兼容兜底：个别端点无视 stream:true 一次性回整体 JSON——走原解析
+      const ctype = res.headers.get('content-type') ?? '';
+      if (!ctype.includes('event-stream')) {
+        const j = await res.json().catch(() => ({}));
+        const msg = j?.choices?.[0]?.message ?? {};
+        content = typeof msg.content === 'string' ? msg.content : '';
+        reasoning = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '';
+        finish = j?.choices?.[0]?.finish_reason ?? '';
+      } else {
+        // SSE 解析：逐行取 data: 载荷，累计 delta 的思考与正文
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            let j;
+            try {
+              j = JSON.parse(payload);
+            } catch {
+              continue;
+            }
+            const d = j?.choices?.[0]?.delta ?? {};
+            if (typeof d.reasoning_content === 'string') reasoning += d.reasoning_content;
+            if (typeof d.content === 'string') content += d.content;
+            if (j?.choices?.[0]?.finish_reason) finish = j.choices[0].finish_reason;
+            bumpIdle();
+          }
+        }
+      }
+      // 空正文必须视为失败：finish_reason=length 且思考有内容 = 预算被思考
+      // 耗尽（确定性失败，重试无效），把思考尾部带出来便于定位
+      if (!content.trim()) {
         const hint =
           finish === 'length'
-            ? `finish_reason=length：max_tokens=${body.max_tokens} 预算耗尽${
-                hasReasoning ? '（推理模型的思考占用了 reasoning_content）' : ''
-              }，请调大该调用的 maxTokens`
-            : '上游返回 200 + 空内容';
-        throw new Error(`AI 返回内容为空（${hint}）：${JSON.stringify(json).slice(0, 300)}`);
+            ? `finish_reason=length：max_tokens=${body.max_tokens} 预算耗尽（思考 ${reasoning.length} 字），请调大该调用的 maxTokens｜思考尾部：${reasoning.slice(-120).replace(/\s+/g, ' ')}`
+            : '流式响应结束但无正文内容';
+        throw new Error(`AI 返回内容为空（${hint}）`);
       }
-      return { content, raw: json };
+      return {
+        content,
+        raw: { finish_reason: finish, reasoning_length: reasoning.length },
+      };
     } catch (err) {
+      if (err?.name === 'AbortError') {
+        err = new Error(
+          `AI 响应空闲超时（${cfg.ai.timeoutMs}ms 无任何数据）：端点可能挂起，可用 AI_TIMEOUT_MS 调大`,
+        );
+      }
       lastErr = err;
       if (i < maxAttempts - 1) {
         await new Promise((r) => setTimeout(r, 800 * 2 ** i));
       }
     } finally {
+      clearTimeout(idle);
       clearInterval(hb);
     }
   }

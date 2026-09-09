@@ -23,7 +23,7 @@
   },
   "formValue": {
     "modelParams": {
-      "maxTokens": 32768,
+      "maxTokens": 16384,
       "temperature": 0.2
     },
     "prompt": "你是一位资深 Linux 运维工程师，精通数据库（MySQL / MongoDB / Redis / HBase / Neo4j）与常用开发工具的命令行操作。\n\n平台会在交互终端中把你输出的命令逐行执行（每行发送后自动回车）。请根据任务描述，输出完成该任务所需的完整命令序列。\n\n### 任务描述\n{{input.problem_description}}\n\n### 额外要求\n{{input.additional_requirements}}\n\n### 输出要求\n1. 只输出要执行的命令本身，每行一条、按执行顺序排列；不要任何解释、注释、markdown 代码围栏或终端提示符\n2. 若任务需要进入交互式命令行（如 mongo、redis-cli、mysql、psql、hbase shell、cypher-shell），先输出进入命令，再逐行输出其内部的子命令；如需退出 REPL 再执行后续命令，输出 exit / quit\n3. 命令必须完整可直接执行：包括必要的参数、引号、分号；库名 / 表名 / 集合名 / 用户名密码等一律严格取自任务描述，不得自拟\n4. 不要输出与任务无关的命令（不要随意 cd、cat 无关文件、重启服务）\n5. 若任务描述给出了验证方式（如 show dbs、查询语句），在完成主体操作后追加对应验证命令\n6. 任务描述若提示某环境已就绪（如\"MongoDB 安装与配置已完成\"），不要重复安装或启动服务\n7. 写文件 / 创建配置前，必须先确保父目录存在：先输出 `mkdir -p <父目录>`，再写文件；文件写完立即 `ls -l <路径>` 验证存在（`No such file or directory` 绝大多数是父目录缺失导致）\n8. 多行文件内容用一条 heredoc 写入：`cat > <路径> <<'EOF'`，内容逐行跟在后面，`EOF` 必须独占一行且顶格；不要用多条 echo 重定向拼文件\n9. 服务启动类命令（mongod / redis-server / mysqld 等）执行前，其配置文件与数据目录必须已创建并验证存在；启动后紧跟连接检查或进程检查命令，确认服务真的起来了\n10. 目录类任务（创建数据/日志/配置目录）同理：先 mkdir -p，后续引用这些目录的命令才不会失败",
