@@ -75,7 +75,7 @@ AI 的行为（prompt）全部来自 `shared/capabilities/*.json`（**7 个能�
 
 | 配置 | 用途 |
 |---|---|
-| `task_router_1` | 按题干判定任务类型：写代码（code）还是敲命令行（cmdline） |
+| `task_router_1` | 按题干判定任务类型：写代码（code）/ 敲命令行（cmdline）/ 混合题（mixed，先命令行数据准备再写代码栏） |
 | `code_completion_generator_1` | 代码题生成：按题目 + 模板补全 Begin/End 之间代码 |
 | `code_reflection_fixer_1` | 代码题反思：按评测输出修复代码 |
 | `cmdline_runner_1` | 命令行题生成：按运维/数据库任务描述输出命令序列 |
@@ -90,6 +90,7 @@ AI 的行为（prompt）全部来自 `shared/capabilities/*.json`（**7 个能�
 ```
 ├── agent/                    浏览器自动执行层（项目主体）
 │   ├── src/                  cli / loop / perceive / ai / act / browser / launch-browser / config
+│   ├── inspect-dom.mjs       只读 DOM 诊断脚本（评测面板 / 通关弹窗结构核对，0.9.1）
 │   ├── docs/                 TROUBLESHOOTING.md 问题排查手册
 │   ├── start-my-edge.bat     重启"你自己的 Edge"并带调试端口（双击）
 │   ├── start-browser.bat     启动独立 profile 调试浏览器（双击）
@@ -111,7 +112,7 @@ AI 的行为（prompt）全部来自 `shared/capabilities/*.json`（**7 个能�
 ## 文档
 
 - `agent/README.md` — 完整文档：配置项、工作流、设计要点、已知限制与安全
-- `agent/docs/TROUBLESHOOTING.md` — 12 个真实踩坑（环境级 + 代码级）与排查方法论
+- `agent/docs/TROUBLESHOOTING.md` — 14 个真实踩坑（环境级 + 代码级）与排查方法论
 - `agent/CHANGELOG.md` — 变更日志
 
 ## 说明

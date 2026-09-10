@@ -223,6 +223,41 @@ spawn(exe, args, { stdio: ['ignore', logFd, logFd] })
 
 ---
 
+### C-8. mongosh 不存在 + 数据库子命令被逐条敲进 bash（混合题数据准备全灭）
+
+**现象**：MongoDB 混合题（先命令行插入文档、再代码栏写查询），AI 生成的首条命令 `mongosh` 报 `command not found`，后续 `use test2` / `db.educoder.remove({})` / `insertMany(...)` 仍被逐条敲进 bash 全部报错——插入文档失败且无任何重试，评测自然全红。真机截图实锤（2026-09-10）。
+
+**根因**：
+1. 混合题分支当时**未接客户端实测**：生成 prompt 里没有"本机只有 mongo、没有 mongosh"这一硬事实，AI 在无依据下猜 mongosh
+2. 入口命令（REPL 客户端）失败后，后续子命令仍被顺序键入外层 bash——REPL 上下文丢失，`db.xxx` 全成 bash 语法错误
+
+**解决**（0.9.2，`loop.mjs`）：
+1. bash 环境且题干涉数据库时 `probeTerminalClients` 实测客户端（`HAVE:/MISS:` 前缀行解析），结论进 prompt、缺失客户端入【实测禁令】
+2. 执行层别名替换（`mongosh`→`mongo`）——模型不听话也确定性改对；命令过 `sanitizeShellSubmission` 护栏清洗
+3. 混合题数据准备输入期报错反思自愈（≤2 轮）：把输入期报错 + 终端回显喂回反思，重做而非静默继续
+
+**预防**：客户端存在性是硬事实，一律实测进 prompt，不依赖模型记忆；入口命令失败时要能识别并中止后续 REPL 子命令，或反思一轮自愈。
+
+---
+
+### C-9. 代码栏内容被平台当 bash 脚本执行，裸 `$` 触发 syntax error
+
+**现象**：数据库查询题在代码栏 Begin/End 之间写 `db.educoder.aggregate([{$limit:3}])`，评测报：
+
+```
+step2/query.sh: line 2: syntax error near unexpected token '{$limit:3})'
+```
+
+**根因**：平台把代码栏内容放进 `query.sh` 用 **bash 执行**（不是丢给数据库 REPL）；裸 `$` 被 bash 当作参数展开/函数定义解析而失败。题面已注明「测试时 `$` 前加转义符 `\`（格式如 `\;`）」，但旧版代码生成 prompt 没有把题面转义要求当硬约束，AI 照搬裸语句。
+
+**解决**（0.9.2，prompt 单一数据源）：
+- `code_completion_generator_1` 实现要求第 7 条：数据库操作命令题且题面给转义说明时，`$` 一律写成 `\$`、命令分隔按题面示例（如 `\;`），只输出可执行命令
+- `code_reflection_fixer_1` 解读守则第 4 条：`query.sh: syntax error near unexpected token` 归因 `$` 未转义/命令形态非脚本可执行，按题面重写
+
+**预防**：代码栏内容可能被平台当 shell 脚本执行时，`$` 必须按题面要求转义；报错带 `syntax error near unexpected token` 先查是否裸 `$`。
+
+---
+
 ## 三、排查方法论
 
 1. **先拿浏览器自己的日志**。Node 侧的报错往往是二手信息（见 E-5）。`--enable-logging --log-file=` 是 Chromium 系通用的。

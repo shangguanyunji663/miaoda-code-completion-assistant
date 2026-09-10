@@ -2,6 +2,25 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [0.9.3] - 2026-09-10
+
+文档同步 + 冗余清理。0.9.2 落库后对全仓文档做一次一致性体检：以代码实际实现为准修正文档间矛盾表述，补齐 0.9.2 变更在文档侧的映射（配置项、工作流、踩坑手册），并清理本地旧会话日志。纯文档与清理变更，不涉及 Agent 行为。
+
+### Changed
+
+- **配置模板同步（agent/.env.example）**：补 `AI_REASONING_EFFORT` / `AI_ENABLE_THINKING` / `AI_THINKING_CAP_MS` / `AI_TIMEOUT_MS` 四项（默认值与 `config.mjs` 逐一核对）；`MAX_RETRY` 4→10、`EVAL_TIMEOUT_MS` 60000→25000，消除模板与实现默认值漂移
+- **agent/README.md**：配置表补 4 个新配置项并核准全部默认值；工作流补混合题（mixed）流程、客户端可用性实测、shell 护栏、`$` 转义守则；设计要点新增第 7、8 条；已知限制同步 0.9.2 变化
+- **README.md**：目录结构补 `inspect-dom.mjs`；踩坑数 12→14；修正三处与代码矛盾的表述——感知行补「混合题」、作答行改为「优先经编辑器 API 写入（键盘为回退，0.9.2 起与 act.mjs 实测行为一致）」、`task_router_1` 描述补 mixed
+- **AGENTS.md**：模块说明同步 mixed 分流与 `detectTerminalEnv`/`probeTerminalClients`/`sanitizeShellSubmission`/`inspect-dom.mjs`；命令清单补 `course-probe`；Windows 入口补 `start-browser.bat`；约束补「环境事实靠实测，不靠模型记忆」与 0.9.2 转义守则
+- **shared/capabilities/README.md**：`task_router_1` 用途补混合题（mixed）；新增 0.9.2 数据库命令转义守则说明（生成第 7 条 / 反思第 4 条）
+- **agent/docs/TROUBLESHOOTING.md**：新增 C-8（mongosh 不存在 + 子命令被敲进 bash：客户端实测、【实测禁令】、别名替换、输入期反思自愈）与 C-9（代码栏内容被当 bash 脚本执行，裸 `$` 触发 syntax error 的生成/反思守则）
+
+### Notes
+
+- **矛盾修正原则**：文档间冲突一律以代码实际实现为准。本次唯一修正是根 README「代码题用键盘写入编辑器」→「优先编辑器 API、键盘为回退」，与 `act.mjs` 及 AGENTS.md/agent/README 的既有表述冲突，已统一
+- **清理**：删除 `.workbuddy/memory/` 下 9-08/9-09 旧会话日志（该目录已被 .gitignore 排除，属本地工作区数据）；`agent/.browser-profile*/`、`agent/dumps/`、`agent/logs/` 为 gitignored 运行产物，保持不提交
+- 验证：CHANGELOG 0.9.2/0.9.3 条目与当前代码行为逐项核对；全部内部链接/锚点指向的文件存在；「混合题」「客户端可用性实测」「转义守则」等术语跨文档一致；capabilities 目录实为 7 个 JSON，各文档计数一致
+
 ## [0.9.2] - 2026-09-10
 
 混合题终端数据准备自愈 + 代码栏数据库命令转义守则。由 2026-09-10 真机截图（MongoDB 混合题：先命令行插入文档、再代码栏写查询）驱动——同一题终端与代码栏两处失败，全部根因经截图实锤定位。
