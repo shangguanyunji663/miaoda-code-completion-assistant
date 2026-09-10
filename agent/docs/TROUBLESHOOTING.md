@@ -273,7 +273,22 @@ db.educoder.aggregate([{\$limit:3}]);db.educoder.aggregate([{\$sort:{learning_nu
 - 数据库环节：平台提取引号内命令 → 反转义 → 分号切分 → 逐条 eval → 输出与预期一致（真实评测通过，弹出「恭喜您通过本关」）
 - 已同步 `code_completion_generator_1` 第 7 条 / `code_reflection_fixer_1` 第 4 条 / `loop.mjs` mixed 分支
 
-**预防**：代码栏数据库命令题（EduCoder 系）完整流程 = **先命令行插入题面文档到指定库 → 代码栏 echo 双引号包裹裸查询（分号分隔 + `\$` 转义）**；查询结果为空先查「命令行是否已插入」；报错带 `step2/query.sh: syntax error` 或 `@(shell eval)` 检查是否缺失 echo 包裹；0.9.2 的「仅 `$` 转义」与 0.9.4 的 heredoc 结论均不完整——转义只解决 bash 变量展开，`(`/`{` 仍需靠 echo 双引号规避。
+**预防**：代码栏数据库命令题（EduCoder 系）完整流程 = **先命令行插入题面文档到指定库 → 代码栏 echo 双引号包裹裸查询（分号分隔 + `\$` 转义）**；**严格按题面「相关知识/例子」给出的命令形态书写**（如 `db.runCommand({geoNear:...})`，禁止换成 `aggregate $geoNear`——输出格式由命令形态决定，平台按题面例子的返回结构比对，2026-09-11 索引题实测）；查询结果为空先查「命令行是否已插入」；报错带 `step2/query.sh: syntax error` 或 `@(shell eval)` 检查是否缺失 echo 包裹；0.9.2 的「仅 `$` 转义」与 0.9.4 的 heredoc 结论均不完整——转义只解决 bash 变量展开，`(`/`{` 仍需靠 echo 双引号规避。执行层 `wrapDbCommandsInEcho` 会对「主体是 db. 命令集」的提交自动包裹（1.1.0，不误伤编程题/Node 脚本/MySQL 命令）。
+
+### C-10. 评测结果面板遮挡「评测/翻页」按钮，点击被拦截
+
+**现象**：上一次评测后结果面板展开，下次点击「评测」（或「下一题」）时 Playwright 报：
+
+```
+locator.click: Timeout 8000ms exceeded.
+<div class="evaluate-result-container">…</div> … intercepts pointer events
+```
+
+**根因**：评测结果容器（`evaluate-result-container` / `[class*="evaluate-result"]` 等）展开后覆盖了按钮区域，真实点击被面板拦截。
+
+**解决**（1.1.0，`act.mjs`）：`clickByKeywords` 点击被拦截时自动**收起结果面板后重试**——按优先级：① 点击面板内标题行（含「测试结果/测试集/评测结果」字样，多数平台点击标题可收起/展开切换）；② 点击面板左上角（避开内容区）；③ Escape 兜底。收起后重试点击目标按钮；重试仍失败则换下一个候选。
+
+**预防**：任何「上一轮结果/弹窗遮挡按钮」的场景都适用同一处理；面板不存在时零副作用。
 
 ---
 

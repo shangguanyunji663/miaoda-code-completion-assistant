@@ -24,6 +24,39 @@ function guard(action) {
   return true;
 }
 
+/**
+ * 收起评测结果面板（1.1.0，通用遮挡处理）。
+ * 展开的评测结果容器（evaluate-result-container 等）会拦截评测/翻页按钮的点击
+ * （Playwright 报 "intercepts pointer events"）。按优先级尝试：① 点击容器内的
+ * 标题行（含「测试结果/测试集/评测结果」字样，多数平台点击标题可收起/展开切换）；
+ * ② 点击容器左上角（避开内容区）；③ Escape 兜底。零副作用：面板不存在时直接返回。
+ * @returns {Promise<boolean>} 是否尝试了收起动作
+ */
+async function dismissResultPanel(page) {
+  const selectors = [
+    '.evaluate-result-container',
+    '[class*="evaluate-result"]',
+    '[class*="result-panel"]',
+    '[class*="test-result"]',
+  ];
+  for (const sel of selectors) {
+    const panel = page.locator(sel).first();
+    if (!(await panel.isVisible().catch(() => false))) continue;
+    const header = panel.locator('text=/测试结果|测试集|评测结果|运行结果/').first();
+    if (await header.isVisible().catch(() => false)) {
+      await header.click({ timeout: 3000 }).catch(() => {});
+      await page.waitForTimeout(300);
+      return true;
+    }
+    await panel.click({ position: { x: 20, y: 20 }, timeout: 3000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    return true;
+  }
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(300);
+  return false;
+}
+
 /** 按关键词列表点击第一个可见按钮 */
 async function clickByKeywords(page, keywords, label) {
   for (const kw of keywords) {
@@ -41,7 +74,20 @@ async function clickByKeywords(page, keywords, label) {
         const el = loc.nth(i);
         if (!(await el.isVisible().catch(() => false))) continue;
         if (!guard(`点击「${label}」（匹配词：${kw}）`)) return { clicked: false, keyword: kw };
-        await el.click({ timeout: 8000 });
+        let clicked = false;
+        try {
+          await el.click({ timeout: 8000 });
+          clicked = true;
+        } catch {
+          // 被评测结果面板遮挡：收起面板后重试一次（1.1.0 通用处理）
+          log(`点击「${label}」被拦截（疑似被评测结果面板遮挡），收起后重试`);
+          await dismissResultPanel(page);
+          clicked = await el
+            .click({ timeout: 8000 })
+            .then(() => true)
+            .catch(() => false);
+        }
+        if (!clicked) continue; // 重试仍失败，换下一个候选
         log(`已点击「${label}」（匹配词：${kw}）`);
         return { clicked: true, keyword: kw };
       }

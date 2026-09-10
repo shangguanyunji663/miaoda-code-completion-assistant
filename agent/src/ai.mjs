@@ -601,6 +601,58 @@ export async function reflectCommands({
 }
 
 /**
+ * 数据库命令题 echo 双引号包裹兜底（1.0.1，确定性规则、不依赖模型自觉）。
+ *
+ * 背景（2026-09-11 真机，EduCoder 平台机制破译后）：平台对代码栏内容（提交为
+ * query.sh）双重执行——① bash 环节：裸 REPL 语句的 ( { [ 必报 syntax error，stderr
+ * 进实际输出（3 个测试点标签之前）；② 数据库 eval 环节：每测试点只提取 echo "..."
+ * 双引号内的命令、反转义 \$→$、分号切分逐条执行（输出在标签后）。AI 即使被生成
+ * 守则要求，仍可能输出裸命令（不包 echo）→ bash 报错污染实际输出导致不匹配。
+ * 与其烧一轮评测等反思猜，不如提交前确定性包裹。
+ *
+ * 触发条件（避免误伤普通编程题）：内容含 db.<集合>.<方法>( 的数据库命令
+ * （insert/insertMany/aggregate/runCommand/createIndex/find/update/remove/drop/count 等）
+ * 且整段尚未被 echo 包裹。包裹时把裸 $ 转义为 \$（echo 双引号内防 bash 展开；
+ * 平台 eval 会反转义还原），已转义的 \$ 保持不变（幂等）。
+ *
+ * @param {string} text 整段提交内容（含 Begin/End 注释）
+ * @returns {{code: string, wrapped: boolean}}
+ */
+export function wrapDbCommandsInEcho(text) {
+  const src = String(text ?? '');
+  // 触发条件收紧（1.1.0 通用性）：仅当「代码栏主体是 db.<集合>.<方法>( 数据库命令集」
+  // 且未被 echo 包裹时才包裹——避免误伤编程题（Python/Java/Node 脚本里可能含 db.
+  // 调用或字符串字面量）与其它平台命令（SELECT/use 等）。判据：
+  //  ① 行级统计：去 Begin/End 后至少 70% 非空行是 db. 命令或 use 语句；
+  //  ② 排除明显编程语言特征（函数/类/导入/赋值/控制流等）开头。
+  const bodyMatch = src.match(
+    /^([\s\S]*?#\*+\s*Begin\s*\*+?#\s*\n?)([\s\S]*?)(\n?#\*+\s*End\s*\*+?#[\s\S]*)$/i,
+  );
+  const body = bodyMatch ? bodyMatch[2] : src;
+  const lines = body
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return { code: src, wrapped: false };
+  if (
+    /^(def |function |class |import |from |const |let |var |#include|public |private |static |print\(|console\.|System\.out|cout|return )/.test(
+      lines[0],
+    )
+  ) {
+    return { code: src, wrapped: false };
+  }
+  const cmdLike = lines.filter((l) => /^db\s*\./.test(l) || /^use\s+\w+/i.test(l)).length;
+  if (cmdLike / lines.length < 0.7) return { code: src, wrapped: false };
+  if (/echo\s*"/.test(src)) return { code: src, wrapped: false };
+  const escapeDollar = (s) => s.replace(/(?<!\\)\$/g, '\\$');
+  if (bodyMatch) {
+    const wrapped = `echo "\n${escapeDollar(body)}\n"`;
+    return { code: `${bodyMatch[1]}${wrapped}${bodyMatch[3]}`, wrapped: true };
+  }
+  return { code: `echo "\n${escapeDollar(src)}\n"`, wrapped: true };
+}
+
+/**
  * shell/数据库脚本书写护栏（0.9.1，确定性规则、不依赖模型自觉）。
  *
  * 背景（2026-09-10 真机事故）：反思 AI 把评测面板的中文标签（"输出集合前3条

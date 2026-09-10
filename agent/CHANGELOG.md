@@ -33,6 +33,22 @@
 - 边界：单测仅覆盖与浏览器无关的纯函数，涉及 CDP / 页面交互的部分仍依赖真机验证，未声称已覆盖
 - 未做：`solveOnce`（`loop.mjs:182`，392 行单函数）拆分仍属高风险重构，建议等测试更充分后再动
 
+## [1.1.1] - 2026-09-11
+
+代码栏数据库命令题通用加固：执行层 echo 包裹兜底 + 题面例子命令形态守则 + 结果面板遮挡点击修复。由 2026-09-11 真机（MongoDB 地理位置索引题：AI 反复输出裸命令、且把题面例子的 `db.runCommand` 换成 `aggregate $geoNear` 导致输出格式不符）驱动。
+
+### Changed
+
+- **执行层 echo 双引号包裹兜底（`ai.mjs` `wrapDbCommandsInEcho` + `loop.mjs` 接入）**：AI 即使不遵守守则输出裸 db 命令，提交前确定性包裹为 `echo "…"`（裸 `$` 转义、幂等）。触发条件收紧保证通用性——**仅当代码栏主体是 `db.` 命令集**（≥70% 非空行为 `db.`/`use` 命令、且非编程语言特征开头），不误伤 Python/Java/Node 脚本、字符串字面量、MySQL 的 SELECT/use 等
+- **生成/反思守则强化（prompt 单一数据源）**：「严格按题面『相关知识/例子』给出的命令形态书写」（如 `db.runCommand({geoNear:...})`，禁止换成 `aggregate $geoNear`——输出格式由命令形态决定，平台按题面例子的返回结构比对）；反思侧「实际输出格式与预期不符（results/stats/ok vs 扁平文档）→ 检查是否用了题面例子之外的 API 形态」
+- **结果面板遮挡点击通用处理（`act.mjs`）**：`clickByKeywords` 点击被拦截（`evaluate-result-container` 拦截 pointer events）时，自动收起结果面板（标题/面板左上角/Escape）后重试，重试失败换候选
+- **TROUBLESHOOTING 新增 C-10**（结果面板遮挡点击）；C-9 预防补充「严格按题面例子命令形态」
+
+### Notes
+
+- 验证：索引题 AI 按守则直接生成 echo + runCommand（1243 字符，wrap 幂等跳过）；wrap 触发/幂等/误伤 7 组用例全过（裸命令包裹、已 echo 不重复、Python/Node/MySQL/字符串不触发、`$` 转义）
+- 平台机制边界如实标注：echo 提取实测于 EduCoder Mongo 题；MySQL/其它平台未实测（但「bash+eval 双执行」平台的裸命令都会 bash 报错，echo 是通用 bash 包装）
+
 ## [1.0.0] - 2026-09-10
 
 **首个稳定版本**：完整破译 EduCoder 平台「命令行插入 + 代码栏查询」类题目的评测机制，并让 Agent 学会完整解题流程。由 2026-09-10 真机 20+ 次评测 + 抓包（`update_file`/`game_status`）+ 已通过题反推驱动，第 2、3 关当场验证通过。

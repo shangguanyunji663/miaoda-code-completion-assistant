@@ -54,6 +54,7 @@ import {
   detectVerdict,
   spliceIntoTemplate,
   sanitizeShellSubmission,
+  wrapDbCommandsInEcho,
   classifyProblemIntent,
   generateCommands,
   reflectCommands,
@@ -519,6 +520,14 @@ export async function solveOnce(page, probe) {
       submitted = san.code;
       sanitizeNote = san.changes.map((n) => `- ${n}`).join('\n');
       log(`shell 护栏清洗 ${san.changes.length} 处：${san.changes.slice(0, 3).join('；')}`);
+    }
+    // 数据库命令题 echo 双引号包裹兜底（1.0.1）：平台对代码栏双重执行（bash 环节 +
+    // 提取 echo 引号内内容做数据库 eval），AI 即使被守则要求仍可能输出裸命令 →
+    // bash 报错污染实际输出。这里确定性包裹（幂等：已包裹/普通编程题零触发）。
+    const wrap = wrapDbCommandsInEcho(submitted);
+    if (wrap.wrapped) {
+      submitted = wrap.code;
+      log('数据库命令题 echo 双引号包裹兜底（bash 环节零噪音，平台提取引号内命令 eval）');
     }
     await writeEditorCode(page, submitted);
     await settle(page);
