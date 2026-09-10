@@ -5,6 +5,7 @@
 // 执行层：所有真实点击 / 输入动作。受 DRY_RUN 控制——干跑时只打日志不动页面。
 
 import { cfg } from './config.mjs';
+import { createLogger } from './logger.mjs';
 import { readEvalPanel, isTerminalAtPrompt, readTerminalLines } from './perceive.mjs';
 
 // 按钮文本关键词（按优先级排序，模糊匹配）。
@@ -12,9 +13,7 @@ import { readEvalPanel, isTerminalAtPrompt, readTerminalLines } from './perceive
 export const BTN_EVAL = ['评测', '评 测', '提交评测', '提交', '运行', '运行评测', '判题', '测评'];
 export const BTN_NEXT = ['下一题', '下一关', '下一个', '下一节', '继续', '下一页', '下一任务'];
 
-function log(msg) {
-  console.log(`[act] ${msg}`);
-}
+const log = createLogger('act');
 
 /** 干跑守卫：dryRun 时记录并返回 false，不执行真实动作 */
 function guard(action) {
@@ -89,31 +88,32 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
   let stableCount = 0;
   let best = '';
   // 与 readEvalPanel 的结果标记策略配套：判定捕获文本是否带结果面板特征
-  const hasResultMarker = (t) =>
-    /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/.test(t ?? '');
+  const hasResultMarker = (t) => /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/.test(t ?? '');
   const hasSuccessWord = (t) => /通过|成功|accepted|恭喜/i.test(t ?? '');
   // 面板出现确定性成功词且无任何失败词 → 立即采用，不等稳定采样（省 1.5~2.5s）。
   // 不用裸「通过」：EduCoder 系逐测试集写「测试集N 通过」，中途采样会误判。
   const isDefiniteSuccess = (t) =>
     !!t &&
     /(全部通过|评测通过|测试通过|答案正确|accepted|恭喜|0\s*组不匹配)/i.test(t) &&
-    !/(不匹配|未通过|没有通过|失败|错误|异常|wrong\s*answer|time\s*limit|runtime\s*error|compile\s*error)/i.test(t);
+    !/(不匹配|未通过|没有通过|失败|错误|异常|wrong\s*answer|time\s*limit|runtime\s*error|compile\s*error)/i.test(
+      t,
+    );
 
-    while (Date.now() < deadline) {
-      await page.waitForTimeout(400); // 2026-09-10：800→400ms，判定延迟减半
-      // 「恭喜您通过本关」弹窗是平台权威通过宣告：出现即判过并立即返回。
-      // （2026-09-10 真机实测：弹窗带入场动画、可能早于面板文本稳定出现，
-      // 旧版只在稳定后查一次导致"弹窗已庆祝、判定却是未通过"）
-      if (await isPassModalVisible(page)) {
-        log('检测到「恭喜您通过本关」弹窗，立即判为通过');
-        return `${best}\n恭喜您通过本关`;
-      }
-      // 结构化通过标记（class=test-result.success）：比文本匹配更硬的证据
-      if (await hasStructPassMark(page)) {
-        log('检测到结构化通过标记（test-result.success），立即判为通过');
-        return '全部通过（结构标记 test-result.success）';
-      }
-      const now = await readEvalPanel(page);
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(400); // 2026-09-10：800→400ms，判定延迟减半
+    // 「恭喜您通过本关」弹窗是平台权威通过宣告：出现即判过并立即返回。
+    // （2026-09-10 真机实测：弹窗带入场动画、可能早于面板文本稳定出现，
+    // 旧版只在稳定后查一次导致"弹窗已庆祝、判定却是未通过"）
+    if (await isPassModalVisible(page)) {
+      log('检测到「恭喜您通过本关」弹窗，立即判为通过');
+      return `${best}\n恭喜您通过本关`;
+    }
+    // 结构化通过标记（class=test-result.success）：比文本匹配更硬的证据
+    if (await hasStructPassMark(page)) {
+      log('检测到结构化通过标记（test-result.success），立即判为通过');
+      return '全部通过（结构标记 test-result.success）';
+    }
+    const now = await readEvalPanel(page);
     if (now && now !== before) {
       best = now;
       if (isDefiniteSuccess(now)) {
@@ -214,7 +214,10 @@ async function hasStructPassMark(page) {
  * 同时兼容两种 DOM：Ant Design 下文本挂在 `a` 上，朴素结构下挂在 `label` 上。
  */
 export async function answerChoice(page, optionText) {
-  const norm = (s) => String(s).replace(/\s+/g, '').replace(/^[A-Za-z][.、:：]\s*/, '');
+  const norm = (s) =>
+    String(s)
+      .replace(/\s+/g, '')
+      .replace(/^[A-Za-z][.、:：]\s*/, '');
   const target = norm(optionText);
 
   for (const sel of ['a', 'label']) {
@@ -367,7 +370,9 @@ export async function clickBackArrow(page) {
         .locator('.anticon-arrow-left, [aria-label*="arrow-left"], [class*="arrow-left"]')
         .first(),
     () =>
-      page.locator('[class*="page-header"] [class*="back"], a[class*="back"], [class*="back-arrow"]').first(),
+      page
+        .locator('[class*="page-header"] [class*="back"], a[class*="back"], [class*="back-arrow"]')
+        .first(),
   ];
   for (const make of candidates) {
     const loc = make();
@@ -406,10 +411,7 @@ export async function clickContinueChallenge(page) {
  */
 export async function clickStartLearning(page, index) {
   const sel = `[data-agent-target="${index}"]`;
-  const targets = [
-    page.locator(sel).first(),
-    ...page.frames().map((f) => f.locator(sel).first()),
-  ];
+  const targets = [page.locator(sel).first(), ...page.frames().map((f) => f.locator(sel).first())];
   for (const loc of targets) {
     if ((await loc.count().catch(() => 0)) === 0) continue;
     if (!guard(`点击「开始学习」#${index + 1}`)) return { clicked: false };
@@ -491,7 +493,9 @@ const XTERM_PASTE = (text) => {
   if (!ta) return false;
   const dt = new DataTransfer();
   dt.setData('text/plain', text);
-  ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  ta.dispatchEvent(
+    new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+  );
   return true;
 };
 
@@ -653,9 +657,17 @@ export async function dismissPassModal(page) {
     page.getByText('完成', { exact: true }),
   ];
   for (const c of doneCandidates) {
-    if (await c.first().isVisible().catch(() => false)) {
+    if (
+      await c
+        .first()
+        .isVisible()
+        .catch(() => false)
+    ) {
       if (!guard('点击「完成」关闭通过弹窗')) return { dismissed: false, reason: 'dry-run' };
-      await c.first().click({ timeout: 3000 }).catch(() => {});
+      await c
+        .first()
+        .click({ timeout: 3000 })
+        .catch(() => {});
       log('已点击「完成」关闭通过弹窗，返回等待态');
       return { dismissed: true, way: 'done-button' };
     }
@@ -776,7 +788,10 @@ export async function ensureTaskPage(page) {
     const t = await page.evaluate(() => document.body?.innerText ?? '');
     if (t.trim()) evidence = t.trim().slice(-3000);
   } catch {}
-  const back = page.context().pages().find((p) => pattern.test(p.url()));
+  const back = page
+    .context()
+    .pages()
+    .find((p) => pattern.test(p.url()));
   if (back) {
     await back.bringToFront().catch(() => {});
     log('评测后平台跳转到结果页，已定位回原题目页');

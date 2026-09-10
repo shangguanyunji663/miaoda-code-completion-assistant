@@ -113,6 +113,9 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run browser` | 命令行启动带调试端口的浏览器（独立 profile） |
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
+| `npm test` | 运行核心纯函数单测（22 项，零新增依赖） |
+| `npm run lint` | ESLint 静态检查 |
+| `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
 Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-browser.bat`、`start-watch.bat`、`start-lite.bat`、`start-course.bat`。
 
@@ -176,7 +179,12 @@ miaoda-code-completion-assistant/
 │   │   ├── act.mjs                 # 执行：写入、键入、勾选、点评测、翻页、导航
 │   │   ├── browser.mjs             # CDP 连接与标签页挑选
 │   │   ├── launch-browser.mjs      # 调试端口拉起（Windows 保留端口自动顺延）
-│   │   └── config.mjs              # 配置层，读 agent/.env.local
+│   │   ├── config.mjs              # 配置层，读 agent/.env.local
+│   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
+│   ├── test/
+│   │   └── ai.test.mjs             # 核心纯函数单测（node:test，零依赖）
+│   ├── eslint.config.js            # ESLint flat config
+│   ├── .prettierrc                 # 格式化规则
 │   ├── docs/
 │   │   └── TROUBLESHOOTING.md      # 14 个真实踩坑与排查方法论
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
@@ -220,6 +228,15 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 | 环境事实靠实测 | 终端客户端可用性、终端形态等必须用 `probeTerminalClients` 探测，不得依赖模型记忆 |
 | 如实标注验证边界 | 未经验证的能力不得在文档中声称可用；新增功能请在 README 注明验证程度 |
 | 密钥零落盘 | 端点 / 密钥 / 模型名只允许出现在 `agent/.env.local` |
+
+**提交前自检**（均在 `agent/` 下执行）：
+
+```bash
+npm test          # 22 项纯函数单测必须全绿
+npm run lint      # ESLint 零问题
+```
+
+改动 `ai.mjs` 中的纯函数（`detectVerdict` / `sanitizeShellSubmission` / `spliceIntoTemplate` / `renderTemplate` / `parseAnswers`）时，请同步补单测——1.1.0 的首批测试当场就暴露了一个真实判定缺陷。
 
 **Commit 规范**：沿用现有风格 `feat|fix|chore(release): <版本> —— <一句话变更>`，提交前先跑一遍 `npm run probe` 确认未破坏识别逻辑。
 

@@ -57,6 +57,14 @@ npm run probe
 | `npm run course` | **课程自动驾驶**：遍历「课堂实验→板块→开始学习」，逐关作答直至板块做完（见下方专节） |
 | `npm run course-probe` | 只读诊断课程列表页：打印识别到的板块/卡片并导出快照，**course 卡住时先跑这个** |
 | `npm run models` | 列出可用文本模型 |
+| `npm test` | 运行核心纯函数单测（22 项，Node 内置 `node:test`，零新增依赖） |
+| `npm run lint` | ESLint 静态检查（`eslint.config.js`） |
+| `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
+| `npm run format:check` | 只检查格式不写入，适合放进 CI |
+
+## 日志
+
+统一由 `src/logger.mjs` 输出：控制台保持 `[模块] 消息` 形态，同时**落盘到 `logs/agent-<日期>.log`**（含时间戳与 INFO/WARN/ERROR 级别）。常驻模式（watch / lite）跑完关掉窗口后仍可回溯。设 `LOG_TO_FILE=0` 可关闭落盘。
 
 ## 配置项（`agent/.env.local`）
 

@@ -2,6 +2,37 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.1.0] - 2026-09-10
+
+**工程化基建版本**：补单测、统一日志落盘、接入 lint 与格式化、修正元数据与忽略规则。业务逻辑零变更，但**新增的首批单测当场暴露并修复了一个真实的判定缺陷**——`detectVerdict` 会把 EduCoder 的「0 组不匹配」误判为未通过，白白触发整轮反思重试。
+
+### Added
+
+- **统一日志层 `src/logger.mjs`**：此前 `act` / `ai` / `loop` / `perceive` 四处各自定义 `log`（实现还不一致），现统一为 `createLogger(scope)`。控制台保持原有 `[scope] msg` 形态不变，**同时落盘到 `agent/logs/agent-<日期>.log`**（含完整时间戳与 INFO/WARN/ERROR 级别）。此前常驻模式跑完关掉终端窗口日志即丢失，而排查方法论（见 `docs/TROUBLESHOOTING.md`）恰恰依赖事后回溯。落盘失败只降级不中断——日志系统绝不能拖垮主流程；可用 `LOG_TO_FILE=0` 关闭
+- **核心纯函数单测（22 项，`test/ai.test.mjs`）**：覆盖 `detectVerdict` / `sanitizeShellSubmission` / `spliceIntoTemplate` / `renderTemplate` / `parseAnswers`。零新增依赖（Node 内置 `node:test`），`npm test` 运行。其中 `sanitizeShellSubmission` 的「命令内部冒号不被误当标签分隔符」是 0.9.1 `lastIndexOf` 缺陷的回归用例
+- **ESLint + Prettier**：`eslint.config.js`（flat config）+ `.prettierrc`，新增 `npm run lint` / `format` / `format:check`。配置刻意只开推荐集 + 少量高风险规则，并对 `page.evaluate` 内的浏览器上下文代码声明 browser globals，避免 60 处 `no-undef` 误报淹没真问题
+- **`package.json` 元数据**：补 `engines`（README 声称 Node 18+ 但此前无约束）、`license`、`repository`、`author`
+
+### Fixed
+
+- **`detectVerdict` 零失败误判（1.1.0 最重要修复）**：否定词表含 `/不匹配/`，而 EduCoder 结果面板的「共 3 组测试，0 组不匹配」语义是**全部通过**，字面却命中否定词 → 被短路判为未通过，触发无谓的反思重试循环。新增 `ZERO_FAIL_PATTERNS`（`/0\s*组不匹配/`、`/全部匹配/`）**先于**否定短路判定。该函数在 `loop.mjs` 三处终判（218 / 380 / 525）被调用，修复直接生效
+- `config.mjs`：`thinkingCapMs` 缩进错乱（在 `ai` 对象内却顶到 `timeoutMs` 层级）
+- `ai.mjs:621`：正则多余转义 `[*\#]` → `[*#]`（行为等价，仅为消除 lint 噪声）
+- `cli.mjs:149`：解构未使用的循环下标 `i`
+- **`shared/capabilities/*.json`**：清除 7 个配置里的 `createdBy: 7575625665181912282`（平台账号 ID，此前已随公开仓库外发）。字段经核查仅 `formValue.prompt` 与 `formValue.modelParams` 被代码读取，删除无副作用；`createdAt` / `updatedAt` 等平台导出字段保留
+- **`agent/.gitignore`**：此前忽略 `package-lock.json`，与根 `.gitignore` 注释「keep package-lock.json for consistent installs」直接矛盾，导致依赖版本未锁定。现修正并纳入版本控制
+
+### Changed
+
+- 四处重复 `log` 定义 → 统一 `createLogger(scope)`，并额外提供 `.warn()` / `.error()`
+- 全量按 Prettier 风格格式化 `src/` 与 `test/`（纯格式变更，无语义改动）
+
+### Notes
+
+- 验证：`eslint src/ test/` 零问题；`npm test` 22/22 通过；9 个 `.mjs` 语法校验通过；`node src/cli.mjs` 冒烟正常（配置读取、浏览器探测与自动拉起均工作）
+- 边界：单测仅覆盖与浏览器无关的纯函数，涉及 CDP / 页面交互的部分仍依赖真机验证，未声称已覆盖
+- 未做：`solveOnce`（`loop.mjs:182`，392 行单函数）拆分仍属高风险重构，建议等测试更充分后再动
+
 ## [1.0.0] - 2026-09-10
 
 **首个稳定版本**：完整破译 EduCoder 平台「命令行插入 + 代码栏查询」类题目的评测机制，并让 Agent 学会完整解题流程。由 2026-09-10 真机 20+ 次评测 + 抓包（`update_file`/`game_status`）+ 已通过题反推驱动，第 2、3 关当场验证通过。

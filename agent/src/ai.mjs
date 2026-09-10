@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { cfg, assertAiReady } from './config.mjs';
+import { createLogger } from './logger.mjs';
 
 const CAP_DIR = cfg.paths.capabilitiesDir;
 
@@ -30,9 +31,7 @@ export function renderTemplate(tpl, vars = {}) {
   );
 }
 
-function log(msg) {
-  console.log(`[ai] ${msg}`);
-}
+const log = createLogger('ai');
 
 /** OpenAI 兼容 chat/completions：SSE 流式接收（思考/正文进度实时可见），带指数退避重试 */
 export async function chat(messages, opts = {}) {
@@ -283,9 +282,7 @@ export async function answerBatch({ questions, reference = '' }) {
     });
     last = parseAnswers(content);
     if (Object.keys(last.map).length > 0) return last;
-    console.warn(
-      `[ai] 批量作答第 ${attempt} 次未解析出答案，原始输出：${last.raw.slice(0, 150)}`,
-    );
+    console.warn(`[ai] 批量作答第 ${attempt} 次未解析出答案，原始输出：${last.raw.slice(0, 150)}`);
   }
   return last;
 }
@@ -342,14 +339,17 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
 
   const origLines = orig.split(/\r?\n/);
   const head = origLines.slice(0, origBegin + 1); // 含 Begin 标记行
-  const tail = origLines.slice(origEnd);           // 含 End 标记行
+  const tail = origLines.slice(origEnd); // 含 End 标记行
 
   // 从 AI 输出里取标记之间的代码体；若 AI 也未带标记，则把整段当作代码体
   const aiBegin = findMarkerLine(ai, 'Begin');
   const aiEnd = findMarkerLine(ai, 'End');
   let body;
   if (aiBegin >= 0 && aiEnd >= 0 && aiEnd > aiBegin) {
-    body = ai.split(/\r?\n/).slice(aiBegin + 1, aiEnd).join('\n');
+    body = ai
+      .split(/\r?\n/)
+      .slice(aiBegin + 1, aiEnd)
+      .join('\n');
   } else {
     body = ai;
   }
@@ -389,6 +389,11 @@ export function splitAnalysisAndCode(markdown) {
 //   1. "未通过" / "没有通过" 会命中 "通过"，导致失败被判成成功；
 //   2. "AC" 是子串，英文文本中 "AC" 出现频率高（如 "ACCEPT"、"back" 中的 ac）。
 // 这里先做否定式短路，再匹配肯定词，且 "AC" 要求整词匹配。
+
+// 零失败信号：语义是「全部通过」，但字面含否定词表里也出现的「不匹配」。
+// 必须**先于**否定词短路判定，否则 EduCoder 常见的「共 3 组测试，0 组不匹配」
+// 会被误判为未通过，白白触发整轮反思重试（1.1.0 单测暴露）。
+const ZERO_FAIL_PATTERNS = [/0\s*组不匹配/, /全部匹配/];
 
 const NEGATIVE_PATTERNS = [
   /未通过/,
@@ -431,6 +436,10 @@ export function detectVerdict(text) {
   const s = String(text ?? '').trim();
   if (!s) return { passed: false, reason: '空结果' };
 
+  for (const re of ZERO_FAIL_PATTERNS) {
+    const m = s.match(re);
+    if (m) return { passed: true, reason: `零失败信号「${m[0]}」` };
+  }
   for (const re of NEGATIVE_PATTERNS) {
     const m = s.match(re);
     if (m) return { passed: false, reason: `命中否定词「${m[0]}」` };
@@ -500,33 +509,36 @@ export function parseCommandLines(text) {
   let t = String(text ?? '').trim();
   // 剥 ``` 围栏（宽容处理不配对的围栏）
   t = t.replace(/^```(?:sh|shell|bash|console)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
-  return t
-    .split(/\r?\n/)
-    // 只去行尾空白：行首缩进必须保留——heredoc 写 YAML/配置时缩进即语法，
-    // 上一版 l.trim() 把缩进剥成扁平键值对 → mongod 报 Unrecognized option
-    .map((l) => l.replace(/\s+$/, ''))
-    .filter((l) => {
-      const s = l.trim();
-      return s && !s.startsWith('#') && !s.startsWith('//');
-    })
-    // 提示符剥离（2026-09-09 修复）：旧通用式 /^[\w.:@~-]+\s*[>#]\s+/ 会把
-    // `cat > file <<'EOF'` 误判为 REPL 提示符，剥掉 "cat > " 前缀致写文件
-    // 命令全灭（-bash: …: No such file or directory），且反射重试永远复现
-    // ——解析器确定性缺陷是反思无法收敛的根因。现按提示符形态分别匹配，
-    // 一律要求提示符字符紧跟词尾（中间无空格），`cat > file`、`sort > out`
-    // 等重定向命令不再被误伤：
-    .map((l) =>
-      l
-        .replace(/^\([^)]*\)[>#]\s*/, '')                     // (x)> / (connect)> 括号形态
-        .replace(/^\$\s*/, '')                                // $ 提示符
-        .replace(/^[\w.:@~-]*@[\w.:@~-]*[#$]\s*/, '')         // user@host:# / user@host:$
-        .replace(/^(?:ba|z|da)?sh-\d[\d.]*[#$]\s*/, '')       // bash-5.1# / sh-4.4#
-        .replace(                                             // 已知 REPL 名（> 紧跟词尾，无空格）
-          /^(?:testdb|mongosh|mongo|mysql|redis-cli|redis|psql|neo4j|cypher-shell|hbase|influx|sqlite3?|duckdb)[>#]\s*/i,
-          '',
-        ),
-    )
-    .filter((l) => l.length > 0);
+  return (
+    t
+      .split(/\r?\n/)
+      // 只去行尾空白：行首缩进必须保留——heredoc 写 YAML/配置时缩进即语法，
+      // 上一版 l.trim() 把缩进剥成扁平键值对 → mongod 报 Unrecognized option
+      .map((l) => l.replace(/\s+$/, ''))
+      .filter((l) => {
+        const s = l.trim();
+        return s && !s.startsWith('#') && !s.startsWith('//');
+      })
+      // 提示符剥离（2026-09-09 修复）：旧通用式 /^[\w.:@~-]+\s*[>#]\s+/ 会把
+      // `cat > file <<'EOF'` 误判为 REPL 提示符，剥掉 "cat > " 前缀致写文件
+      // 命令全灭（-bash: …: No such file or directory），且反射重试永远复现
+      // ——解析器确定性缺陷是反思无法收敛的根因。现按提示符形态分别匹配，
+      // 一律要求提示符字符紧跟词尾（中间无空格），`cat > file`、`sort > out`
+      // 等重定向命令不再被误伤：
+      .map((l) =>
+        l
+          .replace(/^\([^)]*\)[>#]\s*/, '') // (x)> / (connect)> 括号形态
+          .replace(/^\$\s*/, '') // $ 提示符
+          .replace(/^[\w.:@~-]*@[\w.:@~-]*[#$]\s*/, '') // user@host:# / user@host:$
+          .replace(/^(?:ba|z|da)?sh-\d[\d.]*[#$]\s*/, '') // bash-5.1# / sh-4.4#
+          .replace(
+            // 已知 REPL 名（> 紧跟词尾，无空格）
+            /^(?:testdb|mongosh|mongo|mysql|redis-cli|redis|psql|neo4j|cypher-shell|hbase|influx|sqlite3?|duckdb)[>#]\s*/i,
+            '',
+          ),
+      )
+      .filter((l) => l.length > 0)
+  );
 }
 
 /**
@@ -551,7 +563,13 @@ export async function generateCommands({ problem, extra = '', terminalState = ''
  * 命令行题反思修复：复用 cmdline_reflection_fixer_1 的 prompt 与参数
  * @returns {Promise<{analysis: string, commands: string[]}>}
  */
-export async function reflectCommands({ problem, previousCommands, evalResult, terminalState = '', lessons = [] }) {
+export async function reflectCommands({
+  problem,
+  previousCommands,
+  evalResult,
+  terminalState = '',
+  lessons = [],
+}) {
   const cap = readCapability('cmdline_reflection_fixer_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
@@ -610,7 +628,7 @@ export function sanitizeShellSubmission(text) {
   const out = src.split(/\r?\n/).map((line) => {
     const t = line.trim();
     // 注释行不处理（mongo shell 认 // 与 /* */ 注释；# 行可能是 heredoc 约定）
-    if (!t || /^\/\//.test(t) || /^\/\*/.test(t) || /^[*\#]/.test(t)) return line;
+    if (!t || /^\/\//.test(t) || /^\/\*/.test(t) || /^[*#]/.test(t)) return line;
     let cur = line;
     if (cur.includes('；')) {
       cur = cur.replace(/；/g, '; ');

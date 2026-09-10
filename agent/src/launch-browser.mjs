@@ -139,9 +139,7 @@ export async function launchBrowser(opts = {}) {
   const preferred = cfg.browser.debugPort;
   const port = pickAvailablePort(preferred);
   if (port !== preferred) {
-    console.warn(
-      `[launch] 端口 ${preferred} 位于 Windows 保留区间，已自动改用 ${port}`,
-    );
+    console.warn(`[launch] 端口 ${preferred} 位于 Windows 保留区间，已自动改用 ${port}`);
   }
 
   const args = [
@@ -201,8 +199,7 @@ export async function launchBrowser(opts = {}) {
 export async function launchMyEdge(opts = {}) {
   const exe = resolveBrowserPath();
   const isEdge = /edge/i.test(exe);
-  const appDataLocal =
-    process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const appDataLocal = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const realDir = opts.userDataDir
     ? path.resolve(opts.userDataDir)
     : isEdge
@@ -212,8 +209,7 @@ export async function launchMyEdge(opts = {}) {
     throw new Error(`未找到浏览器用户数据目录：${realDir}`);
   }
   const linkPath =
-    opts.linkDir ||
-    path.join(os.homedir(), isEdge ? '.edge-debug-link' : '.chrome-debug-link');
+    opts.linkDir || path.join(os.homedir(), isEdge ? '.edge-debug-link' : '.chrome-debug-link');
 
   // 1. 幂等：调试端口已就绪就直接复用
   const probeEndpoint = `http://127.0.0.1:${cfg.browser.debugPort}`;
@@ -272,8 +268,6 @@ export async function launchMyEdge(opts = {}) {
   });
   console.log('[my-edge] 完成：这就是你平时的浏览器（账号都在），且已带调试端口。');
   console.log('[my-edge] 之后双击 start-watch.bat / start-course.bat 即可接管。');
-  console.log(
-    '[my-edge] 注意：日常若从任务栏另开 Edge（不带端口），接管前需再运行一次本命令。',
-  );
+  console.log('[my-edge] 注意：日常若从任务栏另开 Edge（不带端口），接管前需再运行一次本命令。');
   return { ...r, linkPath };
 }

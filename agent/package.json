@@ -1,9 +1,18 @@
 {
   "name": "miaoda-coding-agent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "description": "浏览器自动化解题 Agent：感知评测页面 -> AI 生成/反思 -> 自动提交 -> 点评测 -> 成功翻页",
+  "author": "吴国伟",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shangguanyunji663/miaoda-code-completion-assistant.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "browser": "node src/cli.mjs browser",
     "my-edge": "node src/cli.mjs my-edge",
@@ -15,9 +24,19 @@
     "lite": "node src/cli.mjs lite",
     "course": "node src/cli.mjs course",
     "course-probe": "node src/cli.mjs course-probe",
-    "models": "node src/cli.mjs models"
+    "models": "node src/cli.mjs models",
+    "test": "node --test test/*.test.mjs",
+    "lint": "eslint src/ test/",
+    "format": "prettier --write src/ test/ eslint.config.js",
+    "format:check": "prettier --check src/ test/ eslint.config.js"
   },
   "dependencies": {
     "playwright-core": "^1.49.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^9.1.2",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6"
   }
 }

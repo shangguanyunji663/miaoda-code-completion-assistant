@@ -87,7 +87,9 @@ async function main() {
       await withPage(async (page) => {
         const { file, probe } = await dumpProbe(page, 'dump');
         console.log(`快照已导出：${file}`);
-        console.log(`题型=${probe.taskType} 编辑器=${probe.editor?.type ?? '无'} 题干长度=${probe.problem?.length ?? 0}`);
+        console.log(
+          `题型=${probe.taskType} 编辑器=${probe.editor?.type ?? '无'} 题干长度=${probe.problem?.length ?? 0}`,
+        );
       });
       return;
     }
@@ -145,8 +147,10 @@ async function main() {
         console.log(`\n快照已导出：${file}`);
         if (cards.length === 0) {
           const cands = await collectCardCandidates(page);
-          console.log(`\n候选节点采样(${cands.length})——text 为 JSON 转义串，可看到图标字体等不可见字符：`);
-          for (const [i, c] of cands.slice(0, 10).entries()) {
+          console.log(
+            `\n候选节点采样(${cands.length})——text 为 JSON 转义串，可看到图标字体等不可见字符：`,
+          );
+          for (const c of cands.slice(0, 10)) {
             console.log(`  <${c.tag} class="${c.cls}"> text=${c.text}`);
           }
           console.log('未识别到卡片：请把上面的输出发给开发侧，按真实结构精调识别规则');
@@ -166,7 +170,9 @@ async function main() {
 
     default:
       console.log(`未知命令：${cmd}`);
-      console.log('可用：browser | my-edge | probe | dump | once | run | watch | lite | course | course-probe | models');
+      console.log(
+        '可用：browser | my-edge | probe | dump | once | run | watch | lite | course | course-probe | models',
+      );
       process.exitCode = 1;
   }
 }

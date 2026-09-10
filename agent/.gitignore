@@ -8,4 +8,5 @@
 dumps/
 
 node_modules/
-package-lock.json
+# 注意：package-lock.json 必须提交——根 .gitignore 亦按此约定（依赖版本可复现）。
+# 此处曾误将其忽略，与根目录说明冲突，1.1.0 修正。

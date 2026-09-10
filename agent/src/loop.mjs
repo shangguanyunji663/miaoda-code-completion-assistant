@@ -11,6 +11,7 @@
 // 选择题 / 填空题走 answerQuestion 分支，题型由 perceive.classifyTask 判定。
 
 import { cfg } from './config.mjs';
+import { createLogger } from './logger.mjs';
 import { connectBrowser, pickTargetPage } from './browser.mjs';
 import {
   probePage,
@@ -58,7 +59,7 @@ import {
   reflectCommands,
 } from './ai.mjs';
 
-const log = (m) => console.log(`[loop] ${m}`);
+const log = createLogger('loop');
 
 /** 题干命中这些关键词才做客户端可用性探测（纯 bash 文件任务不浪费一轮键入） */
 const NEEDS_DB = /(mongodb|mongosh|\bmongo\b|mysql|redis|psql|postgres|数据库|集合)/i;
@@ -296,7 +297,9 @@ export async function solveOnce(page, probe) {
         log('混合题前置：命令行数据准备生成结果为空，跳过，直接代码栏作答');
       }
     } else {
-      log('混合题前置：终端未出现，跳过命令行准备（评测环境共享终端数据库，未插入数据时代码栏查询结果为空）');
+      log(
+        '混合题前置：终端未出现，跳过命令行准备（评测环境共享终端数据库，未插入数据时代码栏查询结果为空）',
+      );
     }
     // 不 return，落入下方代码分支
   }
@@ -320,7 +323,9 @@ export async function solveOnce(page, probe) {
       if (cmds === null) {
         // 生成期间无中间日志可打，必须提前预告静默期，否则推理模型
         // 的思考+生成会被用户当成"卡死/不作答"。日志格式四处 AI 调用统一。
-        log(`正在调用 AI 生成命令（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`);
+        log(
+          `正在调用 AI 生成命令（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
+        );
         const t0 = Date.now();
         // 环境感知：生成前先探测终端当前 shell（bash / mongosh / …），
         // 把事实与该环境的书写约束注入 prompt，防止 AI 搞错环境
@@ -413,7 +418,9 @@ export async function solveOnce(page, probe) {
       }
       if (attempt === cfg.loop.maxRetry) break;
 
-      log(`正在调用 AI 命令反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`);
+      log(
+        `正在调用 AI 命令反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
+      );
       const rt0 = Date.now();
       // 环境感知：反思前重新探测——上一轮序列执行完终端可能已在某个 REPL
       // 内部，重出的命令必须从这个真实状态出发（不重复进入、不混写语法）
@@ -477,7 +484,9 @@ export async function solveOnce(page, probe) {
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     if (code === null) {
       // 同命令行分支：预告静默期 + 统计耗时，消除"切完 tab 就没动静"的观感
-      log(`正在调用 AI 生成代码（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`);
+      log(
+        `正在调用 AI 生成代码（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
+      );
       const t0 = Date.now();
       code = await generateCode({
         problem,
@@ -546,7 +555,9 @@ export async function solveOnce(page, probe) {
 
     if (attempt === cfg.loop.maxRetry) break;
 
-    log(`正在调用 AI 代码反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`);
+    log(
+      `正在调用 AI 代码反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
+    );
     const rt0 = Date.now();
     const fixed = await reflectAndFix({
       problem: slimForReflection(problem),
@@ -772,14 +783,13 @@ export async function liteLoop() {
   process.on('SIGTERM', shutdown);
 
   const markHandled = (page) =>
-    page.evaluate(() => {
-      window.__liteHandled = true;
-    }).catch(() => {});
-
-  const isFresh = (page) =>
     page
-      .evaluate(() => !window.__liteHandled)
-      .catch(() => false);
+      .evaluate(() => {
+        window.__liteHandled = true;
+      })
+      .catch(() => {});
+
+  const isFresh = (page) => page.evaluate(() => !window.__liteHandled).catch(() => false);
 
   while (true) {
     if (!busy) {
@@ -934,7 +944,9 @@ export async function courseLoop() {
           try {
             const cands = await collectCardCandidates(listPage);
             if (cands.length === 0) {
-              log('  页面上没有任何含「开始学习」的候选节点（列表可能在 shadow DOM/特殊容器/iframe 中）');
+              log(
+                '  页面上没有任何含「开始学习」的候选节点（列表可能在 shadow DOM/特殊容器/iframe 中）',
+              );
             }
             for (const c of cands.slice(0, 8)) {
               log(`  候选 <${c.tag} class="${c.cls}"> text=${c.text}`);

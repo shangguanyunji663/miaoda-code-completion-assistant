@@ -15,10 +15,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { cfg } from './config.mjs';
+import { createLogger } from './logger.mjs';
 
-function log(msg) {
-  console.log(`[perceive] ${msg}`);
-}
+const log = createLogger('perceive');
 
 /** 在浏览器上下文执行：探测编辑器类型 */
 const DETECT_EDITOR = () => {
@@ -99,7 +98,15 @@ const READ_PROBLEM = () => {
     const score = text.length * leftBonus * depthPenalty;
     if (score > bestScore) {
       bestScore = score;
-      best = { text, rect: { left: Math.round(r.left), top: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) } };
+      best = {
+        text,
+        rect: {
+          left: Math.round(r.left),
+          top: Math.round(r.top),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+        },
+      };
     }
   }
   if (best) {
@@ -117,9 +124,14 @@ const READ_PROBLEM = () => {
 const READ_INPUTS = () => {
   const radios = document.querySelectorAll('input[type="radio"]').length;
   const checks = document.querySelectorAll('input[type="checkbox"]').length;
-  const texts = Array.from(document.querySelectorAll('input[type="text"], input:not([type])')).length;
+  const texts = Array.from(
+    document.querySelectorAll('input[type="text"], input:not([type])'),
+  ).length;
   const labels = Array.from(document.querySelectorAll('input[type="radio"]')).map((r) => {
-    const lab = r.closest('label')?.innerText ?? document.querySelector(`label[for="${r.id}"]`)?.innerText ?? '';
+    const lab =
+      r.closest('label')?.innerText ??
+      document.querySelector(`label[for="${r.id}"]`)?.innerText ??
+      '';
     return lab.trim().slice(0, 120);
   });
   return { radios, checks, texts, choiceLabels: labels };
@@ -138,27 +150,30 @@ const READ_QUESTIONS = () => {
   const ul = document.querySelector('ul.choose-container');
   if (!ul) return [];
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
-  return Array.from(ul.children).map((li, i) => {
-    const kids = Array.from(li.children);
-    const stem = norm(kids[0]?.innerText);
-    const optWrap = kids.find((k) => k.querySelector('input'));
-    const anchors = Array.from(optWrap?.querySelectorAll('a') ?? []);
-    const options = anchors
-      .map((a) => ({ text: norm(a.innerText), type: a.querySelector('input')?.type ?? '' }))
-      .filter((o) => o.text && o.type);
-    return {
-      no: i + 1,
-      stem,
-      options: options.map((o) => o.text),
-      multi: options.some((o) => o.type === 'checkbox'),
-    };
-  }).filter((q) => q.options.length > 0);
+  return Array.from(ul.children)
+    .map((li, i) => {
+      const kids = Array.from(li.children);
+      const stem = norm(kids[0]?.innerText);
+      const optWrap = kids.find((k) => k.querySelector('input'));
+      const anchors = Array.from(optWrap?.querySelectorAll('a') ?? []);
+      const options = anchors
+        .map((a) => ({ text: norm(a.innerText), type: a.querySelector('input')?.type ?? '' }))
+        .filter((o) => o.text && o.type);
+      return {
+        no: i + 1,
+        stem,
+        options: options.map((o) => o.text),
+        multi: options.some((o) => o.type === 'checkbox'),
+      };
+    })
+    .filter((q) => q.options.length > 0);
 };
 
 /** 在浏览器上下文执行：列出可点击元素的文本（供按钮定位与 dump 排错） */
 const READ_CLICKABLES = () => {
   const out = [];
-  const sel = 'button, a, [role="button"], input[type="button"], input[type="submit"], .btn, [class*="btn"]';
+  const sel =
+    'button, a, [role="button"], input[type="button"], input[type="submit"], .btn, [class*="btn"]';
   for (const el of document.querySelectorAll(sel)) {
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) continue;
@@ -176,7 +191,21 @@ const READ_CLICKABLES = () => {
 
 /** 在浏览器上下文执行：尝试抓取评测结果面板文本 */
 const READ_EVAL_PANEL = () => {
-  const kw = ['评测', '测试', '结果', '运行', '输出', '通过', '用例', '不匹配', '错误', 'result', 'output', 'console', 'error'];
+  const kw = [
+    '评测',
+    '测试',
+    '结果',
+    '运行',
+    '输出',
+    '通过',
+    '用例',
+    '不匹配',
+    '错误',
+    'result',
+    'output',
+    'console',
+    'error',
+  ];
   // 结果面板专属标记（EduCoder 系文风）。教训（2026-09-09 实测）：题干区
   // 也含"测试说明/运行"等宽泛词，纯关键词+取最长会让题干区以长度优势
   // 稳定胜出——题干每次评测前后不变，判变化逻辑因此失效，60s 空等后
@@ -272,16 +301,16 @@ export async function probePage(page) {
 
   const main = page.mainFrame();
   const problem = await main.evaluate(READ_PROBLEM).catch(() => null);
-  const inputs = await main.evaluate(READ_INPUTS).catch(() => ({ radios: 0, checks: 0, texts: 0, choiceLabels: [] }));
+  const inputs = await main
+    .evaluate(READ_INPUTS)
+    .catch(() => ({ radios: 0, checks: 0, texts: 0, choiceLabels: [] }));
   const questions = await main.evaluate(READ_QUESTIONS).catch(() => []);
   const clickables = await main.evaluate(READ_CLICKABLES).catch(() => []);
   const evalPanel = await main.evaluate(READ_EVAL_PANEL).catch(() => null);
 
   let code = '';
   if (editor && editorFrameIdx >= 0) {
-    code = await frames[editorFrameIdx]
-      .evaluate(READ_CODE, editor.type)
-      .catch(() => '');
+    code = await frames[editorFrameIdx].evaluate(READ_CODE, editor.type).catch(() => '');
   }
 
   return {
@@ -306,7 +335,13 @@ export async function probePage(page) {
  */
 export function classifyTask({ editor, inputs }) {
   const { radios = 0, checks = 0, texts = 0 } = inputs ?? {};
-  if (editor && (editor.type === 'monaco' || editor.type === 'ace' || editor.type.startsWith('codemirror') || editor.type === 'textarea')) {
+  if (
+    editor &&
+    (editor.type === 'monaco' ||
+      editor.type === 'ace' ||
+      editor.type.startsWith('codemirror') ||
+      editor.type === 'textarea')
+  ) {
     return 'code';
   }
   if (radios > 0 || checks > 0) return 'choice';
@@ -397,9 +432,10 @@ export async function writeEditorCode(page, code) {
   const probe = await probePage(page);
   if (!probe.editor) throw new Error('未识别到代码编辑器，无法写入');
 
-  const target = probe.editorFrameIdx === 0
-    ? page.mainFrame()
-    : page.frames()[probe.editorFrameIdx] ?? page.mainFrame();
+  const target =
+    probe.editorFrameIdx === 0
+      ? page.mainFrame()
+      : (page.frames()[probe.editorFrameIdx] ?? page.mainFrame());
 
   const selectorMap = {
     monaco: '.monaco-editor .view-lines',
@@ -455,50 +491,51 @@ export async function writeEditorCode(page, code) {
   // 逐级尝试（monaco/CM5 setValue → 平台 updateMonacoValue），每级写入后
   // 以"去空白逐字符相等"强验证，失败落下一级，全部失败回退键盘路径。
   const apiWrite = async (method) =>
-    target.evaluate(
-      ([method, value]) => {
-        try {
-          if (method === 'setValue') {
-            if (!window.monaco && typeof window.require === 'function') {
-              try {
-                window.monaco = window.require('monaco-editor');
-              } catch {}
+    target
+      .evaluate(
+        ([method, value]) => {
+          try {
+            if (method === 'setValue') {
+              if (!window.monaco && typeof window.require === 'function') {
+                try {
+                  window.monaco = window.require('monaco-editor');
+                } catch {}
+              }
+              const ns = window.monaco?.editor
+                ? window.monaco
+                : window.Monaco?.editor
+                  ? window.Monaco
+                  : null;
+              if (!ns) return false;
+              const models = ns.editor.getModels?.() ?? [];
+              const filled = models
+                .map((m) => ({ m, v: m.getValue?.() ?? '' }))
+                .filter((x) => x.v.trim());
+              // 多模型时取最长非空者（与回读 readBack 的选择判据一致，保证同源）
+              const pick = filled.length
+                ? filled.sort((a, b) => b.v.length - a.v.length)[0].m
+                : models[0];
+              if (pick) {
+                pick.setValue(value);
+                return true;
+              }
+              const cm = document.querySelector('.CodeMirror')?.CodeMirror;
+              if (cm?.setValue) {
+                cm.setValue(value);
+                return true;
+              }
+              return false;
             }
-            const ns = window.monaco?.editor
-              ? window.monaco
-              : window.Monaco?.editor
-                ? window.Monaco
-                : null;
-            if (!ns) return false;
-            const models = ns.editor.getModels?.() ?? [];
-            const filled = models
-              .map((m) => ({ m, v: m.getValue?.() ?? '' }))
-              .filter((x) => x.v.trim());
-            // 多模型时取最长非空者（与回读 readBack 的选择判据一致，保证同源）
-            const pick = filled.length
-              ? filled.sort((a, b) => b.v.length - a.v.length)[0].m
-              : models[0];
-            if (pick) {
-              pick.setValue(value);
+            if (method === 'platform' && typeof window.updateMonacoValue === 'function') {
+              window.updateMonacoValue(value);
               return true;
             }
-            const cm = document.querySelector('.CodeMirror')?.CodeMirror;
-            if (cm?.setValue) {
-              cm.setValue(value);
-              return true;
-            }
-            return false;
-          }
-          if (method === 'platform' && typeof window.updateMonacoValue === 'function') {
-            window.updateMonacoValue(value);
-            return true;
-          }
-        } catch {}
-        return false;
-      },
-      [method, code],
-    )
-    .catch(() => false);
+          } catch {}
+          return false;
+        },
+        [method, code],
+      )
+      .catch(() => false);
 
   for (const [method, label] of [
     ['setValue', 'monaco/CodeMirror.setValue'],
@@ -512,12 +549,12 @@ export async function writeEditorCode(page, code) {
       landed = await readBack();
     }
     if (strip(landed) === strip(code)) {
-      log(
-        `已通过编辑器 API 写入（方式=${label}，${code.length} 字符，回读逐字符一致）`,
-      );
+      log(`已通过编辑器 API 写入（方式=${label}，${code.length} 字符，回读逐字符一致）`);
       return { type: probe.editor.type, length: code.length, verified: true, via: `api:${method}` };
     }
-    log(`API 写入（${label}）回读不一致（${strip(landed).length}/${want} 非空白字符），尝试下一方式`);
+    log(
+      `API 写入（${label}）回读不一致（${strip(landed).length}/${want} 非空白字符），尝试下一方式`,
+    );
   }
   log('API 写入均不可用或未通过验证，回退键盘写入');
 
@@ -595,7 +632,7 @@ export async function readTerminalText(page) {
     const t2 = await f
       .evaluate(() => {
         const screen = document.querySelector('.xterm-screen');
-        return screen ? screen.innerText ?? '' : '';
+        return screen ? (screen.innerText ?? '') : '';
       })
       .catch(() => '');
     if (t2 && t2.trim()) return t2.trim();
@@ -687,7 +724,10 @@ export async function detectTerminalEnv(page) {
   }
   // mongosh：提示符以 > 结尾，且近期输出/提示符行本身有 mongo 痕迹
   //（mongosh 横幅含 "mongosh"/"MongoDB"；裸 > 无证据时不判定）
-  if (/>$/.test(last) && /(mongosh|mongodb|Enterprise MongoDB|Current Mongosh)/i.test(`${joined} ${last}`)) {
+  if (
+    />$/.test(last) &&
+    /(mongosh|mongodb|Enterprise MongoDB|Current Mongosh)/i.test(`${joined} ${last}`)
+  ) {
     const db = (last.match(/([A-Za-z][A-Za-z0-9_-]*)>\s*$/) ?? [])[1] ?? '';
     return {
       kind: 'mongosh',
@@ -738,9 +778,7 @@ const COLLECT_CARDS = () => {
   const clean = (s) => norm(String(s ?? '').replace(/[^\p{L}\p{N}\s]/gu, ' '));
   // 先用 textContent 粗筛（不触发 layout），再 innerText 精确比对
   // （大页面上对数千节点逐个取 innerText 会强制重排，非常慢）
-  const nodes = Array.from(
-    document.querySelectorAll('a, button, span, div, li, p, i, em, b, td'),
-  )
+  const nodes = Array.from(document.querySelectorAll('a, button, span, div, li, p, i, em, b, td'))
     .filter((el) => (el.textContent || '').includes('开始学习'))
     // 不能用 innerText 直接全等：图标字体（Ant Design 等用私有区字符）会混进
     // innerText，如 "\uE87D开始学习"；有的站点还用 letter-spacing 排版产生空格。

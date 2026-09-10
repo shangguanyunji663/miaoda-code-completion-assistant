@@ -19,10 +19,7 @@ import { launchBrowser } from './launch-browser.mjs';
  * 不受后续环境变量变化影响）。
  */
 async function withoutProxy(fn) {
-  const keys = [
-    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
-    'http_proxy', 'https_proxy', 'all_proxy',
-  ];
+  const keys = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
   const saved = {};
   for (const k of keys) {
     saved[k] = process.env[k];
@@ -48,9 +45,7 @@ export async function connectBrowser() {
   const endpoint = cfg.browser.cdpEndpoint;
   let browser;
   try {
-    browser = await withoutProxy(() =>
-      chromium.connectOverCDP(endpoint, { timeout: 10000 }),
-    );
+    browser = await withoutProxy(() => chromium.connectOverCDP(endpoint, { timeout: 10000 }));
   } catch (err) {
     if (!cfg.browser.autoLaunch) {
       throw new Error(
