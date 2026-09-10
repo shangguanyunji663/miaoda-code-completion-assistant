@@ -1,6 +1,7 @@
 // EXPORTS: probePage, readEditorCode, findClickable, writeEditorCode, dumpProbe,
 //          collectCards, collectSections, collectCardCandidates, readEvalPanel, dumpCourseProbe,
-//          waitForTerminal, waitForEditor, readTerminalText, isTerminalAtPrompt, readTerminalLines
+//          waitForTerminal, waitForEditor, readTerminalText, isTerminalAtPrompt, readTerminalLines,
+//          detectTerminalEnv
 // 页面感知层。
 //
 // 设计原则：**不硬编码任何站点 selector**。所有识别走启发式——
@@ -629,6 +630,85 @@ export async function isTerminalAtPrompt(page) {
     if (r !== null) return r;
   }
   return false;
+}
+
+/**
+ * 探测 xterm 终端当前所处的 shell 环境（命令行题的环境感知）。
+ * 背景（2026-09-10 用户反馈）：AI 老是搞错环境——终端已在 mongosh 里却输出
+ * bash 命令，或在 bash 里直接执行 use xxx / db.xxx 等 REPL 子命令；反思重试
+ * 时还会重复执行「进入 REPL」命令（mongosh 里再敲 mongosh 必报 SyntaxError）。
+ * 把探测结果注入命令生成/反思的 prompt，让 AI 从真实环境出发写命令。
+ *
+ * 实现：取 .xterm-rows 最后若干行，按提示符行尾形态识别 shell：
+ *   bash    以 $ / # 结尾（root@…#、bash-5.1#、裸 $）
+ *   mongosh xxx> / mongosh testdb> / mongodb://…>（裸 > 形态必须伴随近期输出
+ *           里的 mongo 痕迹，防止其它 REPL/回显行误报）
+ *   mysql / redis / psql / neo4j 按各自提示符特征匹配
+ * 识别是启发式，"无法识别"不是错误——如实交给 AI 自行判断。
+ * @returns {Promise<{kind: string, db: string, desc: string}>}
+ *   kind: bash|mongosh|mysql|redis|psql|neo4j|unknown；db 为 mongosh 当前库名；
+ *   desc 为注入 prompt 的中文说明（含该环境下的命令书写约束）
+ */
+export async function detectTerminalEnv(page) {
+  const lines = (await readTerminalLines(page))
+    .map((s) => s.replace(/\s+$/, ''))
+    .filter((s) => s.trim());
+  const recent = lines.slice(-20);
+  const last = recent.length ? recent[recent.length - 1] : '';
+  const joined = recent.join('\n');
+
+  if (/(^|\s)mysql>\s*$/.test(last)) {
+    return {
+      kind: 'mysql',
+      db: '',
+      desc: '当前处于 MySQL 交互终端（mysql>）。后续命令必须全部是 SQL 语句且以分号结尾（SHOW DATABASES; / USE xxx; / SELECT …），禁止 bash 与 mongo shell 语法。',
+    };
+  }
+  if (/(^|\s)(?:redis|[0-9.]+:\d{4})>\s*$/.test(last)) {
+    return {
+      kind: 'redis',
+      db: '',
+      desc: '当前处于 redis-cli 交互终端。后续命令必须全部是 Redis 命令（PING / SET / GET / KEYS …），禁止 bash 与 SQL 语法。',
+    };
+  }
+  if (/(^|\s)psql(\s*\([^)]*\))?>\s*$/.test(last) || /(^|\s)[a-z_]+=#\s*$/.test(last)) {
+    return {
+      kind: 'psql',
+      db: '',
+      desc: '当前处于 PostgreSQL 交互终端（psql）。后续命令必须全部是以分号结尾的 SQL 或 psql 元命令（\\l、\\c 等），禁止 bash 语法。',
+    };
+  }
+  if (/(^|\s)(?:neo4j|cypher-shell)[^>]*>\s*$/.test(last)) {
+    return {
+      kind: 'neo4j',
+      db: '',
+      desc: '当前处于 Neo4j cypher-shell。后续命令必须全部是以分号结尾的 Cypher 语句，禁止 bash 语法。',
+    };
+  }
+  // mongosh：提示符以 > 结尾，且近期输出/提示符行本身有 mongo 痕迹
+  //（mongosh 横幅含 "mongosh"/"MongoDB"；裸 > 无证据时不判定）
+  if (/>$/.test(last) && /(mongosh|mongodb|Enterprise MongoDB|Current Mongosh)/i.test(`${joined} ${last}`)) {
+    const db = (last.match(/([A-Za-z][A-Za-z0-9_-]*)>\s*$/) ?? [])[1] ?? '';
+    return {
+      kind: 'mongosh',
+      db,
+      desc: `当前处于 MongoDB shell（mongosh${db ? `，当前库 ${db}` : ''}）。后续命令必须全部是 mongo shell 语法（use xxx / show xxx / db.xxx(…)）；禁止再执行 mongosh（在 mongosh 里敲 mongosh 必报 SyntaxError）、禁止 bash 命令（ls / cd / cat / mkdir 等）、无需 exit 后重进；若确需 bash 操作，先执行 exit 回到 bash。`,
+    };
+  }
+  if (/[#$]\s*$/.test(last)) {
+    return {
+      kind: 'bash',
+      db: '',
+      desc: '当前处于 bash shell 提示符（不在任何数据库 REPL 内）。若任务要求 MongoDB / MySQL / Redis 等数据库操作：必须先执行进入命令（mongosh / mysql -u… -p / redis-cli）建立会话，再逐条执行其子命令；严禁把数据库 shell 的子命令直接当 bash 命令执行（bash 里敲 use xxx / db.xxx / show xxx 必报 command not found）。',
+    };
+  }
+  return {
+    kind: 'unknown',
+    db: '',
+    desc: last
+      ? `当前终端提示符无法识别（最后一行："${last.slice(-40)}"）。请依据任务自行判断目标环境；如需数据库操作，从 bash 基线先建立会话再执行子命令，严禁混用两种环境的语法。`
+      : '终端暂无回显（尚未出现提示符），按 bash 基线处理：数据库操作需先执行进入命令（mongosh / mysql / redis-cli）建立会话，再逐条执行其子命令。',
+  };
 }
 
 /**

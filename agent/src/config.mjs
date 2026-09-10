@@ -77,6 +77,11 @@ export const cfg = {
     // 思考全关开关（极简任务用，默认开思考走分级）
     enableThinking: pick('AI_ENABLE_THINKING', '1') === '1',
     timeoutMs: pickNum('AI_TIMEOUT_MS', AI_DEFAULTS.timeoutMs),
+  // 思考硬闸（毫秒）：流式响应中"仍在思考、正文 0 字"持续超过该时长即
+  // 主动断流，重试强制关思考（双通道 enable_thinking）。0 = 不设限。
+  // 兜底场景：端点忽略思考开关、推理模型对简单反思题穷举假设拖到数分钟。
+  // 默认 20s（2026-09-10 用户指定上限）：正常思考 30s 内应见正文，超时多为空转
+  thinkingCapMs: pickNum('AI_THINKING_CAP_MS', 20000),
   },
   browser: {
     // 连接用户已登录的浏览器（Edge / Chrome），需以 --remote-debugging-port 启动

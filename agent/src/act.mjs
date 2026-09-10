@@ -78,7 +78,7 @@ export async function clickNext(page) {
  * 策略：用轻量探针（readEvalPanel，含 iframe 扫描）轮询结果面板文本，
  * 直到与点击前不同、且连续 3 次采样保持不变。
  * 相比旧版逐轮跑全页探测（probePage，每轮多次 evaluate、秒级延迟），
- * 现在每轮只做一次 evaluate，出结果后 ~2.4s 内即可判定。
+ * 现在每轮只做一次 evaluate，通过类结果可秒级判定（弹窗/成功词即时返回）。
  * @returns {Promise<string>} 评测结果文本
  */
 export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
@@ -91,21 +91,38 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
   // 与 readEvalPanel 的结果标记策略配套：判定捕获文本是否带结果面板特征
   const hasResultMarker = (t) =>
     /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/.test(t ?? '');
+  const hasSuccessWord = (t) => /通过|成功|accepted|恭喜/i.test(t ?? '');
+  // 面板出现确定性成功词且无任何失败词 → 立即采用，不等稳定采样（省 1.5~2.5s）。
+  // 不用裸「通过」：EduCoder 系逐测试集写「测试集N 通过」，中途采样会误判。
+  const isDefiniteSuccess = (t) =>
+    !!t &&
+    /(全部通过|评测通过|测试通过|答案正确|accepted|恭喜|0\s*组不匹配)/i.test(t) &&
+    !/(不匹配|未通过|没有通过|失败|错误|异常|wrong\s*answer|time\s*limit|runtime\s*error|compile\s*error)/i.test(t);
 
   while (Date.now() < deadline) {
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(400); // 2026-09-10：800→400ms，判定延迟减半
+    // 「恭喜您通过本关」弹窗是平台权威通过宣告：出现即判过并立即返回。
+    // （2026-09-10 真机实测：弹窗带入场动画、可能早于面板文本稳定出现，
+    // 旧版只在稳定后查一次导致"弹窗已庆祝、判定却是未通过"）
+    if (await isPassModalVisible(page)) {
+      log('检测到「恭喜您通过本关」弹窗，立即判为通过');
+      return `${best}\n恭喜您通过本关`;
+    }
     const now = await readEvalPanel(page);
     if (now && now !== before) {
+      best = now;
+      if (isDefiniteSuccess(now)) {
+        log('面板文本命中确定性成功词，立即判为通过（不等稳定采样）');
+        return now;
+      }
       if (now === last) {
         stableCount++;
         if (stableCount >= 3) {
-          best = now;
           break;
         }
       } else {
         stableCount = 1;
       }
-      best = now;
       last = now;
     } else if (now && hasResultMarker(now) && Date.now() - start > 3000) {
       // 同错复现场景（2026-09-09 实测 60s 空等）：新评测结果与点击前面板
@@ -120,14 +137,18 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
     }
   }
 
-  // 兜底信号（2026-09-09 实测新增）：「恭喜您通过本关」庆祝弹窗是平台的
-  // 权威通过宣告。若捕获文本未含成功词但弹窗在场（面板深层文本偶尔捕获
-  // 不全），把弹窗文本并入 best，detectVerdict 的「通过」兜底即可判过。
-  if (best && !/通过|成功|accepted/i.test(best)) {
-    const modal = page.getByText('恭喜您通过', { exact: false }).first();
-    if (await modal.isVisible().catch(() => false)) {
-      best = `${best}\n恭喜您通过本关`;
-      log('捕获文本无成功词，但检测到「恭喜您通过本关」弹窗，判为通过');
+  // 兜底信号（2026-09-09 新增，2026-09-10 加强）：文本无成功词时不再只查一次
+  // 弹窗，而是继续等至多 4s——弹窗可能晚于面板稳定才弹出（本次事故根因）。
+  // 面板全程未捕获（best 为空）也要查：弹窗在场的判定价值高于"空结果"。
+  if (!hasSuccessWord(best)) {
+    const modalDeadline = Date.now() + 4000;
+    while (Date.now() < modalDeadline) {
+      if (await isPassModalVisible(page)) {
+        best = `${best}\n恭喜您通过本关`;
+        log('捕获文本无成功词，但检测到「恭喜您通过本关」弹窗，判为通过');
+        break;
+      }
+      await page.waitForTimeout(300);
     }
   }
 
@@ -138,6 +159,15 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
     );
   }
   return best;
+}
+
+/** 「恭喜您通过本关」庆祝弹窗是否在场（平台权威通过宣告） */
+async function isPassModalVisible(page) {
+  return page
+    .getByText('恭喜您通过', { exact: false })
+    .first()
+    .isVisible()
+    .catch(() => false);
 }
 
 /**
@@ -401,6 +431,31 @@ export async function switchTaskTab(page, tabText) {
   return { clicked: true, active: true, found: true };
 }
 
+/** 在所有 frame 中找可见 xterm 终端；返回 { loc, frame } 或 null */
+async function findVisibleTerminal(page) {
+  for (const f of [page.mainFrame(), ...page.frames().filter((x) => x !== page.mainFrame())]) {
+    const loc = f.locator('.xterm-screen').first();
+    if (await loc.isVisible().catch(() => false)) {
+      return { loc, frame: f };
+    }
+  }
+  return null;
+}
+
+// 合成 paste 事件：对 xterm 隐藏 textarea（.xterm-helper-textarea）派发
+// 带 clipboardData 的 paste——直达 xterm 粘贴管线，中文/Unicode 完整上屏。
+// （2026-09-09 CDP 真机实测：keyboard.type 会把 CJK 丢成空串——name:""
+// 事故根源；insertText 被 xterm 忽略；剪贴板 API/execCommand 在无用户
+// 手势下写不进。合成 paste：中文+英文完整上屏。）
+const XTERM_PASTE = (text) => {
+  const ta = document.querySelector('.xterm-helper-textarea');
+  if (!ta) return false;
+  const dt = new DataTransfer();
+  dt.setData('text/plain', text);
+  ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  return true;
+};
+
 /**
  * 向 xterm 终端逐条键入命令（每条后回车）。
  * 写入方式遵循项目约束：真实键盘输入（type 逐字符触发 xterm 的 keydown 捕获），
@@ -423,34 +478,13 @@ export async function runTerminalCommands(page, commands, opts = {}) {
     return { executed: 0, dryRun: true };
   }
   // 逐 frame 找可见 xterm 终端（实测在主 frame，遍历以兼容 iframe 嵌入的站点）
-  let target = null;
-  let targetFrame = null;
-  for (const f of [page.mainFrame(), ...page.frames().filter((x) => x !== page.mainFrame())]) {
-    const loc = f.locator('.xterm-screen').first();
-    if (await loc.isVisible().catch(() => false)) {
-      target = loc;
-      targetFrame = f;
-      break;
-    }
-  }
-  if (!target) {
+  const term = await findVisibleTerminal(page);
+  if (!term) {
     log('未找到可见的 xterm 终端（.xterm-screen），无法键入命令');
     return { executed: 0, reason: 'terminal-not-found' };
   }
-
-  // 合成 paste 事件：对 xterm 隐藏 textarea（.xterm-helper-textarea）派发
-  // 带 clipboardData 的 paste——直达 xterm 粘贴管线，中文/Unicode 完整上屏。
-  // （2026-09-09 CDP 真机实测：keyboard.type 会把 CJK 丢成空串——name:""
-  // 事故根源；insertText 被 xterm 忽略；剪贴板 API/execCommand 在无用户
-  // 手势下写不进。合成 paste：中文+英文完整上屏。）
-  const XTERM_PASTE = (text) => {
-    const ta = document.querySelector('.xterm-helper-textarea');
-    if (!ta) return false;
-    const dt = new DataTransfer();
-    dt.setData('text/plain', text);
-    ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-    return true;
-  };
+  const target = term.loc;
+  const targetFrame = term.frame;
 
   await target.click({ timeout: 8000 }).catch(() => {}); // 聚焦终端
   // 输入期报错检测（2026-09-09 用户要求）：每条命令执行完做行级差分，
@@ -498,6 +532,56 @@ export async function runTerminalCommands(page, commands, opts = {}) {
     `已向终端键入 ${commands.length} 条命令（自适应间隔 ${gapMin}~${gapMax}ms、键速 ${typeDelay}ms/字符${termErrors.length ? `，输入期报错 ${termErrors.length} 条` : ''}）`,
   );
   return { executed: commands.length, termErrors };
+}
+
+/**
+ * 实测本机可用的命令行客户端（MongoDB/MySQL/Redis 等）。
+ * 背景（2026-09-10 真机日志）：本机只有 mongo 没有 mongosh，AI 反复输出
+ * mongosh 吃 command not found；反思每轮独立无记忆，模型在 mongo/mongosh
+ * 之间来回摇摆。这里在 bash 提示符下实测一轮客户端清单，把硬事实写进
+ * prompt——探测是确定性的，不依赖模型记住上一轮。
+ * 仅在 bash 提示符下调用（REPL 内探测无意义）；探测命令只在终端留几行
+ * 回显，无副作用。识别用 HAVE:/MISS: 前缀行，与普通输出无歧义。
+ * @param {string[]} clients 待探测的客户端命令名
+ * @returns {Promise<{have: string[], miss: string[], fact: string}>}
+ *   fact 为注入 prompt 的中文结论（空串表示探测失败/无结论）
+ */
+export async function probeTerminalClients(
+  page,
+  clients = ['mongosh', 'mongo', 'mysql', 'redis-cli', 'psql'],
+) {
+  const term = await findVisibleTerminal(page);
+  if (!term) return { have: [], miss: [], fact: '' };
+  const probeCmd = `for c in ${clients.join(' ')}; do command -v $c >/dev/null 2>&1 && echo "HAVE:$c" || echo "MISS:$c"; done`;
+  await term.loc.click({ timeout: 5000 }).catch(() => {}); // 聚焦终端
+  const pasted = await term.frame.evaluate(XTERM_PASTE, probeCmd).catch(() => false);
+  if (pasted) {
+    await page.keyboard.press('Enter').catch(() => {});
+  } else {
+    await page.keyboard.type(probeCmd, { delay: 5 }).catch(() => {});
+    await page.keyboard.press('Enter').catch(() => {});
+  }
+  // 该探测命令瞬时完成，等提示符返回（上限 5s 兜底）
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (await isTerminalAtPrompt(page)) break;
+    await page.waitForTimeout(150);
+  }
+  // 扫全量行（xterm 行缓冲可能滚动，按 before 切片不可靠）；前缀行全库唯一
+  const have = [];
+  const miss = [];
+  for (const l of await readTerminalLines(page)) {
+    const m = l.trim().match(/^(HAVE|MISS):(\S+)$/);
+    if (!m) continue;
+    const bucket = m[1] === 'HAVE' ? have : miss;
+    if (!bucket.includes(m[2])) bucket.push(m[2]);
+  }
+  const fact = have.length
+    ? `【客户端实测】本机可用的命令行客户端：${have.join('、')}${miss.length ? `；实测不存在的命令（严禁输出）：${miss.join('、')}` : ''}。操作某数据库必须用上述可用的客户端进入其 shell。`
+    : miss.length
+      ? `【客户端实测】以下命令本机全部不存在：${miss.join('、')}。数据库客户端可能未安装或未在 PATH 中，不要盲目输出它们；先依据任务说明检查安装/启动。`
+      : '';
+  return { have, miss, fact };
 }
 
 /**

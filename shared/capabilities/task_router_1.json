@@ -11,6 +11,10 @@
       "problem_description": {
         "type": "string",
         "description": "任务描述（左侧题目面板全文）"
+      },
+      "code_template": {
+        "type": "string",
+        "description": "代码文件编辑器中的现有模板内容（可能为空）"
       }
     },
     "required": [
@@ -22,7 +26,7 @@
       "maxTokens": 512,
       "temperature": 0
     },
-    "prompt": "判定评测任务要求的工作方式。依据任务描述判断该题要求：\n- code：在代码文件中编写或补全程序代码（题干通常含代码模板、Begin/End 标记、函数实现、编程要求、源码文件等）\n- cmdline：在命令行终端执行命令完成操作（题干通常描述数据库 / 服务 / 文件系统的操作步骤，如连接数据库、创建库表、添加用户、启动服务、执行 shell 命令等，且往往说明评测环境为 Linux）\n\n### 任务描述\n{{input.problem_description}}\n\n### 输出要求\n只输出一个词：code 或 cmdline。不要任何解释、标点或多余内容。",
+    "prompt": "判定评测任务要求的工作方式。依据任务描述判断该题要求：\n- code：在代码文件/代码模块/编辑器中编写或补全程序代码。判定信号（命中任一即 code）：题干或「编程要求」中出现\"在代码文件中 / 在代码模块中 / 在编辑器中 / 编写代码 / 补全代码 / 完成程序 / 按模板填写 / 编写脚本\"等表述；提供代码模板或 Begin/End 标记；要求填写 .js / .py / .sql 等文件内容。特别注意：数据库类任务（MongoDB / MySQL / Redis）不等于命令行题——若要求在代码模块中编写数据库脚本文件（如 MongoDB 的 JavaScript 脚本），仍判 code。\n- cmdline：在命令行终端逐条执行命令完成操作。判定信号：题干明确说\"打开终端 / 在命令行中执行\"，且描述的是环境操作步骤（启动服务、创建库表、添加用户等），未要求编写代码文件；往往说明评测环境为 Linux。\n\n### 代码文件模板（平台编辑器现有内容，可能为空）\n{{input.code_template}}\n\n### 任务描述\n{{input.problem_description}}\n\n### 输出要求\n只输出一个词：code 或 cmdline。不要任何解释、标点或多余内容。含糊不清时判 code（cmdline 误判会全程走错工作区，代价更高）。",
     "modelID": "2015"
   },
   "createdAt": 1789003200000,

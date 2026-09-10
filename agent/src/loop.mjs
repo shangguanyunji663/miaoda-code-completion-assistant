@@ -21,6 +21,7 @@ import {
   waitForTerminal,
   waitForEditor,
   readTerminalText,
+  detectTerminalEnv,
 } from './perceive.mjs';
 import {
   clickEval,
@@ -41,6 +42,7 @@ import {
   collectTestSetDetails,
   dismissPassModal,
   ensureTaskPage,
+  probeTerminalClients,
 } from './act.mjs';
 import {
   generateCode,
@@ -55,6 +57,28 @@ import {
 } from './ai.mjs';
 
 const log = (m) => console.log(`[loop] ${m}`);
+
+/** 题干命中这些关键词才做客户端可用性探测（纯 bash 文件任务不浪费一轮键入） */
+const NEEDS_DB = /(mongodb|mongosh|\bmongo\b|mysql|redis|psql|postgres|数据库|集合)/i;
+
+/** 从输入期报错行提取 command not found 的命令名（仅收干净词法名，滤掉大表达式碎片） */
+function extractMissingCommands(termErrors) {
+  const out = new Set();
+  for (const te of termErrors ?? []) {
+    for (const line of te.errs ?? []) {
+      const m = line.match(/(\S+):\s*command not found/);
+      if (m && /^[A-Za-z][A-Za-z0-9_.-]*$/.test(m[1])) out.add(m[1]);
+    }
+  }
+  return [...out];
+}
+
+/** 跨轮禁令：反思每轮独立无记忆，实测事实必须写进 prompt 才能跨轮生效 */
+function banNote(banned) {
+  return banned.size
+    ? `\n【实测禁令】以下命令在本机不存在（terminal 实测 command not found），本轮严禁再输出，涉及同类操作时改用实测可用的等价客户端：${[...banned].join('、')}`
+    : '';
+}
 
 /** 反思用瘦身题干：以「编程要求」段为锚取前后文（约 1500 字），避免全量题干撑大反思输入 */
 function slimForReflection(p) {
@@ -118,8 +142,12 @@ export async function solveOnce(page, probe) {
   // ---- 代码题 / 命令行题：先读题干判意图，再分流到对应工作区 ----
   // 判定依据是题干要求本身（AI 意图路由），而非当前激活的 tab；
   // 判定后若工作区 tab 不符则自动切换（命令行 / 代码文件）。
-  const intent = await classifyProblemIntent({ problem });
+  const intent = await classifyProblemIntent({ problem, codeTemplate: probe.code ?? '' });
   log(`题干意图判定：${intent === 'cmdline' ? '命令行操作（cmdline）' : '代码编写（code）'}`);
+
+  // 分支逃生舱状态：命令行多轮跑通仍评测不匹配 → 疑似路由误判，转代码分支
+  let cmdlineFallback = false;
+  let cmdlineEvalText = '';
 
   if (intent === 'cmdline') {
     const tab = await switchTaskTab(page, '命令行');
@@ -131,13 +159,33 @@ export async function solveOnce(page, probe) {
 
     let cmds = null;
     let lastEval = '';
+    const bannedCmds = new Set(); // 本题内累积的 command not found 命令（跨反思轮生效）
+    let clientFact = ''; // 客户端可用性实测结论（bash 环境下探测一次）
+    const lessons = []; // 各轮反思的诊断结论（Reflexion 式教训链，跨轮注入）
+    let roundsCleanRun = 0; // 命令全部跑通（无输入期报错）的轮数——逃生舱判据
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
       if (cmds === null) {
         // 生成期间无中间日志可打，必须提前预告静默期，否则推理模型
         // 的思考+生成会被用户当成"卡死/不作答"。日志格式四处 AI 调用统一。
-        log(`正在调用 AI 生成命令（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
+        log(`正在调用 AI 生成命令（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`);
         const t0 = Date.now();
-        cmds = await generateCommands({ problem });
+        // 环境感知：生成前先探测终端当前 shell（bash / mongosh / …），
+        // 把事实与该环境的书写约束注入 prompt，防止 AI 搞错环境
+        const envGen = await detectTerminalEnv(page);
+        log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}`);
+        // 客户端实测：bash 环境且题干涉及数据库时，实测本机有哪些客户端
+        //（mongosh 不存在只有 mongo 这类事实，靠实测不靠模型记忆）
+        if (envGen.kind === 'bash' && !clientFact && NEEDS_DB.test(problem)) {
+          const probe = await probeTerminalClients(page);
+          if (probe.fact) {
+            clientFact = probe.fact;
+            log(`客户端探测：${probe.have.length ? `可用 ${probe.have.join('、')}` : '全部不可用'}${probe.miss.length ? `｜不存在 ${probe.miss.join('、')}` : ''}`);
+          }
+        }
+        cmds = await generateCommands({
+          problem,
+          terminalState: `${envGen.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
+        });
         log(
           `AI 生成命令完成（第 ${attempt} 次，${cmds.length} 条，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）：${cmds
             .slice(0, 4)
@@ -154,6 +202,14 @@ export async function solveOnce(page, probe) {
       if (!r.executed) {
         log('终端键入失败，终止本题');
         return { ok: false, kind: 'cmdline', reason: r.reason ?? 'terminal-input-failed' };
+      }
+      // 输入期 command not found → 跨轮禁令（AI 每轮独立调用，事实要有记忆）
+      const missing = extractMissingCommands(r.termErrors);
+      if (missing.length) {
+        for (const c of missing) bannedCmds.add(c);
+        log(`实测不存在的命令（已加入禁令）：${missing.join('、')}`);
+      } else {
+        roundsCleanRun++;
       }
       await settle(page);
 
@@ -202,22 +258,42 @@ export async function solveOnce(page, probe) {
       }
       if (attempt === cfg.loop.maxRetry) break;
 
-      log(`正在调用 AI 命令反思（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
+      log(`正在调用 AI 命令反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`);
       const rt0 = Date.now();
+      // 环境感知：反思前重新探测——上一轮序列执行完终端可能已在某个 REPL
+      // 内部，重出的命令必须从这个真实状态出发（不重复进入、不混写语法）
+      const envNow = await detectTerminalEnv(page);
+      log(`终端环境识别：${envNow.kind}${envNow.db ? `（当前库 ${envNow.db}）` : ''}`);
       const fixed = await reflectCommands({
         problem: slimForReflection(problem),
         previousCommands: cmds,
         evalResult: lastEval || '（未捕获到评测输出，请对照任务要求自查命令）',
+        terminalState: `${envNow.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
+        lessons: lessons.slice(-6),
       });
       log(`AI 命令反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
-      if (fixed.analysis) log(`反思分析：${String(fixed.analysis).slice(0, 160)}`);
+      if (fixed.analysis) {
+        log(`反思分析：${String(fixed.analysis).slice(0, 160)}`);
+        // 诊断沉淀进教训链：反思每轮独立无记忆，把上一轮确诊的原因带进下一轮，
+        // 防止"第 N 轮改对了、第 N+1 轮又退回"的摇摆（真机实证：mongo↔mongosh）
+        lessons.push(String(fixed.analysis));
+      }
       if (!fixed.commands?.length) {
         log('反思未产出命令，终止本题');
         break;
       }
       cmds = fixed.commands;
     }
-    return { ok: false, kind: 'cmdline', evalText: lastEval };
+    // 分支逃生舱（2026-09-10 用户实证）：本题题干要求在代码模块中编写
+    // MongoDB 脚本，意图路由误判 cmdline，命令跑通但评测始终不匹配。
+    // 误判特征：≥2 轮命令全部跑通（无输入期报错）而评测轮轮失败。
+    // 命中即转代码分支重做，而不是按命令行题失败收场。
+    if (roundsCleanRun < 2) {
+      return { ok: false, kind: 'cmdline', evalText: lastEval };
+    }
+    cmdlineFallback = true;
+    cmdlineEvalText = lastEval;
+    log('命令行多轮跑通仍评测不匹配——疑似实际要求代码模块作答，转代码分支');
   }
 
   // ---- 代码题：确保「代码文件」工作区激活后，生成 → 评测 → 反思循环 ----
@@ -229,13 +305,20 @@ export async function solveOnce(page, probe) {
   }
   const codeProbe = await probePage(page); // 切 tab 后重新探测，拿最新模板
 
+  // 逃生舱防呆：转代码分支后发现编辑器模板为空 → 该题本来就没有代码文件可写，
+  // 转过去只会凭空生成，按命令行题失败收场（模板非空才继续）
+  if (cmdlineFallback && !(codeProbe.code ?? '').trim()) {
+    log('代码文件模板为空，转代码分支无意义，终止本题');
+    return { ok: false, kind: 'cmdline', evalText: cmdlineEvalText };
+  }
+
   let code = null;
   let lastEval = '';
 
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     if (code === null) {
       // 同命令行分支：预告静默期 + 统计耗时，消除"切完 tab 就没动静"的观感
-      log(`正在调用 AI 生成代码（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
+      log(`正在调用 AI 生成代码（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`);
       const t0 = Date.now();
       code = await generateCode({
         problem,
@@ -291,7 +374,7 @@ export async function solveOnce(page, probe) {
 
     if (attempt === cfg.loop.maxRetry) break;
 
-    log(`正在调用 AI 代码反思（第 ${attempt} 次）…推理模型可能需要 1~3 分钟`);
+    log(`正在调用 AI 代码反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`);
     const rt0 = Date.now();
     const fixed = await reflectAndFix({
       problem: slimForReflection(problem),

@@ -47,22 +47,35 @@ export async function chat(messages, opts = {}) {
   // 推理分级（v0.8.1 探测实证，真机数据）：全关 → 多步任务漏要求；
   // 默认档 → 思考马拉松 74955 字击穿预算；medium → 思考 1612 字有界且
   // 命令覆盖全部要求。AI_REASONING_EFFORT 可调 low/medium/high；
-  // AI_ENABLE_THINKING=0 全关（极简场景）。参数为本端点探测实证可用。
-  // 推理分级：调用方可按任务降档（反思用 low——证据已在提示词中，无需长思考）
+  // AI_ENABLE_THINKING=0 全关（极简场景）。
+  // 思考硬闸 AI_THINKING_CAP_MS（默认 20s，0=不设限）：流式响应中"仍在
+  // 思考、正文 0 字"持续超限即主动断流，重试强制关思考——端点忽略思考
+  // 开关时的最后防线（2026-09-10 反思思考 2.5 万字击穿预算事故）。
+  // 注意：整体 JSON 兜底路径（非流式端点）无法中途拦截，硬闸仅对流式生效。
   const effort = opts.reasoningEffort ?? cfg.ai.reasoningEffort;
-  if (!cfg.ai.enableThinking) {
-    body.chat_template_kwargs = { enable_thinking: false };
-  } else if (effort) {
-    body.reasoning_effort = effort;
-  }
+  const capMs = cfg.ai.thinkingCapMs;
+  let forceThinkingOff = false; // 上一轮思考超限 → 重试强制关思考
 
   const maxAttempts = opts.maxAttempts ?? 2;
   let lastErr;
   for (let i = 0; i < maxAttempts; i++) {
+    // 思考开关按轮次计算：调用级/全局关闭，或上一轮思考超限时强制关闭。
+    // 关思考双通道同发：chat_template_kwargs（vLLM/SGLang 系）+ 顶层
+    // enable_thinking（DashScope/硅基流动系），端点认哪个用哪个，
+    // 不认的键按约定忽略；两种都无效时由思考硬闸兜底截断。
+    const thinkingOn = (opts.enableThinking ?? cfg.ai.enableThinking) && !forceThinkingOff;
+    if (!thinkingOn) {
+      body.chat_template_kwargs = { enable_thinking: false };
+      body.enable_thinking = false;
+      delete body.reasoning_effort;
+    } else if (effort) {
+      body.reasoning_effort = effort;
+    }
     const t0 = Date.now();
     let content = '';
     let reasoning = '';
     let finish = '';
+    let capped = false; // 本次轮次是否因思考超限被主动断流
     // 空闲超时 + 心跳：每收到一块数据就重置空闲计时——"有输出就不断流"，
     // 端点挂起/断流才触发超时（AbortSignal.timeout 是绝对超时，会误杀长生成）；
     // 心跳每 30s 汇报已接收的思考/正文量与最新思考尾部，长思考全程可见
@@ -136,6 +149,12 @@ export async function chat(messages, opts = {}) {
             if (typeof d.content === 'string') content += d.content;
             if (j?.choices?.[0]?.finish_reason) finish = j.choices[0].finish_reason;
             bumpIdle();
+            // 思考硬闸：只在"还在思考、正文零字"阶段计时；正文一旦开流
+            // 就不再限制（避免误杀正常生成长度）
+            if (capMs > 0 && !content && reasoning && Date.now() - t0 > capMs) {
+              capped = true;
+              ac.abort();
+            }
           }
         }
       }
@@ -153,13 +172,21 @@ export async function chat(messages, opts = {}) {
         raw: { finish_reason: finish, reasoning_length: reasoning.length },
       };
     } catch (err) {
-      if (err?.name === 'AbortError') {
+      if (capped) {
+        forceThinkingOff = true;
+        err = new Error(
+          `思考超限：${Math.round(capMs / 1000)}s 内正文仍为 0 字（思考已 ${reasoning.length} 字），已主动断流；重试将强制关思考（AI_THINKING_CAP_MS 可调，0=关闭硬闸）`,
+        );
+      } else if (err?.name === 'AbortError') {
         err = new Error(
           `AI 响应空闲超时（${cfg.ai.timeoutMs}ms 无任何数据）：端点可能挂起，可用 AI_TIMEOUT_MS 调大`,
         );
       }
       lastErr = err;
       if (i < maxAttempts - 1) {
+        // 失败原因必须当场可见，否则重试表现为"莫名其妙又开了一轮"
+        //（空正文的 err.message 已含 finish_reason 与思考尾部，足够定位）
+        log(`第 ${i + 1}/${maxAttempts} 轮失败：${err.message}`);
         await new Promise((r) => setTimeout(r, 800 * 2 ** i));
       }
     } finally {
@@ -441,10 +468,13 @@ export async function listChatModels() {
  * 用户要求：以题干要求为准，而不是当前激活的 tab。
  * @returns {Promise<'code'|'cmdline'>}
  */
-export async function classifyProblemIntent({ problem }) {
+export async function classifyProblemIntent({ problem, codeTemplate = '' }) {
   const cap = readCapability('task_router_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
+    // 编辑器现有模板是强信号：有脚手架/Begin-End 标记 → 大概率代码题
+    //（初始探测时编辑器可能在隐藏 tab 里，取不到就传空串，仅靠题干判定）
+    code_template: String(codeTemplate ?? '').slice(0, 600),
   });
   // 预算从能力配置读取（单一数据源）。max_tokens 只是上限、不预扣费用：
   // 推理模型（输出 reasoning_content）会先花预算思考，过小的上限会让
@@ -498,11 +528,12 @@ export function parseCommandLines(text) {
  * 命令行题命令生成：复用 cmdline_runner_1 的 prompt 与参数
  * @returns {Promise<string[]>} 按执行顺序排列的命令
  */
-export async function generateCommands({ problem, extra = '' }) {
+export async function generateCommands({ problem, extra = '', terminalState = '' }) {
   const cap = readCapability('cmdline_runner_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
     additional_requirements: extra,
+    terminal_state: terminalState,
   });
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.2,
@@ -515,17 +546,21 @@ export async function generateCommands({ problem, extra = '' }) {
  * 命令行题反思修复：复用 cmdline_reflection_fixer_1 的 prompt 与参数
  * @returns {Promise<{analysis: string, commands: string[]}>}
  */
-export async function reflectCommands({ problem, previousCommands, evalResult }) {
+export async function reflectCommands({ problem, previousCommands, evalResult, terminalState = '', lessons = [] }) {
   const cap = readCapability('cmdline_reflection_fixer_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
     previous_commands: (previousCommands ?? []).join('\n'),
     eval_result: evalResult,
+    terminal_state: terminalState,
+    lessons: lessons.map((l, i) => `第${i + 1}轮教训：${l}`).join('\n'),
   });
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.2,
     maxTokens: cap.formValue?.modelParams?.maxTokens ?? 4096,
-    reasoningEffort: 'low', // 反思降档：证据已在提示词中，low 档思考足够且更快
+    // 反思直接关思考：同 reflectAndFix——预期/实际明细已在提示词中，长思考
+    // 只会穷举假设并击穿预算（2026-09-10 实测 2.5 万字思考、正文恒 0）
+    enableThinking: false,
   });
   const lines = String(content ?? '')
     .split(/\r?\n/)
