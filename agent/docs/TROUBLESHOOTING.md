@@ -240,21 +240,40 @@ spawn(exe, args, { stdio: ['ignore', logFd, logFd] })
 
 ---
 
-### C-9. 代码栏内容被平台当 bash 脚本执行，裸 `$` 触发 syntax error
+### C-9. 代码栏数据库命令题：裸 REPL 语句必报 syntax error，需 `echo "..."` 双引号包裹
 
-**现象**：数据库查询题在代码栏 Begin/End 之间写 `db.educoder.aggregate([{$limit:3}])`，评测报：
+**现象**：数据库查询题在代码栏 Begin/End 之间直接写 `db.educoder.aggregate([{$limit:3}]);...`（即使 `$` 已写成 `\$`），评测报：
 
 ```
-step2/query.sh: line 2: syntax error near unexpected token '{$limit:3})'
+step2/query.sh: line 2: syntax error near unexpected token '[{$limit:3}]'
 ```
 
-**根因**：平台把代码栏内容放进 `query.sh` 用 **bash 执行**（不是丢给数据库 REPL）；裸 `$` 被 bash 当作参数展开/函数定义解析而失败。题面已注明「测试时 `$` 前加转义符 `\`（格式如 `\;`）」，但旧版代码生成 prompt 没有把题面转义要求当硬约束，AI 照搬裸语句。
+改写为 heredoc / `: ` 前缀 / `mongo` 命令前缀后，又报 `SyntaxError: missing ; before statement @(shell eval):1:8`（数据库 eval 解析失败）或空标签。多种形态实测全失败。
 
-**解决**（0.9.2，prompt 单一数据源）：
-- `code_completion_generator_1` 实现要求第 7 条：数据库操作命令题且题面给转义说明时，`$` 一律写成 `\$`、命令分隔按题面示例（如 `\;`），只输出可执行命令
-- `code_reflection_fixer_1` 解读守则第 4 条：`query.sh: syntax error near unexpected token` 归因 `$` 未转义/命令形态非脚本可执行，按题面重写
+**根因**：平台对代码栏内容（提交为 `step2/query.sh`）做**双重执行**：
 
-**预防**：代码栏内容可能被平台当 shell 脚本执行时，`$` 必须按题面要求转义；报错带 `syntax error near unexpected token` 先查是否裸 `$`。
+1. **bash 执行**：裸 REPL 语句的 `(`、`{`、`[` 是 bash 语法字符，必然 syntax error（stderr 进实际输出，位于 3 个测试点标签之前）
+2. **数据库 eval**：每测试点把命令交给 mongo shell eval（输出在标签后）——只提取 `echo "..."` 双引号内的内容并反转义 `\$`→`$`
+
+heredoc 会让 eval 因 `mongo test2` 相邻标识符报错；`: ` 前缀会让 eval 因 label 语法报错（被吞成空标签）；裸命令卡在 bash 环节。
+
+**关键前提——评测环境共享终端数据库**：题面要求「先在命令行插入文档」是**必需步骤**（1.0.0 实测，第 3 关 `db.educoder.count()` 插入前 0、插入后 4）。评测时 `db` 指向题面指定的库，**未插入则查询结果为空**。早前「评测环境预置数据、无需插入」的判断（0.9.5）被证伪。
+
+**解决**（1.0.0，真机验证通过，第 2/3 关）：**先命令行插入题面文档，再在代码栏用 `echo "` 双引号包裹全部裸查询命令**，命令以分号 `;` 分隔、`$` 写成 `\$`：
+
+```
+# 命令行（终端）：插入题面文档（mongo test3 --eval 'db.educoder.insertMany([...])'）
+# 代码栏：
+echo "
+db.educoder.aggregate([{\$limit:3}]);db.educoder.aggregate([{\$sort:{learning_num:1}}]);db.educoder.aggregate([{\$skip:2}])
+"
+```
+
+- bash 环节：`echo "..."` 是合法 bash，双引号内 `\$` 不展开，零 stderr
+- 数据库环节：平台提取引号内命令 → 反转义 → 分号切分 → 逐条 eval → 输出与预期一致（真实评测通过，弹出「恭喜您通过本关」）
+- 已同步 `code_completion_generator_1` 第 7 条 / `code_reflection_fixer_1` 第 4 条 / `loop.mjs` mixed 分支
+
+**预防**：代码栏数据库命令题（EduCoder 系）完整流程 = **先命令行插入题面文档到指定库 → 代码栏 echo 双引号包裹裸查询（分号分隔 + `\$` 转义）**；查询结果为空先查「命令行是否已插入」；报错带 `step2/query.sh: syntax error` 或 `@(shell eval)` 检查是否缺失 echo 包裹；0.9.2 的「仅 `$` 转义」与 0.9.4 的 heredoc 结论均不完整——转义只解决 bash 变量展开，`(`/`{` 仍需靠 echo 双引号规避。
 
 ---
 

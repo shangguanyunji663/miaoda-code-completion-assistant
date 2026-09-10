@@ -12,10 +12,12 @@
 | `quiz_answer_selector_1.json` | 选择题/填空题单题作答器：只输出答案本身 |
 | `quiz_batch_answer_1.json` | 整页多小题批量作答器：输出「题号:字母」，多选连写 |
 
-> 数据库命令题守则（0.9.2）：`code_completion_generator_1` 实现要求第 7 条与
-> `code_reflection_fixer_1` 解读守则第 4 条约定——平台把代码栏内容当 shell 脚本执行时，
-> 命令中的 `$` 一律按题面转义（`\$`），报错 `query.sh: syntax error near unexpected token`
-> 归因为 `$` 未转义/命令形态非脚本可执行。
+> 数据库命令题守则（1.0.0）：`code_completion_generator_1` 实现要求第 7 条与
+> `code_reflection_fixer_1` 解读守则第 4 条约定——混合题**先命令行插入题面文档到指定库**
+> （评测环境共享终端数据库，未插入则查询结果为空），代码栏用 `echo "` 双引号包裹裸查询
+> （分号 `;` 分隔、`$`→`\$`）；平台对代码栏双重执行（bash 环节 + 提取 echo 引号内内容做
+> 数据库 eval），报错 `step2/query.sh: syntax error` 或 `@(shell eval)` 均按此重写。
+> 1.0.0 实测通过；0.9.2「仅 `\$` 转义」与 0.9.4 heredoc 守则被证伪。
 
 ## 修改约定
 
