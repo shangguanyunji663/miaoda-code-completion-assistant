@@ -234,6 +234,10 @@ export async function solveOnce(page, probe) {
   // 分支逃生舱状态：命令行多轮跑通仍评测不匹配 → 疑似路由误判，转代码分支
   let cmdlineFallback = false;
   let cmdlineEvalText = '';
+  // 客户端可用性实测结论（函数级）：mixed 分支数据准备阶段探测一次，落代码
+  // 分支后注入生成/反思 prompt——代码栏数据库命令题要用实测可用的客户端
+  //（本机只有 mongo 没有 mongosh 这类硬事实），并支撑 heredoc 守则落地
+  let clientFact = '';
 
   // ---- 混合题（0.9.1）：题干同时要求"命令行操作 + 代码栏编写"（如先在
   // 命令行插入文档、再在 Begin-End 写查询）。旧版二选一路由在此二难：
@@ -251,7 +255,7 @@ export async function solveOnce(page, probe) {
       // 输出不存在的 mongosh，后续 use/db.xxx 子命令被逐条敲进 bash 全部报错，
       // 插入文档失败且无任何重试。
       const bannedCmds = new Set();
-      const { clientFact } = await probeDbClients(page, envGen, problem, bannedCmds);
+      clientFact = (await probeDbClients(page, envGen, problem, bannedCmds)).clientFact;
       const PREP_EXTRA =
         '本次只输出题干中「命令行操作部分」的数据准备命令（如 use 库、插入文档）。' +
         '题干要求写在右侧代码栏 Begin-End 中的查询/程序命令严禁包含在这里——那部分另行处理，平台评测只认代码栏内容。';
@@ -478,6 +482,9 @@ export async function solveOnce(page, probe) {
       code = await generateCode({
         problem,
         codeTemplate: codeProbe.code ?? '',
+        // 注入客户端实测事实（mixed 题：本机有 mongo 没 mongosh 等），
+        // 支撑生成守则第 7 条 heredoc 形态选对客户端
+        extra: clientFact ? `\n${clientFact}` : '',
       });
       log(
         `AI 生成代码完成（第 ${attempt} 次，${code.length} 字符，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`,
@@ -546,6 +553,8 @@ export async function solveOnce(page, probe) {
       // 反思看的是实际提交评测的代码（模板拼接后、经护栏清洗、写入验证的版本）
       previousCode: submitted,
       evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
+      // 注入客户端实测事实：反思守则第 4 条按它选 heredoc 的客户端名
+      terminalState: clientFact,
     });
     log(`AI 代码反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
     if (fixed.analysis) {

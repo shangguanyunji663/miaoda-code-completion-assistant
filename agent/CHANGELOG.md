@@ -2,6 +2,23 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [0.9.4] - 2026-09-10
+
+客户端探测时序修复 + 代码栏数据库命令 heredoc 守则。由 2026-09-10 真机截图驱动：① 终端明明有 `MISS:mongosh`/`HAVE:mongo` 回显，探测却报「未捕获 HAVE/MISS 行」——读取早于回显渲染；② 代码栏裸 REPL 语句即使把 `$` 写成 `\$` 仍报 bash syntax error——`(`、`{`、`[` 是 bash 语法字符，转义 `$` 只解决变量展开，解决不了语法冲突。
+
+### Fixed
+
+- **客户端探测时序（act.mjs）**：`probeTerminalClients` 原来用 `isTerminalAtPrompt` 当完成信号——探测命令刚粘贴时 xterm 的 DOM 渲染未落定，`.xterm-rows` 最后一行仍是旧提示符 `root@…:#`，判定「已回到提示符」立即 break，读取发生在回显之前（命令实际执行了、回显最终也渲染出来，却报未捕获）。改为轮询读取回显直到捕获 HAVE/MISS 行（上限 5s），不再依赖提示符信号
+
+### Changed
+
+- **代码栏数据库命令题 heredoc 守则（prompt 单一数据源）**：0.9.2 的「$ 写成 \$」守则不完整——bash 对 `(`（子 shell）、`{`（花括号块）、`[ ]`（测试语法）照样报 syntax error。`code_completion_generator_1` 第 7 条与 `code_reflection_fixer_1` 第 4 条重写：禁止把 REPL 语句裸写在代码栏，统一改用「客户端 + 单引号定界 heredoc」形态（`mongo <<'MONGOSH'` … `MONGOSH`，正文原样、bash 零解析，mongo / mongosh / mysql / redis-cli / psql 均支持）；题面转义说明（如「$ 前加转义符 \」「格式如 \;」）降级为语句顺序与分隔的参考
+- **代码分支注入客户端实测（loop.mjs / ai.mjs）**：`clientFact` 提升为函数级，mixed 分支探测的结论注入代码生成（additional_requirements）与代码反思（`reflectAndFix` 新增 `terminalState` 参数 → 反思 prompt 新增 `{{input.terminal_state}}` 小节）——AI 拿到「本机只有 mongo 没有 mongosh」这类硬事实，heredoc 能选对客户端
+
+### Notes
+
+- 验证：`node --check` 全过；两个能力 JSON 可解析且 `createdBy` 等原字段原样保留（重建走纯文本替换 prompt 行，避免 JSON 精度丢失）；渲染冒烟确认 heredoc 守则与 terminal_state 占位符落位；端到端表现待该题重跑复测
+
 ## [0.9.3] - 2026-09-10
 
 文档同步 + 冗余清理。0.9.2 落库后对全仓文档做一次一致性体检：以代码实际实现为准修正文档间矛盾表述，补齐 0.9.2 变更在文档侧的映射（配置项、工作流、踩坑手册），并清理本地旧会话日志。纯文档与清理变更，不涉及 Agent 行为。

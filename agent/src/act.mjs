@@ -600,20 +600,28 @@ export async function probeTerminalClients(
     await page.keyboard.type(probeCmd, { delay: 5 }).catch(() => {});
     await page.keyboard.press('Enter').catch(() => {});
   }
-  // 该探测命令瞬时完成，等提示符返回（上限 5s 兜底）
+  // 该探测命令瞬时完成。轮询读取回显，直到捕获 HAVE/MISS 行或超时（上限 5s）。
+  // 不能用 isTerminalAtPrompt 做完成信号：探测命令刚粘贴时若 DOM 渲染未落定，
+  // 最后一行仍是旧提示符 `root@…:#`，isTerminalAtPrompt 会立即误判 break，
+  // 读取发生在回显之前——真机表现即「终端明明有 HAVE/MISS 回显却报未捕获」
+  // （2026-09-10 截图实锤）。
   const deadline = Date.now() + 5000;
+  let have = [];
+  let miss = [];
   while (Date.now() < deadline) {
-    if (await isTerminalAtPrompt(page)) break;
+    const got = [];
+    for (const l of await readTerminalLines(page)) {
+      const m = l.trim().match(/^(HAVE|MISS):(\S+)$/);
+      if (m) got.push(m);
+    }
+    if (got.length) {
+      for (const m of got) {
+        const bucket = m[1] === 'HAVE' ? have : miss;
+        if (!bucket.includes(m[2])) bucket.push(m[2]);
+      }
+      break;
+    }
     await page.waitForTimeout(150);
-  }
-  // 扫全量行（xterm 行缓冲可能滚动，按 before 切片不可靠）；前缀行全库唯一
-  const have = [];
-  const miss = [];
-  for (const l of await readTerminalLines(page)) {
-    const m = l.trim().match(/^(HAVE|MISS):(\S+)$/);
-    if (!m) continue;
-    const bucket = m[1] === 'HAVE' ? have : miss;
-    if (!bucket.includes(m[2])) bucket.push(m[2]);
   }
   const fact = have.length
     ? `【客户端实测】本机可用的命令行客户端：${have.join('、')}${miss.length ? `；实测不存在的命令（严禁输出）：${miss.join('、')}` : ''}。操作某数据库必须用上述可用的客户端进入其 shell。`

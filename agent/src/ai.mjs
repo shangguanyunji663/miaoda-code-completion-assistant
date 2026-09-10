@@ -294,12 +294,13 @@ export async function answerBatch({ questions, reference = '' }) {
  * 反思修复：复用 code_reflection_fixer_1 的 prompt 与参数
  * @returns {Promise<{analysis: string, code: string}>}
  */
-export async function reflectAndFix({ problem, previousCode, evalResult }) {
+export async function reflectAndFix({ problem, previousCode, evalResult, terminalState = '' }) {
   const cap = readCapability('code_reflection_fixer_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
     previous_code: previousCode,
     evaluation_result: evalResult,
+    terminal_state: terminalState,
   });
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.4,
