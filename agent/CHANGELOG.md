@@ -2,6 +2,24 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [0.9.2] - 2026-09-10
+
+混合题终端数据准备自愈 + 代码栏数据库命令转义守则。由 2026-09-10 真机截图（MongoDB 混合题：先命令行插入文档、再代码栏写查询）驱动——同一题终端与代码栏两处失败，全部根因经截图实锤定位。
+
+### Added
+
+- **混合题数据准备装备对齐 cmdline（loop.mjs）**：公共 helper `probeDbClients` / `applyCommandGuards` / `formatInputErrors`（cmdline 分支行为不变），mixed 分支数据准备接入客户端可用性实测（mongosh 不存在、仅 mongo 可用这类硬事实进 prompt）、【实测禁令】、执行层别名替换（`mongosh`→`mongo`，模型不听话也确定性改对）与 shell 护栏清洗。事故场景（真机截图）：旧版 mixed 裸调 generateCommands，AI 在无事实依据下输出本机不存在的 `mongosh`，后续 `use test2` / `db.educoder.remove({})` / `insertMany(...)` 被逐条敲进 bash 全部报错，插入文档失败且无任何重试
+- **混合题数据准备输入期报错反思自愈（≤2 轮）**：第一轮若键入/执行即报错（入口命令不存在、子命令被敲进 bash），把输入期报错 + 终端回显喂回 `reflectCommands` 反思一轮后重做，避免「插入失败 → 代码查询空结果」连锁失败；两轮用尽按当前状态继续并日志明示
+
+### Changed
+
+- **代码栏数据库命令题转义守则（prompt 单一数据源）**：`code_completion_generator_1` 实现要求新增第 7 条——「在代码栏中编写数据库操作命令」类任务且题面给出执行/转义说明（如「测试时 $ 前加转义符 \」、「格式如 \;」）时，命令中的 `$` 一律写成 `\$`、命令分隔按题面示例，平台会把代码栏内容当 shell 脚本执行、裸 `$` 让脚本解析失败（bash syntax error）；`code_reflection_fixer_1` 解读守则新增第 4 条——`query.sh: line N: syntax error near unexpected token` 归因 `$` 未按题面转义/命令形态非脚本可执行，按题面转义说明重写。事故场景（真机截图）：AI 照搬裸语句 `db.educoder.aggregate([{$limit:3}])`，平台放进 `query.sh` 用 bash 执行报 syntax error，而题面已明确要求转义
+
+### Notes
+
+- 验证：`node --check` 全过、两个能力 JSON 可解析、渲染后新守则落位确认；端到端表现待该题重跑复测
+- 0.9.1 为同日热修（反思全貌可见 + shell 护栏 + 混合题路由 + 评测判定加固），当时仅 bump package.json、CHANGELOG 未补条目，本次未回填以保持最小改动
+
 ## [0.9.0] - 2026-09-10
 
 反思链路的速度与记忆：思考硬闸、终端环境感知、跨轮事实记忆、意图路由纠偏、评测判定提速。全部由 2026-09-10 凌晨真机连续排障驱动，每项修复均有真机日志/截图实锤。

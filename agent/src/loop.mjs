@@ -7,7 +7,7 @@
 //              → passed? 结束 : reflectAndFix → 回到 writeEditor（最多 MAX_RETRY 次）
 //     cmdline: generateCommands → 护栏清洗 → 逐条键入 xterm → settle → clickEval → waitResult
 //              → passed? 结束 : reflectCommands → 重新键入（最多 MAX_RETRY 次）
-//     mixed:   generateCommands(仅数据准备) → 键入终端 → 落入 code 分支
+//     mixed:   generateCommands(仅数据准备) → 键入终端（输入期报错反思自愈，≤2 轮）→ 落入 code 分支
 // 选择题 / 填空题走 answerQuestion 分支，题型由 perceive.classifyTask 判定。
 
 import { cfg } from './config.mjs';
@@ -89,6 +89,64 @@ function banNote(banned) {
   return banned.size
     ? `\n【实测禁令】以下命令在本机不存在（terminal 实测 command not found），本轮严禁再输出，涉及同类操作时改用实测可用的等价客户端：${[...banned].join('、')}`
     : '';
+}
+
+/**
+ * 客户端可用性实测（cmdline 与 mixed 分支共用）。
+ * bash 环境且题干涉及数据库时才探测：实测结论注入 prompt（clientFact），
+ * 缺失客户端即刻入禁令（bannedCmds），供执行层别名替换与下一轮生成使用。
+ * @returns {Promise<{clientFact: string, have: string[], miss: string[]}>}
+ *   clientFact 为注入 prompt 的中文结论；未触发探测或探测无结论时为空串
+ */
+async function probeDbClients(page, envGen, problem, bannedCmds) {
+  if (envGen.kind === 'bash' && NEEDS_DB.test(problem)) {
+    const probe = await probeTerminalClients(page);
+    if (probe.fact) {
+      for (const c of probe.miss) bannedCmds.add(c);
+      log(
+        `客户端探测：${probe.have.length ? `可用 ${probe.have.join('、')}` : '全部不可用'}${probe.miss.length ? `｜不存在 ${probe.miss.join('、')}` : ''}`,
+      );
+      return { clientFact: probe.fact, have: probe.have, miss: probe.miss };
+    }
+    // 静默失败必须显性化（2026-09-10 真机：探测无结论时无日志，无法诊断）
+    log('客户端探测未取得结论（终端回显未捕获 HAVE/MISS 行）');
+  }
+  return { clientFact: '', have: [], miss: [] };
+}
+
+/**
+ * 执行层兜底（cmdline 与 mixed 分支共用）：
+ * ① 首词命中实测禁令且别名表有等价客户端时确定性替换（"劝"不动就"改"）；
+ * ② shell 护栏清洗（中文标签行/全角分号），清洗说明留档供反思。
+ * @param {string[]} cmds 生成的命令
+ * @param {Set<string>} bannedCmds 实测不存在的命令集
+ * @returns {{cmds: string[], sanitizeNote: string}} sanitizeNote 为空串表示未清洗
+ */
+function applyCommandGuards(cmds, bannedCmds) {
+  const replaced = cmds.map((c, i) => {
+    const m = c.match(/^(\S+)([\s\S]*)$/);
+    const alias = m && bannedCmds.has(m[1]) ? COMMAND_ALIASES[m[1]] : null;
+    if (!alias) return c;
+    log(`执行层替换：命令 ${i + 1} 首词 ${m[1]}（实测不存在）→ ${alias}`);
+    return alias + m[2];
+  });
+  const changes = [];
+  const cleaned = replaced.map((c) => {
+    const s = sanitizeShellSubmission(c);
+    if (s.changes.length) changes.push(...s.changes);
+    return s.code;
+  });
+  if (changes.length) {
+    log(`shell 护栏清洗 ${changes.length} 处：${changes.slice(0, 3).join('；')}`);
+  }
+  return { cmds: cleaned, sanitizeNote: changes.map((n) => `- ${n}`).join('\n') };
+}
+
+/** 把输入期报错结构化为反思材料文本（命令号 + 回现行） */
+function formatInputErrors(termErrors) {
+  return (termErrors ?? [])
+    .map((e) => `命令 ${e.no}: ${e.cmd}\n${e.errs.map((l) => `  ${l}`).join('\n')}`)
+    .join('\n');
 }
 
 /**
@@ -180,25 +238,56 @@ export async function solveOnce(page, probe) {
   // ---- 混合题（0.9.1）：题干同时要求"命令行操作 + 代码栏编写"（如先在
   // 命令行插入文档、再在 Begin-End 写查询）。旧版二选一路由在此二难：
   // 判 code 则数据准备缺失（查询无结果），判 cmdline 则查询写进终端而
-  // 评测只认代码栏。处置：先在命令行完成数据准备（单轮、不反思循环），
-  // 再落入代码分支常规作答；终端不可用则警告跳过（评测环境可能已预置数据）。
+  // 评测只认代码栏。处置：先在命令行完成数据准备（至多两轮、含输入期
+  // 报错反思自愈），再落入代码分支常规作答；终端不可用则警告跳过。
   if (intent === 'mixed') {
     const tab = await switchTaskTab(page, '命令行');
     if (tab.found && tab.clicked) await settle(page);
     if (await waitForTerminal(page)) {
       const envGen = await detectTerminalEnv(page);
       log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}`);
-      const prep = await generateCommands({
+      // 与 cmdline 分支同装备：客户端实测（mongosh 是否存在这类硬事实）+ 禁令。
+      // 真机事故（2026-09-10）：旧版此处裸调 generateCommands，AI 在无事实依据下
+      // 输出不存在的 mongosh，后续 use/db.xxx 子命令被逐条敲进 bash 全部报错，
+      // 插入文档失败且无任何重试。
+      const bannedCmds = new Set();
+      const { clientFact } = await probeDbClients(page, envGen, problem, bannedCmds);
+      const PREP_EXTRA =
+        '本次只输出题干中「命令行操作部分」的数据准备命令（如 use 库、插入文档）。' +
+        '题干要求写在右侧代码栏 Begin-End 中的查询/程序命令严禁包含在这里——那部分另行处理，平台评测只认代码栏内容。';
+      let prep = await generateCommands({
         problem,
-        extra:
-          '本次只输出题干中「命令行操作部分」的数据准备命令（如 use 库、插入文档）。' +
-          '题干要求写在右侧代码栏 Begin-End 中的查询/程序命令严禁包含在这里——那部分另行处理，平台评测只认代码栏内容。',
-        terminalState: envGen.desc,
+        extra: PREP_EXTRA,
+        terminalState: `${envGen.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
       });
       if (prep.length) {
-        log(`混合题前置：向终端键入 ${prep.length} 条数据准备命令`);
-        const r = await runTerminalCommands(page, prep);
-        if (r.executed) await settle(page);
+        // 数据准备最多两轮：第一轮若输入期报错（入口命令不存在、子命令被敲进
+        // bash 等），反思一轮自愈后重做，避免"插入失败 → 代码查询空结果"连锁失败
+        for (let p = 1; p <= 2 && prep.length; p++) {
+          const guarded = applyCommandGuards(prep, bannedCmds);
+          log(`混合题前置：向终端键入 ${guarded.cmds.length} 条数据准备命令（第 ${p} 轮）`);
+          const r = await runTerminalCommands(page, guarded.cmds);
+          if (r.executed) await settle(page);
+          const inputErrors = formatInputErrors(r.termErrors);
+          if (!inputErrors) break;
+          log(
+            `混合题前置数据准备第 ${p} 轮输入期报错${p === 1 ? '，反思自愈后重试' : '，两轮用尽按当前状态继续'}：\n${inputErrors}`,
+          );
+          if (p === 2) break;
+          for (const c of extractMissingCommands(r.termErrors)) bannedCmds.add(c);
+          const envNow = await detectTerminalEnv(page);
+          const termEcho = await readTerminalText(page);
+          const fixed = await reflectCommands({
+            problem: slimForReflection(problem),
+            previousCommands: guarded.cmds,
+            evalResult:
+              `（数据准备命令在终端执行阶段报错，尚未进入平台评测；平台只评测右侧代码栏内容，必须先把这些数据准备命令修对再继续。）\n\n` +
+              `=== 输入期报错 ===\n${inputErrors}${termEcho ? `\n\n=== 终端回显 ===\n…${termEcho.slice(-1500)}` : ''}`,
+            terminalState: `${envNow.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
+          });
+          if (!fixed.commands?.length) break;
+          prep = fixed.commands;
+        }
       } else {
         log('混合题前置：命令行数据准备生成结果为空，跳过，直接代码栏作答');
       }
@@ -235,18 +324,9 @@ export async function solveOnce(page, probe) {
         log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}`);
         // 客户端实测：bash 环境且题干涉及数据库时，实测本机有哪些客户端
         //（mongosh 不存在只有 mongo 这类事实，靠实测不靠模型记忆）
-        if (envGen.kind === 'bash' && !clientFact && NEEDS_DB.test(problem)) {
-          const probe = await probeTerminalClients(page);
-          if (probe.fact) {
-            clientFact = probe.fact;
-            log(`客户端探测：${probe.have.length ? `可用 ${probe.have.join('、')}` : '全部不可用'}${probe.miss.length ? `｜不存在 ${probe.miss.join('、')}` : ''}`);
-            // 探测出的缺失客户端即刻入禁令：本轮生成就带【实测禁令】，
-            // 执行层替换（COMMAND_ALIASES）也从第 1 轮起武装
-            for (const c of probe.miss) bannedCmds.add(c);
-          } else {
-            // 静默失败必须显性化（2026-09-10 真机：探测无结论时无日志，无法诊断）
-            log('客户端探测未取得结论（终端回显未捕获 HAVE/MISS 行）');
-          }
+        if (!clientFact) {
+          const pr = await probeDbClients(page, envGen, problem, bannedCmds);
+          clientFact = pr.clientFact;
         }
         cmds = await generateCommands({
           problem,
@@ -264,30 +344,12 @@ export async function solveOnce(page, probe) {
         }
       }
 
-      // 执行层兜底（2026-09-10 真机：模型无视【实测禁令】仍逐轮输出 mongosh）：
-      // 首词命中禁令且别名表有等价客户端时确定性替换——"劝"不动就"改"。
-      // 生成与反思产出的命令都经过这一处，替换后输入期报错检测照常生效。
-      cmds = cmds.map((c, i) => {
-        const m = c.match(/^(\S+)([\s\S]*)$/);
-        const alias = m && bannedCmds.has(m[1]) ? COMMAND_ALIASES[m[1]] : null;
-        if (!alias) return c;
-        log(`执行层替换：命令 ${i + 1} 首词 ${m[1]}（实测不存在）→ ${alias}`);
-        return alias + m[2];
-      });
-
-      // shell 书写护栏（0.9.1）：裸中文标签行/全角分号送进 shell eval 必报
-      // SyntaxError: illegal character，与其烧一轮评测等反思盲猜，不如写入前
-      // 确定性清洗。清洗说明留档，评测仍失败时作为反思材料。
-      const san = { changes: [] };
-      cmds = cmds.map((c) => {
-        const s = sanitizeShellSubmission(c);
-        if (s.changes.length) san.changes.push(...s.changes);
-        return s.code;
-      });
-      if (san.changes.length) {
-        sanitizeNote = san.changes.map((n) => `- ${n}`).join('\n');
-        log(`shell 护栏清洗 ${san.changes.length} 处：${san.changes.slice(0, 3).join('；')}`);
-      }
+      // 执行层兜底（0.9.1 真机：模型无视【实测禁令】仍逐轮输出 mongosh）+ shell 护栏
+      // 清洗（中文标签行/全角分号）。生成与反思产出的命令都经过这一处，
+      // 替换/清洗后输入期报错检测照常生效。
+      const guarded = applyCommandGuards(cmds, bannedCmds);
+      cmds = guarded.cmds;
+      sanitizeNote = guarded.sanitizeNote;
 
       const r = await runTerminalCommands(page, cmds);
       if (!r.executed) {
@@ -327,9 +389,7 @@ export async function solveOnce(page, probe) {
           lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
         }
         // 输入期报错优先呈现（键入/执行即报错的命令与回现行，键入时逐条检测）
-        const inputErrors = (r.termErrors ?? [])
-          .map((e) => `命令 ${e.no}: ${e.cmd}\n${e.errs.map((l) => `  ${l}`).join('\n')}`)
-          .join('\n');
+        const inputErrors = formatInputErrors(r.termErrors);
         if (inputErrors) {
           lastEval = `${lastEval || '（评测输出未捕获，以下为输入期报错）'}\n\n=== 输入期报错 ===\n${inputErrors}`;
         }
