@@ -1,6 +1,7 @@
 // EXPORTS: chat, generateCode, reflectAndFix, extractCodeFromMarkdown,
 //          splitAnalysisAndCode, detectVerdict, listChatModels,
-//          classifyProblemIntent, generateCommands, reflectCommands, parseCommandLines
+//          classifyProblemIntent, generateCommands, reflectCommands, parseCommandLines,
+//          sanitizeShellSubmission
 // AI 调用层。
 // 设计要点：
 //   1. prompt 单一数据源 —— 直接读取仓库根 shared/capabilities/*.json 中的 prompt 模板，
@@ -466,7 +467,9 @@ export async function listChatModels() {
 /**
  * 按题干内容判定任务意图（决定"写代码文件"还是"在命令行执行命令"）。
  * 用户要求：以题干要求为准，而不是当前激活的 tab。
- * @returns {Promise<'code'|'cmdline'>}
+ * 0.9.1 新增 mixed：题干同时含命令行操作步骤与代码栏编写要求（如"先在
+ * 命令行插入文档，再在 Begin-End 中写查询"）——旧版二选一路由在此二难。
+ * @returns {Promise<'code'|'cmdline'|'mixed'>}
  */
 export async function classifyProblemIntent({ problem, codeTemplate = '' }) {
   const cap = readCapability('task_router_1');
@@ -483,8 +486,9 @@ export async function classifyProblemIntent({ problem, codeTemplate = '' }) {
     temperature: cap.formValue?.modelParams?.temperature ?? 0,
     maxTokens: cap.formValue?.modelParams?.maxTokens ?? 2048,
   });
-  // 只认 cmdline 为命令行；其余（code/无法解析/超长噪声）一律保守回落代码题
-  return /\bcmdline\b/i.test(content.trim()) ? 'cmdline' : 'code';
+  // 只认 cmdline / mixed；其余（code/无法解析/超长噪声）一律保守回落代码题
+  const m = String(content ?? '').match(/\b(cmdline|mixed)\b/i);
+  return m ? m[1].toLowerCase() : 'code';
 }
 
 /** 解析命令序列输出：剥 markdown 围栏，跳过空行、注释行与提示符行。
@@ -575,4 +579,60 @@ export async function reflectCommands({ problem, previousCommands, evalResult, t
   }
   const commands = parseCommandLines(body.join('\n'));
   return { analysis, commands };
+}
+
+/**
+ * shell/数据库脚本书写护栏（0.9.1，确定性规则、不依赖模型自觉）。
+ *
+ * 背景（2026-09-10 真机事故）：反思 AI 把评测面板的中文标签（"输出集合前3条
+ * 文档: "）误判为输出要求，把「中文标签: 命令」整行写进代码栏——平台把代码栏
+ * 内容逐行送 mongo shell eval，行首中文直接报 `SyntaxError: illegal character
+ * @(shell eval):1:9`（列号 = 标签第 9 字，与三条报错逐一吻合）。
+ * 与其烧一轮评测等反思猜，不如提交前确定性清洗。
+ *
+ * 触发条件（避免误伤普通编程题）：内容含 db.<集合>. 调用 / mongo 痕迹。
+ * 普通编程题（Python/Java 等，中文字符串输出合法）零触发。
+ *
+ * 规则（逐行）：
+ *   1. 全角分号「；」→「;」（题干字面常写"以分号；隔开"，照抄即非法）；
+ *   2. 非注释行行首为 CJK（裸中文标签行）→ 取最后一个全/半角冒号之后的
+ *      命令部分（以 ASCII 字母/$/_ 开头才认）；取不到则整行剔除；
+ *   3. 注释行（// /* * #）与字符串字面量中的中文不受影响（不触发行首规则）。
+ *
+ * @param {string} text 单条命令或整段提交内容
+ * @returns {{code: string, changes: string[]}} changes 为空数组表示未触发
+ */
+export function sanitizeShellSubmission(text) {
+  const src = String(text ?? '');
+  if (!/\bdb\s*\.|\bmongo(?:sh)?\b/i.test(src)) return { code: src, changes: [] };
+  const changes = [];
+  const out = src.split(/\r?\n/).map((line) => {
+    const t = line.trim();
+    // 注释行不处理（mongo shell 认 // 与 /* */ 注释；# 行可能是 heredoc 约定）
+    if (!t || /^\/\//.test(t) || /^\/\*/.test(t) || /^[*\#]/.test(t)) return line;
+    let cur = line;
+    if (cur.includes('；')) {
+      cur = cur.replace(/；/g, '; ');
+      changes.push(`全角分号「；」→「;」（原文：${t.slice(0, 50)}）`);
+    }
+    // 行首 CJK（含全角标点）：裸中文标签行
+    if (/^[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(cur.trim())) {
+      // 取「第一个」冒号作为标签分隔符：标签必然位于命令之前，而命令内部
+      // 也会出现冒号（如 sort({learning_num:1})）——用 lastIndexOf 会被
+      // 命令自身的冒号截走，把整条合法命令误剔（0.9.1 测试 c2 实证）
+      const idxFull = cur.indexOf('：');
+      const idxHalf = cur.indexOf(':');
+      const idx = Math.min(...[idxFull, idxHalf].filter((i) => i >= 0));
+      const rest = Number.isFinite(idx) ? cur.slice(idx + 1).trim() : '';
+      if (rest && /^[A-Za-z_$]/.test(rest)) {
+        changes.push(`剥离中文标签「${t.slice(0, 24)}…」→ 仅保留命令部分「${rest.slice(0, 40)}」`);
+        cur = rest;
+      } else {
+        changes.push(`剔除裸中文行「${t.slice(0, 40)}」（shell 脚本中该行非法）`);
+        return '';
+      }
+    }
+    return cur;
+  });
+  return { code: out.join('\n'), changes };
 }

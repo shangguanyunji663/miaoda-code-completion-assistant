@@ -699,7 +699,7 @@ export async function detectTerminalEnv(page) {
     return {
       kind: 'bash',
       db: '',
-      desc: '当前处于 bash shell 提示符（不在任何数据库 REPL 内）。若任务要求 MongoDB / MySQL / Redis 等数据库操作：必须先执行进入命令（mongosh / mysql -u… -p / redis-cli）建立会话，再逐条执行其子命令；严禁把数据库 shell 的子命令直接当 bash 命令执行（bash 里敲 use xxx / db.xxx / show xxx 必报 command not found）。',
+      desc: '当前处于 bash shell 提示符（不在任何数据库 REPL 内）。若任务要求 MongoDB / MySQL / Redis 等数据库操作：必须先执行进入命令建立会话（用哪个客户端以【客户端实测】可用清单为准，严禁使用实测不存在的命令），再逐条执行其子命令；严禁把数据库 shell 的子命令直接当 bash 命令执行（bash 里敲 use xxx / db.xxx / show xxx 必报 command not found）。',
     };
   }
   return {

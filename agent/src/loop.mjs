@@ -1,12 +1,13 @@
 // EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop
 // 主编排：感知 → 意图判定 → 生成/作答 → 提交评测 → 读结果 → 失败反思 → 成功翻页。
 //
-// 单题流程（代码题 / 命令行题，按题干意图分流）：
+// 单题流程（代码题 / 命令行题 / 混合题，按题干意图分流）：
 //   probe → classifyProblemIntent(题干) → 切换到对应工作区（命令行 / 代码文件）
-//     code:    generateCode → writeEditor → settle → clickEval → waitResult
+//     code:    generateCode → 护栏清洗 → writeEditor → settle → clickEval → waitResult
 //              → passed? 结束 : reflectAndFix → 回到 writeEditor（最多 MAX_RETRY 次）
-//     cmdline: generateCommands → 逐条键入 xterm → settle → clickEval → waitResult
+//     cmdline: generateCommands → 护栏清洗 → 逐条键入 xterm → settle → clickEval → waitResult
 //              → passed? 结束 : reflectCommands → 重新键入（最多 MAX_RETRY 次）
+//     mixed:   generateCommands(仅数据准备) → 键入终端 → 落入 code 分支
 // 选择题 / 填空题走 answerQuestion 分支，题型由 perceive.classifyTask 判定。
 
 import { cfg } from './config.mjs';
@@ -51,6 +52,7 @@ import {
   answerBatch,
   detectVerdict,
   spliceIntoTemplate,
+  sanitizeShellSubmission,
   classifyProblemIntent,
   generateCommands,
   reflectCommands,
@@ -60,6 +62,15 @@ const log = (m) => console.log(`[loop] ${m}`);
 
 /** 题干命中这些关键词才做客户端可用性探测（纯 bash 文件任务不浪费一轮键入） */
 const NEEDS_DB = /(mongodb|mongosh|\bmongo\b|mysql|redis|psql|postgres|数据库|集合)/i;
+
+/**
+ * 执行层命令别名：首词被实测禁令命中时的确定性替换。
+ * mongosh→mongo：mongosh 是 MongoDB 4.4+ 的 Node 客户端，本平台（Ubuntu 16.04 +
+ * MongoDB 4.0）只有 legacy mongo shell——它是 mongosh 的功能子集，题面操作
+ * （use / db.xxx / show users 等）完全兼容。只在首词命中【实测禁令】时替换，
+ * heredoc 正文与其余命令不动。
+ */
+const COMMAND_ALIASES = { mongosh: 'mongo' };
 
 /** 从输入期报错行提取 command not found 的命令名（仅收干净词法名，滤掉大表达式碎片） */
 function extractMissingCommands(termErrors) {
@@ -80,11 +91,26 @@ function banNote(banned) {
     : '';
 }
 
-/** 反思用瘦身题干：以「编程要求」段为锚取前后文（约 1500 字），避免全量题干撑大反思输入 */
+/**
+ * 反思用瘦身题干（0.9.1 双锚点扩窗）：以「编程要求」与「测试说明」两段为锚，
+ * 覆盖要求明细 + 评测机制说明（约 2600 字窗口）。
+ * 教训（2026-09-10 真机）：旧版单锚 ±窗口只有 ~1500 字，本题的「测试说明」
+ * （"平台会把你在代码行编写的命令传到数据库执行"）落在窗口外——反思 AI
+ * 不懂评测机制，把预期输出面板的中文标签当成了输出要求，酿成灾难性修正。
+ */
 function slimForReflection(p) {
-  const idx = p.indexOf('编程要求');
-  if (idx === -1) return p.slice(0, 1500);
-  return p.slice(Math.max(0, idx - 400), idx + 1100);
+  const anchors = ['编程要求', '测试说明'];
+  let start = Number.POSITIVE_INFINITY;
+  let end = -1;
+  for (const a of anchors) {
+    const i = p.indexOf(a);
+    if (i !== -1) {
+      start = Math.min(start, i);
+      end = Math.max(end, i);
+    }
+  }
+  if (start === Number.POSITIVE_INFINITY) return p.slice(0, 3000);
+  return p.slice(Math.max(0, start - 400), Math.min(p.length, end + 1600));
 }
 
 /**
@@ -143,11 +169,44 @@ export async function solveOnce(page, probe) {
   // 判定依据是题干要求本身（AI 意图路由），而非当前激活的 tab；
   // 判定后若工作区 tab 不符则自动切换（命令行 / 代码文件）。
   const intent = await classifyProblemIntent({ problem, codeTemplate: probe.code ?? '' });
-  log(`题干意图判定：${intent === 'cmdline' ? '命令行操作（cmdline）' : '代码编写（code）'}`);
+  log(
+    `题干意图判定：${intent === 'cmdline' ? '命令行操作（cmdline）' : intent === 'mixed' ? '命令行准备 + 代码栏作答（mixed）' : '代码编写（code）'}`,
+  );
 
   // 分支逃生舱状态：命令行多轮跑通仍评测不匹配 → 疑似路由误判，转代码分支
   let cmdlineFallback = false;
   let cmdlineEvalText = '';
+
+  // ---- 混合题（0.9.1）：题干同时要求"命令行操作 + 代码栏编写"（如先在
+  // 命令行插入文档、再在 Begin-End 写查询）。旧版二选一路由在此二难：
+  // 判 code 则数据准备缺失（查询无结果），判 cmdline 则查询写进终端而
+  // 评测只认代码栏。处置：先在命令行完成数据准备（单轮、不反思循环），
+  // 再落入代码分支常规作答；终端不可用则警告跳过（评测环境可能已预置数据）。
+  if (intent === 'mixed') {
+    const tab = await switchTaskTab(page, '命令行');
+    if (tab.found && tab.clicked) await settle(page);
+    if (await waitForTerminal(page)) {
+      const envGen = await detectTerminalEnv(page);
+      log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}`);
+      const prep = await generateCommands({
+        problem,
+        extra:
+          '本次只输出题干中「命令行操作部分」的数据准备命令（如 use 库、插入文档）。' +
+          '题干要求写在右侧代码栏 Begin-End 中的查询/程序命令严禁包含在这里——那部分另行处理，平台评测只认代码栏内容。',
+        terminalState: envGen.desc,
+      });
+      if (prep.length) {
+        log(`混合题前置：向终端键入 ${prep.length} 条数据准备命令`);
+        const r = await runTerminalCommands(page, prep);
+        if (r.executed) await settle(page);
+      } else {
+        log('混合题前置：命令行数据准备生成结果为空，跳过，直接代码栏作答');
+      }
+    } else {
+      log('混合题前置：终端未出现，跳过命令行准备（评测环境可能已预置数据），直接代码栏作答');
+    }
+    // 不 return，落入下方代码分支
+  }
 
   if (intent === 'cmdline') {
     const tab = await switchTaskTab(page, '命令行');
@@ -159,6 +218,7 @@ export async function solveOnce(page, probe) {
 
     let cmds = null;
     let lastEval = '';
+    let sanitizeNote = ''; // shell 护栏清洗记录（喂给反思，供其理解上一轮实际提交内容）
     const bannedCmds = new Set(); // 本题内累积的 command not found 命令（跨反思轮生效）
     let clientFact = ''; // 客户端可用性实测结论（bash 环境下探测一次）
     const lessons = []; // 各轮反思的诊断结论（Reflexion 式教训链，跨轮注入）
@@ -180,6 +240,12 @@ export async function solveOnce(page, probe) {
           if (probe.fact) {
             clientFact = probe.fact;
             log(`客户端探测：${probe.have.length ? `可用 ${probe.have.join('、')}` : '全部不可用'}${probe.miss.length ? `｜不存在 ${probe.miss.join('、')}` : ''}`);
+            // 探测出的缺失客户端即刻入禁令：本轮生成就带【实测禁令】，
+            // 执行层替换（COMMAND_ALIASES）也从第 1 轮起武装
+            for (const c of probe.miss) bannedCmds.add(c);
+          } else {
+            // 静默失败必须显性化（2026-09-10 真机：探测无结论时无日志，无法诊断）
+            log('客户端探测未取得结论（终端回显未捕获 HAVE/MISS 行）');
           }
         }
         cmds = await generateCommands({
@@ -196,6 +262,31 @@ export async function solveOnce(page, probe) {
           log('生成命令为空，终止本题');
           return { ok: false, kind: 'cmdline', reason: 'empty-commands' };
         }
+      }
+
+      // 执行层兜底（2026-09-10 真机：模型无视【实测禁令】仍逐轮输出 mongosh）：
+      // 首词命中禁令且别名表有等价客户端时确定性替换——"劝"不动就"改"。
+      // 生成与反思产出的命令都经过这一处，替换后输入期报错检测照常生效。
+      cmds = cmds.map((c, i) => {
+        const m = c.match(/^(\S+)([\s\S]*)$/);
+        const alias = m && bannedCmds.has(m[1]) ? COMMAND_ALIASES[m[1]] : null;
+        if (!alias) return c;
+        log(`执行层替换：命令 ${i + 1} 首词 ${m[1]}（实测不存在）→ ${alias}`);
+        return alias + m[2];
+      });
+
+      // shell 书写护栏（0.9.1）：裸中文标签行/全角分号送进 shell eval 必报
+      // SyntaxError: illegal character，与其烧一轮评测等反思盲猜，不如写入前
+      // 确定性清洗。清洗说明留档，评测仍失败时作为反思材料。
+      const san = { changes: [] };
+      cmds = cmds.map((c) => {
+        const s = sanitizeShellSubmission(c);
+        if (s.changes.length) san.changes.push(...s.changes);
+        return s.code;
+      });
+      if (san.changes.length) {
+        sanitizeNote = san.changes.map((n) => `- ${n}`).join('\n');
+        log(`shell 护栏清洗 ${san.changes.length} 处：${san.changes.slice(0, 3).join('；')}`);
       }
 
       const r = await runTerminalCommands(page, cmds);
@@ -267,13 +358,16 @@ export async function solveOnce(page, probe) {
       const fixed = await reflectCommands({
         problem: slimForReflection(problem),
         previousCommands: cmds,
-        evalResult: lastEval || '（未捕获到评测输出，请对照任务要求自查命令）',
+        evalResult: `${lastEval || '（未捕获到评测输出，请对照任务要求自查命令）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际执行的命令） ===\n${sanitizeNote}` : ''}`,
         terminalState: `${envNow.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
         lessons: lessons.slice(-6),
       });
       log(`AI 命令反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
       if (fixed.analysis) {
-        log(`反思分析：${String(fixed.analysis).slice(0, 160)}`);
+        // 全量打印（0.9.1）：旧版 slice(0,160) 把诊断拦腰截断，用户看到的
+        // 是"说到一半的反思"，无法判断 AI 是真没想全还是没显示全——
+        // 分析本身已被 prompt 约束为一句话，全量打印成本可忽略
+        log(`反思分析：${String(fixed.analysis).replace(/\s+/g, ' ')}`);
         // 诊断沉淀进教训链：反思每轮独立无记忆，把上一轮确诊的原因带进下一轮，
         // 防止"第 N 轮改对了、第 N+1 轮又退回"的摇摆（真机实证：mongo↔mongosh）
         lessons.push(String(fixed.analysis));
@@ -314,6 +408,7 @@ export async function solveOnce(page, probe) {
 
   let code = null;
   let lastEval = '';
+  let sanitizeNote = ''; // shell 护栏清洗记录（喂给反思，供其理解上一轮实际提交内容）
 
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     if (code === null) {
@@ -338,7 +433,17 @@ export async function solveOnce(page, probe) {
 
     // 实际提交评测的是"模板拼接后"的版本；反思必须带上它而不是 AI 原始
     // 输出，否则 AI 审的是一份没提交过的文本（2026-09-09 用户指出）
-    const submitted = spliceIntoTemplate(codeProbe.code, code);
+    let submitted = spliceIntoTemplate(codeProbe.code, code);
+    // shell 书写护栏（0.9.1）：数据库脚本题（模板含 db. 调用）中，AI 偶发把
+    // 中文标签拼在命令前（"输出集合前3条文档: db.educoder…"）——送进 shell
+    // eval 必报 SyntaxError: illegal character。写入前确定性清洗：
+    // 剥标签留命令 / 剔除裸中文行 / 全角分号转半角；普通编程题零触发。
+    const san = sanitizeShellSubmission(submitted);
+    if (san.changes.length) {
+      submitted = san.code;
+      sanitizeNote = san.changes.map((n) => `- ${n}`).join('\n');
+      log(`shell 护栏清洗 ${san.changes.length} 处：${san.changes.slice(0, 3).join('；')}`);
+    }
     await writeEditorCode(page, submitted);
     await settle(page);
 
@@ -378,12 +483,17 @@ export async function solveOnce(page, probe) {
     const rt0 = Date.now();
     const fixed = await reflectAndFix({
       problem: slimForReflection(problem),
-      // 反思看的是实际提交评测的代码（模板拼接后、经写入验证的版本）
+      // 反思看的是实际提交评测的代码（模板拼接后、经护栏清洗、写入验证的版本）
       previousCode: submitted,
-      evalResult: lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）',
+      evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
     });
     log(`AI 代码反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
-    if (fixed.analysis) log(`反思分析：${String(fixed.analysis).replace(/\s+/g, ' ').slice(0, 160)}`);
+    if (fixed.analysis) {
+      // 全量打印（0.9.1）：旧版 slice(0,160) 把诊断拦腰截断（见图 1 事故：
+      // "根据"SyntaxError: missing…"源" 戛然而止），用户无法判断是真截断
+      // 还是 AI 没想全。分析被 prompt 约束 3 句话内，全量打印成本可忽略
+      log(`反思分析：${String(fixed.analysis).replace(/\s+/g, ' ')}`);
+    }
     if (!fixed.code) {
       log('反思未产出代码，终止本题');
       break;

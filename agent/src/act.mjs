@@ -99,16 +99,21 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
     /(全部通过|评测通过|测试通过|答案正确|accepted|恭喜|0\s*组不匹配)/i.test(t) &&
     !/(不匹配|未通过|没有通过|失败|错误|异常|wrong\s*answer|time\s*limit|runtime\s*error|compile\s*error)/i.test(t);
 
-  while (Date.now() < deadline) {
-    await page.waitForTimeout(400); // 2026-09-10：800→400ms，判定延迟减半
-    // 「恭喜您通过本关」弹窗是平台权威通过宣告：出现即判过并立即返回。
-    // （2026-09-10 真机实测：弹窗带入场动画、可能早于面板文本稳定出现，
-    // 旧版只在稳定后查一次导致"弹窗已庆祝、判定却是未通过"）
-    if (await isPassModalVisible(page)) {
-      log('检测到「恭喜您通过本关」弹窗，立即判为通过');
-      return `${best}\n恭喜您通过本关`;
-    }
-    const now = await readEvalPanel(page);
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(400); // 2026-09-10：800→400ms，判定延迟减半
+      // 「恭喜您通过本关」弹窗是平台权威通过宣告：出现即判过并立即返回。
+      // （2026-09-10 真机实测：弹窗带入场动画、可能早于面板文本稳定出现，
+      // 旧版只在稳定后查一次导致"弹窗已庆祝、判定却是未通过"）
+      if (await isPassModalVisible(page)) {
+        log('检测到「恭喜您通过本关」弹窗，立即判为通过');
+        return `${best}\n恭喜您通过本关`;
+      }
+      // 结构化通过标记（class=test-result.success）：比文本匹配更硬的证据
+      if (await hasStructPassMark(page)) {
+        log('检测到结构化通过标记（test-result.success），立即判为通过');
+        return '全部通过（结构标记 test-result.success）';
+      }
+      const now = await readEvalPanel(page);
     if (now && now !== before) {
       best = now;
       if (isDefiniteSuccess(now)) {
@@ -148,6 +153,11 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
         log('捕获文本无成功词，但检测到「恭喜您通过本关」弹窗，判为通过');
         break;
       }
+      if (await hasStructPassMark(page)) {
+        best = `${best}\n全部通过（结构标记 test-result.success）`;
+        log('捕获文本无成功词，但检测到结构化通过标记，判为通过');
+        break;
+      }
       await page.waitForTimeout(300);
     }
   }
@@ -161,13 +171,42 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
   return best;
 }
 
-/** 「恭喜您通过本关」庆祝弹窗是否在场（平台权威通过宣告） */
+/** 「恭喜您通过本关」庆祝弹窗是否在场（平台权威通过宣告）。
+ * 真机 DOM 实锤（2026-09-10 DevTools）：横幅文字是烘焙在 PNG 里的图片
+ * （<div class="evaluate-result-body"><img src="data:image/png;base64,..." alt="通关">），
+ * 文本节点不存在，getByText 原理上不可能命中——唯一可编程痕迹是 alt="通关"。
+ * 故按 img[alt*=通关] 检测，文本匹配仅作其他平台变体的兜底。逐 frame 扫描。 */
 async function isPassModalVisible(page) {
-  return page
-    .getByText('恭喜您通过', { exact: false })
-    .first()
-    .isVisible()
-    .catch(() => false);
+  for (const f of [page.mainFrame(), ...page.frames().filter((x) => x !== page.mainFrame())]) {
+    const img = await f
+      .locator('img[alt*="通关"]')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (img) return true;
+    const text = await f
+      .getByText('恭喜您通过', { exact: false })
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (text) return true;
+  }
+  return false;
+}
+
+/** 结构化通过标记：p.test-result.success（2026-09-10 真机 DOM 实锤：
+ * right-panel 结果行 <p class="test-result success"><span class="count">全部通过</span>）。
+ * class 直接编码通过状态，优先级高于一切文本启发式。逐 frame 扫描。 */
+async function hasStructPassMark(page) {
+  for (const f of [page.mainFrame(), ...page.frames().filter((x) => x !== page.mainFrame())]) {
+    const hit = await f
+      .locator('p.test-result.success')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (hit) return true;
+  }
+  return false;
 }
 
 /**
