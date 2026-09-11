@@ -25,6 +25,7 @@
     "course": "node src/cli.mjs course",
     "course-probe": "node src/cli.mjs course-probe",
     "models": "node src/cli.mjs models",
+    "web": "node src/web-server.mjs",
     "test": "node --test test/*.test.mjs",
     "lint": "eslint src/ test/",
     "format": "prettier --write src/ test/ eslint.config.js",

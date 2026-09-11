@@ -57,6 +57,7 @@ npm run probe
 | `npm run course` | **课程自动驾驶**：遍历「课堂实验→板块→开始学习」，逐关作答直至板块做完（见下方专节） |
 | `npm run course-probe` | 只读诊断课程列表页：打印识别到的板块/卡片并导出快照，**course 卡住时先跑这个** |
 | `npm run models` | 列出可用文本模型 |
+| `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流，见下方「网页工作台」） |
 | `npm test` | 运行核心纯函数单测（22 项，Node 内置 `node:test`，零新增依赖） |
 | `npm run lint` | ESLint 静态检查（`eslint.config.js`） |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
@@ -65,6 +66,21 @@ npm run probe
 ## 日志
 
 统一由 `src/logger.mjs` 输出：控制台保持 `[模块] 消息` 形态，同时**落盘到 `logs/agent-<日期>.log`**（含时间戳与 INFO/WARN/ERROR 级别）。常驻模式（watch / lite）跑完关掉窗口后仍可回溯。设 `LOG_TO_FILE=0` 可关闭落盘。
+
+## 网页工作台（web）
+
+`npm run web`（或双击 `start-web.bat`）启动本机网页工作台，浏览器打开 `http://127.0.0.1:8787`：
+
+| 能力 | 端点 | 说明 |
+|---|---|---|
+| 状态面板 | `GET /api/status` | AI 配置 / 当前模型 / 浏览器连接（只读，不触发连接） |
+| 探测页面 | `POST /api/probe` | 只读感知：题型 / 编辑器 / 题干摘要 / 可点击元素 |
+| 解当前题 | `POST /api/solve` | 感知 → AI 生成/作答 → 提交评测 → 失败反思重试（**会真实提交**） |
+| 运行日志 | `GET /api/logs?since=n` | 内存环形缓冲最近 200 条，前端 1.5s 增量轮询 |
+
+设计边界（v1，最小可用形态）：**仅绑定 127.0.0.1**，不对局域网/外网暴露；端点固定无参数；编排（反思循环）留在 agent 侧。真正的"多人使用"需要浏览器池与账号隔离，属产品化场景，不在本期范围。前端为单文件原生子页（`public/index.html`，无 React、无构建链——尊重 2026-09-09 移除 React 工作台的决策）。
+
+验证边界：静态页、status、logs、无浏览器时的结构化报错、404 均已实测；`probe` / `solve` 真实链路需带调试端口且已登录评测站的浏览器，请实测确认。
 
 ## 配置项（`agent/.env.local`）
 

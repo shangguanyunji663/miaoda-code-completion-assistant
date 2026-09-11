@@ -14,6 +14,8 @@
 - `config.mjs` — 配置层，读 `agent/.env.local`
 - `ai.mjs` — OpenAI 兼容调用 + `detectVerdict()` 加固版成功判定；`classifyProblemIntent()` 意图路由（code / cmdline / mixed）；prompt 读 `shared/capabilities/*.json`
 - `browser.mjs` — `connectOverCDP` + 多标签页遍历（连接前临时摘除代理环境变量）
+- `browser-session.mjs` — 常驻进程的浏览器会话管理（懒连接 + 互斥串行 + 断线重连），供 web-server 复用
+- `web-server.mjs` — 网页工作台（零新增依赖 node:http + 单文件原生前端，仅绑 127.0.0.1）：`GET /`、`GET /api/status`、`POST /api/probe`（只读）、`POST /api/solve`（真实提交）、`GET /api/logs`（环形缓冲增量轮询）
 - `launch-browser.mjs` — 启动带调试端口的浏览器，含 Windows 保留端口区间自动顺延
 - `perceive.mjs` — 页面感知：编辑器探测、题干提取、题型分类（选择/填空按结构信号；代码/命令行/混合由 AI 按题干意图判定）、按钮枚举、课程列表卡片/板块收集、终端环境识别（`detectTerminalEnv`：bash/mongosh/mysql/redis/psql/neo4j）
 - `act.mjs` — 执行层：写入代码、勾选选项、点击评测、等待结果、翻页、课程导航（退出/返回/开始学习/跳转检测）、切换「命令行/代码文件」工作区标签、向 xterm 终端逐条键入命令、客户端可用性实测（`probeTerminalClients`）、shell 护栏清洗（`sanitizeShellSubmission`）
@@ -30,7 +32,8 @@
 - `npm run course` — 课程自动驾驶：遍历「课堂实验→板块→开始学习」逐关完成（前置：浏览器已打开课程列表页）
 - `npm run course-probe` — 只读诊断课程列表页识别（不点击），course 卡住时先跑
 - `npm run models` — 列出可用文本模型
-- Windows 用户入口：双击 `agent/start-my-edge.bat`（自己的 Edge）、`agent/start-browser.bat`（独立 profile）、`agent/start-watch.bat`、`agent/start-lite.bat`、`agent/start-course.bat`
+- `npm run web` — 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：探测 / 解题 / 日志流）
+- Windows 用户入口：双击 `agent/start-my-edge.bat`（自己的 Edge）、`agent/start-browser.bat`（独立 profile）、`agent/start-watch.bat`、`agent/start-lite.bat`、`agent/start-course.bat`、`agent/start-web.bat`（网页工作台）
 
 ## 约束
 

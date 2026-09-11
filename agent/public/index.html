@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>妙答 Agent 工作台</title>
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --line:#2a2f3a; --fg:#e6e9ef; --dim:#9aa3b2; --ok:#4ade80; --bad:#f87171; --acc:#7aa2f7; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--fg); font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .kv { color:var(--dim); font-size:13px; } .kv b { color:var(--fg); font-weight:600; }
+  button { background:var(--acc); border:0; color:#0b0e14; font-weight:600; padding:8px 16px; border-radius:8px; cursor:pointer; font-size:13px; }
+  button.ghost { background:transparent; color:var(--acc); border:1px solid var(--acc); }
+  button:disabled { opacity:.45; cursor:wait; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--dim); margin-right:5px; }
+  .dot.on { background:var(--ok); } .dot.off { background:var(--bad); }
+  pre { background:#0b0e14; border:1px solid var(--line); border-radius:8px; padding:10px 12px; max-height:320px; overflow:auto; font-size:12px; white-space:pre-wrap; word-break:break-all; margin:8px 0 0; }
+  .err { color:var(--bad); }
+  .hint { color:var(--dim); font-size:12px; margin-top:8px; }
+</style>
+</head>
+<body>
+  <h1>妙答 Agent 工作台</h1>
+  <div class="sub">浏览器自动解题 Agent · 本机服务（仅 127.0.0.1 可访问）· v<span id="ver">?</span></div>
+
+  <div class="card">
+    <div class="row">
+      <span class="kv">AI 配置：<b id="aiReady">?</b></span>
+      <span class="kv">当前模型：<b id="model">?</b></span>
+      <span class="kv"><span class="dot" id="browserDot"></span>浏览器连接：<b id="browser">?</b></span>
+      <span style="flex:1"></span>
+      <button class="ghost" id="btnStatus">刷新状态</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnProbe">探测页面（只读）</button>
+      <button id="btnSolve">▶ 解当前题（会真实提交评测）</button>
+      <span style="flex:1"></span>
+      <span class="kv" id="busy"></span>
+    </div>
+    <pre id="result">结果将显示在这里。请先在带调试端口的浏览器中打开题目页。</pre>
+    <div class="hint">「解当前题」= 感知 → AI 生成/作答 → 提交评测 → 失败自动反思重试；编排过程看下方日志。</div>
+  </div>
+
+  <div class="card">
+    <div class="row"><span class="kv">运行日志（增量轮询）</span><span style="flex:1"></span><span class="kv" id="logMeta"></span></div>
+    <pre id="logs"></pre>
+  </div>
+
+<script>
+  let lastSeq = 0;
+
+  const $ = (id) => document.getElementById(id);
+  const setBusy = (t) => { $('busy').textContent = t || ''; $('btnProbe').disabled = !!t; $('btnSolve').disabled = !!t; };
+
+  async function refreshStatus() {
+    try {
+      const s = await (await fetch('/api/status')).json();
+      $('ver').textContent = s.version;
+      $('aiReady').textContent = s.aiReady ? '已配置' : '未配置（检查 .env.local）';
+      $('model').textContent = s.model || '-';
+      $('browser').textContent = s.browser.connected ? '已连接' : '未连接';
+      $('browserDot').className = 'dot ' + (s.browser.connected ? 'on' : 'off');
+    } catch (e) { $('aiReady').textContent = '状态获取失败'; }
+  }
+
+  async function callApi(path, confirmText) {
+    if (confirmText && !confirm(confirmText)) return;
+    setBusy('执行中…（可能需要数十秒到数分钟，看下方日志）');
+    $('result').textContent = '执行中…';
+    try {
+      const r = await fetch(path, { method: 'POST' });
+      const data = await r.json();
+      $('result').textContent = JSON.stringify(data, null, 2);
+      if (data.error) $('result').className = 'err';
+      else $('result').className = '';
+    } catch (e) {
+      $('result').textContent = '请求失败：' + e.message;
+      $('result').className = 'err';
+    } finally {
+      setBusy('');
+      refreshStatus();
+    }
+  }
+
+  async function pollLogs() {
+    try {
+      const r = await (await fetch('/api/logs?since=' + lastSeq)).json();
+      lastSeq = r.lastSeq;
+      if (r.items.length) {
+        $('logs').textContent += r.items.map((e) => `[${e.ts}] [${e.scope}] ${e.text}`).join('\n') + '\n';
+        $('logs').scrollTop = $('logs').scrollHeight;
+      }
+      $('logMeta').textContent = `缓冲 ${r.items.length ? '有更新' : '无新增'}`;
+    } catch { /* 服务未就绪时静默 */ }
+  }
+
+  $('btnStatus').onclick = refreshStatus;
+  $('btnProbe').onclick = () => callApi('/api/probe');
+  $('btnSolve').onclick = () => callApi('/api/solve', '将真实点击「评测」提交本题，确认继续？');
+
+  refreshStatus();
+  setInterval(refreshStatus, 5000);
+  setInterval(pollLogs, 1500);
+</script>
+</body>
+</html>
