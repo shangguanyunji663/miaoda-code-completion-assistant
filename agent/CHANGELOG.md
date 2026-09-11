@@ -9,6 +9,7 @@
 ### Added
 
 - **能力 JSON 加载前校验 `src/capability-schema.mjs`**（零依赖，不引入 Ajv）：必填字段（`id` / `formValue.prompt` / `paramsSchema`）、prompt 占位符 ⊆ `paramsSchema.properties`（抓拼写错误）、`required` ⊆ `properties`（抓声明漂移）。`ai.mjs` 的 `readCapability` 首次读取时自动全量预检（fail-fast）；新增 CLI 命令 `npm run caps-check` 手动校验（不连浏览器、不调 AI）
+- **启动自检 CDP 调试端口 `src/port-check.mjs`**（node:net 零依赖）：watch / lite / course 启动时探测调试端口并给出人话状态——就绪打勾，无响应则指引（推荐先双击 start-my-edge.bat，或说明将自动拉起独立浏览器兜底）。真机反馈驱动：跳过受控浏览器直接运行时，故障要到连接时才暴露。冒烟实测就绪/无响应两条路径
 - **单测 22→29 项**（新增 `test/capability-schema.test.mjs`）：真实 7 能力文件全通过的回归闸 + 缺字段 / 占位符拼写 / required 漂移 / 坏文件聚合报错四类用例
 
 ### Fixed

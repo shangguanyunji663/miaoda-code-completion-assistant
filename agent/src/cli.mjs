@@ -26,6 +26,7 @@ import {
 import { runLoop, watchLoop, liteLoop, courseLoop } from './loop.mjs';
 import { listChatModels } from './ai.mjs';
 import { assertCapabilitiesValid } from './capability-schema.mjs';
+import { reportCdpPortStartupCheck } from './port-check.mjs';
 import { launchBrowser, resolveBrowserPath, launchMyEdge } from './launch-browser.mjs';
 
 const cmd = process.argv[2] ?? 'probe';
@@ -119,6 +120,7 @@ async function main() {
 
     case 'watch': {
       assertAiReady();
+      await reportCdpPortStartupCheck();
       // 常驻运行，不会自行退出；由 SIGINT/SIGTERM 收尾
       await watchLoop();
       return;
@@ -126,6 +128,7 @@ async function main() {
 
     case 'lite': {
       assertAiReady();
+      await reportCdpPortStartupCheck();
       // 刷新触发模式：常驻运行；刷新题目页即重做，失败后刷新即可再试
       await liteLoop();
       return;
@@ -133,6 +136,7 @@ async function main() {
 
     case 'course': {
       assertAiReady();
+      await reportCdpPortStartupCheck();
       // 课程自动驾驶：需先在该浏览器打开「课堂实验」列表页
       const r = await courseLoop();
       console.log('\n结果：', JSON.stringify(r, null, 2));
