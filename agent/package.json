@@ -18,6 +18,7 @@
     "my-edge": "node src/cli.mjs my-edge",
     "probe": "node src/cli.mjs probe",
     "dump": "node src/cli.mjs dump",
+    "caps-check": "node src/cli.mjs caps-check",
     "once": "node src/cli.mjs once",
     "run": "node src/cli.mjs run",
     "watch": "node src/cli.mjs watch",
