@@ -19,6 +19,7 @@ import { pickTargetPage } from './browser.mjs';
 import { probePage } from './perceive.mjs';
 import { solveOnce } from './loop.mjs';
 import { withBrowserSession, disconnectSession, sessionStatus } from './browser-session.mjs';
+import { reportCdpPortStartupCheck } from './port-check.mjs';
 import { addLogSink, createLogger } from './logger.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -131,6 +132,8 @@ function shutdown() {
 server.listen(PORT, HOST, () => {
   log(`网页工作台已启动：http://${HOST}:${PORT}（仅本机可访问）`);
   log('请在带调试端口的浏览器中打开评测题目页后使用「探测页面 / 解当前题」');
+  // 启动自检：浏览器是懒连接，此刻不查的话"没开受控浏览器"要到点按钮才暴露
+  reportCdpPortStartupCheck();
 });
 server.on('error', (err) => {
   if (err && err.code === 'EADDRINUSE') {

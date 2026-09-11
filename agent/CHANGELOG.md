@@ -11,6 +11,7 @@
 - **HTTP 服务 `src/web-server.mjs`**（Node 内置 `node:http`，零新增依赖）：`GET /` 静态页、`GET /api/status`（只读状态，不触发浏览器连接）、`POST /api/probe`（只读感知）、`POST /api/solve`（解当前题，编排/反思循环留在 agent 侧）、`GET /api/logs?since=n`（内存环形缓冲最近 200 条，增量轮询）。安全边界：仅绑定 `127.0.0.1`、端点固定无参数、不做任何用户 URL 抓取、不新增密钥面（AI 配置复用 `.env.local`）
 - **单文件原生前端 `public/index.html`**：状态面板 + 探测/解题按钮 + 实时日志流。无 React、无构建链——尊重 2026-09-09 移除 React 工作台的决策，本服务刻意不重建该栈
 - **双击入口 `start-web.bat`**（与既有 5 个 bat 同风格）；新增 `npm run web` 与配置项 `WEB_PORT`（默认 `8787`）
+- **启动自检 CDP 调试端口 `src/port-check.mjs`**（node:net 零依赖）：watch / lite / course 启动时探测调试端口并给出人话状态（就绪打勾 / 无响应指引）；web 启动页在 listen 回调后同样自检——浏览器是懒连接，此刻不查的话"没开受控浏览器"要到点按钮才暴露。真机反馈驱动，冒烟实测就绪/无响应两条路径
 - **logger 日志汇点 `addLogSink`**（`src/logger.mjs`，约 15 行）：常驻 UI 进程订阅日志流用，汇点异常只吞不外抛
 
 ### Notes
