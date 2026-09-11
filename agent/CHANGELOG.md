@@ -2,6 +2,32 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [Unreleased]（分支 feat/1-ad-mcp-server = D 底座 + A 出口层）
+
+两部分变更：① D 底座加固——能力配置防静默失败；② A 出口层——以 MCP Server 形式把解题能力暴露给宿主（ZCode / Claude Desktop / Cursor 等），纯增量，现有 CLI 链路零改动。
+
+### Added
+
+- **能力 JSON 加载前校验 `src/capability-schema.mjs`**（零依赖，不引入 Ajv）：必填字段（`id` / `formValue.prompt` / `paramsSchema`）、prompt 占位符 ⊆ `paramsSchema.properties`（抓拼写错误——`renderTemplate` 对未传变量静默渲染为空串）、`required` ⊆ `properties`（抓声明漂移）。`ai.mjs` 的 `readCapability` 首次读取时自动全量预检（fail-fast）；新增 CLI 命令 `npm run caps-check` 手动校验
+- **MCP Server `src/mcp-server.mjs`**（stdio 传输，官方 `@modelcontextprotocol/sdk` 1.30.0）：三个粗粒度工具——`probe_page`（只读感知）/ `solve_current_task`（一键解题，编排与反思循环留在 agent 侧）/ `list_models`。不暴露原子浏览器操作与 chat 原语（`act.mjs` 领域资产），不暴露 `courseLoop` 跑批。新增 `npm run mcp` 与依赖 `@modelcontextprotocol/sdk`
+- **浏览器会话管理 `src/browser-session.mjs`**：常驻进程的懒连接 + 互斥串行（一次只做一题，防并发踩页面）+ 断线自动重连。依据实测（playwright-core 1.63.0 类型注释）：`browser.close()` 对 `connectOverCDP` 连接仅断开、不杀浏览器进程，故现有 CLI 各 loop 的收尾逻辑无需改动，重连始终安全
+- **单测 22→29 项**（新增 `test/capability-schema.test.mjs`）：真实 7 能力文件全通过的回归闸 + 四类故障注入用例
+
+### Fixed
+
+- **`code_reflection_fixer_1.json` 声明漂移（校验器上线后首个真实命中）**：prompt 使用 `{{input.terminal_state}}` 但 `paramsSchema.properties` 未声明——`ai.mjs` 三处调用实际已传该变量，仅元数据缺失，补声明后运行时行为不变
+- `.gitignore` 补 `.mimosa/`（Mimosa 安全扫描插件本地运行状态，此前以未跟踪目录形式刷屏 git 状态面板）
+
+### Changed
+
+- **logger 支持 `LOG_STREAM=stderr`**：MCP stdio 进程的 stdout 专用于 JSON-RPC 报文，任何日志混入都会破坏协议；`mcp-server.mjs` 内置切换
+
+### Notes
+
+- 验证：`npm test` 29/29、`npm run lint` 零问题；MCP stdio 冒烟实测——协议握手、`tools/list` 三工具、`tools/call`（`list_models` 实调 AI 端点返回模型列表）、stdin EOF 后「在途归零 + 让出事件循环一拍」再退出（冒烟中两次踩坑定稿：直接退出会掐断最后一个响应）；Web 依赖路径 `probe_page` / `solve_current_task` 需带调试端口且已登录评测站的浏览器，留宿主实测
+- 实施修正（对分析文档第七节）：原定改造点「抽出 `ensureBrowser()` 单例、迁移 5 处 `browser.close()`」经核实不再必要——CDP 连接的 close 语义为仅断开，MCP Server 以独立会话管理器复用连接，`loop.mjs` / `cli.mjs` 零改动
+- 文档同步：`shared/capabilities/README.md` 中渲染函数名由 `renderPrompt` 修正为 `renderTemplate`（以 `ai.mjs:28` 实际实现为准，历史笔误）
+
 ## [1.1.0] - 2026-09-10
 
 **工程化基建版本**：补单测、统一日志落盘、接入 lint 与格式化、修正元数据与忽略规则。业务逻辑零变更，但**新增的首批单测当场暴露并修复了一个真实的判定缺陷**——`detectVerdict` 会把 EduCoder 的「0 组不匹配」误判为未通过，白白触发整轮反思重试。

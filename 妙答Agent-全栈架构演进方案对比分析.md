@@ -4,6 +4,7 @@
 > 分析范围：模型调用 / Prompt 配置 / 浏览器控制 / 编排循环 / 对外出口，共五层
 > 分析日期：2026-09-11
 > 方法：先读代码做事实核查，再按四维度量化评分
+> **落地状态（2026-09-11）**：方案 D（能力 JSON 校验 + `caps-check`）与方案 A（MCP Server，stdio 三工具）已在本分支 `feat/1-ad-mcp-server` 实现。实施修正一处：第七节改造点 2（"抽出 `ensureBrowser()` 单例、迁移 5 处 `browser.close()`"）经核实**不再必要**——playwright-core 1.63.0 对 `connectOverCDP` 的 `close` 仅断开连接、不杀浏览器进程（`types/types.d.ts:11147`），MCP Server 以独立会话管理器 `browser-session.mjs` 复用连接，现有 CLI 链路零改动。文档其余部分保持为分析快照。
 
 ---
 

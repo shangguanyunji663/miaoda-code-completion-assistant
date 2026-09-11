@@ -50,6 +50,7 @@ npm run probe
 | `npm run my-edge` | **重启"你自己的 Edge"并带调试端口**：junction 绕过 136+ 默认目录限制，账号/历史全保留（会先关闭正在运行的 Edge，3 秒倒计时） |
 | `npm run probe` | 检查配置 + 页面识别情况（**首次必跑**，用于确认题目和编辑器被正确识别） |
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/*.json`，用于针对具体站点精调识别规则 |
+| `npm run caps-check` | 校验能力配置 JSON：必填字段、prompt 占位符与 `paramsSchema` 声明一致性（编辑 `shared/capabilities/` 后先跑） |
 | `npm run once` | 只解当前这一题 |
 | `npm run run` | 连续解题，通过后自动点「下一关」翻页 |
 | `npm run watch` | **常驻监听**：切到新题目页就自动作答（推荐，导航权在你手里） |
@@ -126,6 +127,7 @@ npm run probe
 | `NAV_TIMEOUT_MS` | course：点「下一关」后等待跳转上限 | `10000` |
 | `LIST_TIMEOUT_MS` | course：退出/返回后等列表页重现上限 | `15000` |
 | `MAX_BOARDS_PER_SECTION` | course：单板块处理卡片数防呆上限 | `50` |
+| `LOG_STREAM` | 控制台日志输出流；设 `stderr` 用于常驻协议进程（MCP Server 内置切换，stdout 专用于 JSON-RPC） | 未设置（stdout） |
 
 ## 工作流程
 
@@ -204,7 +206,7 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 
 ## 设计要点
 
-1. **prompt 单一数据源**：Agent 直接读取仓库根 `shared/capabilities/*.json` 中的 prompt 并渲染 `{{input.xxx}}` 占位符，不在 Agent 里复制 prompt，避免两份漂移。题型分流：选择/填空按结构信号分类（`classifyTask`），代码/命令行由 `task_router_1.json` 按题干意图判定后分流至各自生成与反思配置。
+1. **prompt 单一数据源**：Agent 直接读取仓库根 `shared/capabilities/*.json` 中的 prompt 并渲染 `{{input.xxx}}` 占位符，不在 Agent 里复制 prompt，避免两份漂移。题型分流：选择/填空按结构信号分类（`classifyTask`），代码/命令行由 `task_router_1.json` 按题干意图判定后分流至各自生成与反思配置。加载前自动校验配置（必填字段、占位符 ⊆ `paramsSchema.properties`、`required` 一致性，`src/capability-schema.mjs`）——占位符拼写错误此前会静默渲染为空串，现启动即报。
 2. **成功判定加固**：朴素 `includes` 匹配会让 `"未通过"` 命中 `"通过"`、`"AC"` 命中任意含 ac 的英文单词。Agent 的 `detectVerdict` 改为**否定词优先短路 + 整词匹配**，不确定时一律判未通过；否定词筛完后裸「通过」也判通过（兼容 EduCoder 的「测试集1 通过」文风）。
 3. **模板拼接防格式错**：代码题写入前以**编辑器原始模板**为权威，把 AI 代码体拼回 Begin/End 标记之间（`spliceIntoTemplate`），平台脚手架字节级不变——不依赖 AI 完整复现标记。
 4. **写入优先编辑器 API，键盘为回退**：Monaco/CodeMirror5 先 `setValue`（触发 change 事件与平台自动保存、字节级精确）；实测 Monaco 的 formatOnPaste/autoIndent 会把 insertText 进来的预缩进 Python 逐行重排致评测不匹配，故 API 不可用才退回 `点击 → Ctrl+A → Delete → insertText`。直接改 DOM 常导致平台评测到旧代码（本约束本意）。

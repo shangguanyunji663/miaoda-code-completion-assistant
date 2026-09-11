@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.0.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.1-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -75,7 +75,7 @@ flowchart LR
 
 ```bash
 cd agent
-npm install                      # 唯一依赖：playwright-core
+npm install                      # 运行时依赖：playwright-core + @modelcontextprotocol/sdk（MCP 出口层）
 cp .env.example .env.local       # 编辑 .env.local，填入 AI_BASE_URL / AI_API_KEY / AI_MODEL
 ```
 
@@ -112,8 +112,10 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run my-edge` | 重启「你自己的 Edge」并带调试端口（保留登录态） |
 | `npm run browser` | 命令行启动带调试端口的浏览器（独立 profile） |
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
+| `npm run caps-check` | 校验能力配置 JSON：占位符与 `paramsSchema` 声明一致性（编辑 `shared/capabilities/` 后先跑） |
 | `npm run models` | 列出可用文本模型 |
-| `npm test` | 运行核心纯函数单测（22 项，零新增依赖） |
+| `npm run mcp` | 以 stdio 启动 MCP Server，把解题能力暴露给 ZCode / Claude Desktop 等宿主（见 `agent/README.md`「MCP 接入」） |
+| `npm test` | 运行核心纯函数单测（29 项，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -143,10 +145,13 @@ Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-brows
 cli.mjs（入口：解析命令，分发到对应模式）
   ├─ loop.mjs（编排：单题流程 + watch / lite / course 三种常驻循环）
   │    ├─ perceive.mjs（感知：题干提取、编辑器/终端探测、评测结果读取、快照导出）
-  │    ├─ ai.mjs（生成：意图路由 / 答案生成 / 反思修复 / 结果判定）
+  │    ├─ ai.mjs（生成：意图路由 / 答案生成 / 反思修复 / 结果判定；能力 JSON 加载前自动校验）
+  │    │    └─ capability-schema.mjs（能力配置校验：占位符与 paramsSchema 声明一致性）
   │    └─ act.mjs（执行：写编辑器、键终端、勾选项、点评测、翻页、切工作区标签）
   ├─ browser.mjs（CDP 连接浏览器 + 挑选目标标签页）
   │    └─ launch-browser.mjs（连不上时拉起浏览器；含 my-edge 的 junction 接管）
+  ├─ mcp-server.mjs（MCP 出口：stdio 三工具，编排留在 agent 侧）
+  │    └─ browser-session.mjs（常驻进程会话管理：懒连接 + 互斥串行 + 断线重连）
   └─ config.mjs（读取 agent/.env.local 的全部配置）
 ```
 
@@ -175,14 +180,18 @@ miaoda-code-completion-assistant/
 │   │   ├── cli.mjs                 # CLI 入口：命令解析与分发
 │   │   ├── loop.mjs                # 编排：单题流程 + watch / lite / course 常驻循环
 │   │   ├── perceive.mjs            # 感知：题干、编辑器、终端、评测结果、DOM 快照
-│   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定
+│   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定（能力 JSON 加载前自动校验）
+│   │   ├── capability-schema.mjs   # 能力 JSON 加载前校验：占位符与 paramsSchema 声明一致性
+│   │   ├── browser-session.mjs     # 常驻进程浏览器会话：懒连接 + 互斥串行 + 断线重连
+│   │   ├── mcp-server.mjs          # MCP Server（stdio）：probe_page / solve_current_task / list_models
 │   │   ├── act.mjs                 # 执行：写入、键入、勾选、点评测、翻页、导航
 │   │   ├── browser.mjs             # CDP 连接与标签页挑选
 │   │   ├── launch-browser.mjs      # 调试端口拉起（Windows 保留端口自动顺延）
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
 │   ├── test/
-│   │   └── ai.test.mjs             # 核心纯函数单测（node:test，零依赖）
+│   │   ├── ai.test.mjs             # 核心纯函数单测（node:test，零依赖）
+│   │   └── capability-schema.test.mjs # 能力配置校验单测（含 7 个真实 JSON 回归闸）
 │   ├── eslint.config.js            # ESLint flat config
 │   ├── .prettierrc                 # 格式化规则
 │   ├── docs/
@@ -232,7 +241,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 22 项纯函数单测必须全绿
+npm test          # 29 项纯函数单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 
