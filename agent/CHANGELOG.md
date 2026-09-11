@@ -2,6 +2,25 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [Unreleased]（分支 feat/3-d-capability-guard）
+
+**D 底座加固——能力配置防静默失败**：prompt 是 AI 行为的唯一入口，但配置损坏此前要到运行时才暴露，占位符拼写错误甚至永远静默（`renderTemplate` 对未传变量渲染为空串，AI 收到残缺 prompt 无任何报错）。
+
+### Added
+
+- **能力 JSON 加载前校验 `src/capability-schema.mjs`**（零依赖，不引入 Ajv）：必填字段（`id` / `formValue.prompt` / `paramsSchema`）、prompt 占位符 ⊆ `paramsSchema.properties`（抓拼写错误）、`required` ⊆ `properties`（抓声明漂移）。`ai.mjs` 的 `readCapability` 首次读取时自动全量预检（fail-fast）；新增 CLI 命令 `npm run caps-check` 手动校验（不连浏览器、不调 AI）
+- **单测 22→29 项**（新增 `test/capability-schema.test.mjs`）：真实 7 能力文件全通过的回归闸 + 缺字段 / 占位符拼写 / required 漂移 / 坏文件聚合报错四类用例
+
+### Fixed
+
+- **`code_reflection_fixer_1.json` 声明漂移（校验器上线后首个真实命中）**：prompt 使用 `{{input.terminal_state}}` 但 `paramsSchema.properties` 未声明——`ai.mjs` 三处调用实际已传该变量，仅元数据缺失，补声明后运行时行为不变
+- `.gitignore` 补 `.mimosa/`（Mimosa 安全扫描插件本地运行状态，此前以未跟踪目录形式刷屏 git 状态面板）
+
+### Notes
+
+- 验证：`npm test` 29/29 通过；`npm run lint` 零问题；`caps-check` 对真实 7 个能力文件通过；故障注入（坏 JSON / 占位符拼写 / required 漂移）均按预期启动即报并定位到文件
+- 文档同步：`shared/capabilities/README.md` 中渲染函数名由 `renderPrompt` 修正为 `renderTemplate`（以 `ai.mjs:28` 实际实现为准，该名称为历史笔误）
+
 ## [1.1.0] - 2026-09-10
 
 **工程化基建版本**：补单测、统一日志落盘、接入 lint 与格式化、修正元数据与忽略规则。业务逻辑零变更，但**新增的首批单测当场暴露并修复了一个真实的判定缺陷**——`detectVerdict` 会把 EduCoder 的「0 组不匹配」误判为未通过，白白触发整轮反思重试。

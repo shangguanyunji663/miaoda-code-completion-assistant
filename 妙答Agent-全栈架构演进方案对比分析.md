@@ -4,6 +4,7 @@
 > 分析范围：模型调用 / Prompt 配置 / 浏览器控制 / 编排循环 / 对外出口，共五层
 > 分析日期：2026-09-11
 > 方法：先读代码做事实核查，再按四维度量化评分
+> **落地状态（2026-09-11）**：方案 D 的第 2 项（能力 JSON Schema 校验）已在本分支 `feat/3-d-capability-guard` 实现（`agent/src/capability-schema.mjs` + `npm run caps-check`），并修正了 `shared/capabilities/README.md` 中渲染函数名的历史笔误（`renderPrompt` → `renderTemplate`，以代码为准）。本文档其余部分保持为分析快照。
 
 ---
 
