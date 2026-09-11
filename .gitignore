@@ -76,5 +76,8 @@ agent/logs/
 # WorkBuddy 工作区数据（本地记忆笔记，含个人信息）
 .workbuddy/
 
+# Mimosa 安全扫描插件本地运行状态（hook 状态缓存，纯运行时产物）
+.mimosa/
+
 # 上传的页面截图，可能含姓名学号
 uploaded_image.png
