@@ -11,6 +11,7 @@
 - **能力 JSON 加载前校验 `src/capability-schema.mjs`**（零依赖，不引入 Ajv）：必填字段（`id` / `formValue.prompt` / `paramsSchema`）、prompt 占位符 ⊆ `paramsSchema.properties`（抓拼写错误——`renderTemplate` 对未传变量静默渲染为空串）、`required` ⊆ `properties`（抓声明漂移）。`ai.mjs` 的 `readCapability` 首次读取时自动全量预检（fail-fast）；新增 CLI 命令 `npm run caps-check` 手动校验
 - **MCP Server `src/mcp-server.mjs`**（stdio 传输，官方 `@modelcontextprotocol/sdk` 1.30.0）：三个粗粒度工具——`probe_page`（只读感知）/ `solve_current_task`（一键解题，编排与反思循环留在 agent 侧）/ `list_models`。不暴露原子浏览器操作与 chat 原语（`act.mjs` 领域资产），不暴露 `courseLoop` 跑批。新增 `npm run mcp` 与依赖 `@modelcontextprotocol/sdk`
 - **浏览器会话管理 `src/browser-session.mjs`**：常驻进程的懒连接 + 互斥串行（一次只做一题，防并发踩页面）+ 断线自动重连。依据实测（playwright-core 1.63.0 类型注释）：`browser.close()` 对 `connectOverCDP` 连接仅断开、不杀浏览器进程，故现有 CLI 各 loop 的收尾逻辑无需改动，重连始终安全
+- **启动自检 CDP 调试端口 `src/port-check.mjs`**（node:net 零依赖）：watch / lite / course 启动时探测调试端口并给出人话状态——就绪打勾，无响应则指引（推荐先双击 start-my-edge.bat，或说明将自动拉起独立浏览器兜底）。真机反馈驱动：跳过受控浏览器直接运行时，故障要到连接时才暴露。冒烟实测就绪/无响应两条路径
 - **单测 22→29 项**（新增 `test/capability-schema.test.mjs`）：真实 7 能力文件全通过的回归闸 + 四类故障注入用例
 
 ### Fixed
