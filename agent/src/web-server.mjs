@@ -133,7 +133,17 @@ server.listen(PORT, HOST, () => {
   log('请在带调试端口的浏览器中打开评测题目页后使用「探测页面 / 解当前题」');
 });
 server.on('error', (err) => {
-  console.error(`[web] 启动失败：${err.message}（端口被占用可用 WEB_PORT 换一个）`);
+  if (err && err.code === 'EADDRINUSE') {
+    // 真机反馈（2026-09-12）：新手最常见场景是工作台已经开过一个窗口又重复双击，
+    // 旧文案"换 WEB_PORT"会把人引去改配置，实际多数情况只需直接用浏览器访问。
+    console.error('[web] 启动失败：127.0.0.1:' + PORT + ' 已被占用。两种可能：');
+    console.error('  1) 网页工作台已经在运行（最常见）——不用再启动，黑窗口保持开着，');
+    console.error('     直接用浏览器打开 http://127.0.0.1:' + PORT + ' 使用即可；');
+    console.error('  2) 端口被别的程序占了——若打开上面地址不是本工作台页面，');
+    console.error('     在 agent/.env.local 里加一行 WEB_PORT=8788（或其他空号）再重新双击。');
+  } else {
+    console.error(`[web] 启动失败：${err.message}`);
+  }
   process.exit(1);
 });
 process.on('SIGINT', shutdown);
