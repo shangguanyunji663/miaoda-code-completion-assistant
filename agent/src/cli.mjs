@@ -4,6 +4,7 @@
 //   my-edge  以"你自己的浏览器配置"重启并带调试端口（保留账号/历史，junction 绕过 136+ 限制）
 //   probe    检查配置、浏览器连接与页面识别情况
 //   dump     导出当前页面结构快照到 agent/dumps/（用于针对站点精调规则）
+//   caps-check 手动校验 shared/capabilities/*.json（占位符与 paramsSchema 声明一致性）
 //   once     只解当前这一题
 //   run      连续解题，成功后自动翻页
 //   watch    常驻监听，切到新题目页即自动作答
@@ -24,6 +25,7 @@ import {
 } from './perceive.mjs';
 import { runLoop, watchLoop, liteLoop, courseLoop } from './loop.mjs';
 import { listChatModels } from './ai.mjs';
+import { assertCapabilitiesValid } from './capability-schema.mjs';
 import { launchBrowser, resolveBrowserPath, launchMyEdge } from './launch-browser.mjs';
 
 const cmd = process.argv[2] ?? 'probe';
@@ -91,6 +93,13 @@ async function main() {
           `题型=${probe.taskType} 编辑器=${probe.editor?.type ?? '无'} 题干长度=${probe.problem?.length ?? 0}`,
         );
       });
+      return;
+    }
+
+    case 'caps-check': {
+      // 只读校验能力配置：不连浏览器、不调 AI。编辑 shared/capabilities 后先跑这个
+      const n = assertCapabilitiesValid(cfg.paths.capabilitiesDir);
+      console.log(`能力配置校验通过：${n} 个文件（prompt 占位符与 paramsSchema 声明一致）`);
       return;
     }
 
@@ -171,7 +180,7 @@ async function main() {
     default:
       console.log(`未知命令：${cmd}`);
       console.log(
-        '可用：browser | my-edge | probe | dump | once | run | watch | lite | course | course-probe | models',
+        '可用：browser | my-edge | probe | dump | caps-check | once | run | watch | lite | course | course-probe | models',
       );
       process.exitCode = 1;
   }

@@ -18,6 +18,10 @@
       "evaluation_result": {
         "type": "string",
         "description": "代码评测结果，包含错误信息、预期输出与实际输出对比等"
+      },
+      "terminal_state": {
+        "type": "string",
+        "description": "终端环境实测事实（客户端可用性等，混合题落代码分支时注入）"
       }
     },
     "required": [

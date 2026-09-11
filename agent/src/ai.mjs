@@ -13,10 +13,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { cfg, assertAiReady } from './config.mjs';
 import { createLogger } from './logger.mjs';
+import { assertCapabilitiesValid } from './capability-schema.mjs';
 
 const CAP_DIR = cfg.paths.capabilitiesDir;
 
+// 全量预检只跑一次：任一能力 JSON 损坏/占位符拼写错误，在首次用到能力时即整体报出，
+// 而不是等渲染出残缺 prompt 后静默失败（见 capability-schema.mjs 头注）。
+let capabilitiesChecked = false;
+
 function readCapability(id) {
+  if (!capabilitiesChecked) {
+    assertCapabilitiesValid(CAP_DIR);
+    capabilitiesChecked = true;
+  }
   const p = path.join(CAP_DIR, `${id}.json`);
   if (!fs.existsSync(p)) {
     throw new Error(`找不到能力配置文件：${p}`);

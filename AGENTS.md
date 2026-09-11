@@ -12,19 +12,21 @@
 ## 核心模块（`agent/src/`）
 
 - `config.mjs` — 配置层，读 `agent/.env.local`
-- `ai.mjs` — OpenAI 兼容调用 + `detectVerdict()` 加固版成功判定；`classifyProblemIntent()` 意图路由（code / cmdline / mixed）；prompt 读 `shared/capabilities/*.json`
+- `ai.mjs` — OpenAI 兼容调用 + `detectVerdict()` 加固版成功判定；`classifyProblemIntent()` 意图路由（code / cmdline / mixed）；prompt 读 `shared/capabilities/*.json`（首次读取自动触发全量预检）
+- `capability-schema.mjs` — 能力 JSON 加载前校验（必填字段、prompt 占位符 ⊆ paramsSchema.properties、required 一致性），防"占位符拼写错误静默渲染为空串"
 - `browser.mjs` — `connectOverCDP` + 多标签页遍历（连接前临时摘除代理环境变量）
 - `launch-browser.mjs` — 启动带调试端口的浏览器，含 Windows 保留端口区间自动顺延
 - `perceive.mjs` — 页面感知：编辑器探测、题干提取、题型分类（选择/填空按结构信号；代码/命令行/混合由 AI 按题干意图判定）、按钮枚举、课程列表卡片/板块收集、终端环境识别（`detectTerminalEnv`：bash/mongosh/mysql/redis/psql/neo4j）
 - `act.mjs` — 执行层：写入代码、勾选选项、点击评测、等待结果、翻页、课程导航（退出/返回/开始学习/跳转检测）、切换「命令行/代码文件」工作区标签、向 xterm 终端逐条键入命令、客户端可用性实测（`probeTerminalClients`）、shell 护栏清洗（`sanitizeShellSubmission`）
 - `loop.mjs` — 编排：生成 → 评测 → 反思循环；`watchLoop` 常驻监听；`liteLoop` 刷新触发监听；`courseLoop` 课程自动驾驶；混合题先在命令行做数据准备（输入期报错反思自愈）再落代码分支
-- `cli.mjs` — CLI 入口：`browser | my-edge | probe | dump | once | run | watch | lite | course | course-probe | models`
+- `cli.mjs` — CLI 入口：`browser | my-edge | probe | dump | caps-check | once | run | watch | lite | course | course-probe | models`
 - `inspect-dom.mjs` — 只读 DOM 诊断脚本（关键字命中上下文扫描 + 评测面板结构核对，精调判定规则用）
 
 ## 常用命令（均在 `agent/` 目录下执行）
 
 - `npm run probe` — 检查配置、浏览器连接与页面识别（**新平台接入必跑**）
 - `npm run dump` — 导出页面结构快照到 `agent/dumps/`（写站点定制规则前先跑）
+- `npm run caps-check` — 校验能力配置 JSON（编辑 `shared/capabilities/` 后先跑；`ai.mjs` 加载时也会自动预检）
 - `npm run once` — 只解当前一题；`npm run run` — 连续解题自动翻页；`npm run watch` — 常驻监听（推荐）；`npm run lite` — 刷新触发：刷新题目页即重做（含反思循环）
 - `npm run my-edge` — 以"用户自己的 Edge 配置"重启并带调试端口（junction 绕过 136+ 默认目录限制，保留登录态；会先关闭运行中的 Edge）
 - `npm run course` — 课程自动驾驶：遍历「课堂实验→板块→开始学习」逐关完成（前置：浏览器已打开课程列表页）
