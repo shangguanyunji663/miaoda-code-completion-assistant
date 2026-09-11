@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.0.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.1-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -113,11 +113,12 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run browser` | 命令行启动带调试端口的浏览器（独立 profile） |
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
+| `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
 | `npm test` | 运行核心纯函数单测（22 项，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
-Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-browser.bat`、`start-watch.bat`、`start-lite.bat`、`start-course.bat`。
+Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-browser.bat`、`start-watch.bat`、`start-lite.bat`、`start-course.bat`、`start-web.bat`（网页工作台）。
 
 <details>
 <summary><b>关键配置项</b>（完整列表见 <a href="agent/README.md">agent/README.md</a>）</summary>
@@ -147,6 +148,8 @@ cli.mjs（入口：解析命令，分发到对应模式）
   │    └─ act.mjs（执行：写编辑器、键终端、勾选项、点评测、翻页、切工作区标签）
   ├─ browser.mjs（CDP 连接浏览器 + 挑选目标标签页）
   │    └─ launch-browser.mjs（连不上时拉起浏览器；含 my-edge 的 junction 接管）
+  ├─ web-server.mjs（网页工作台：HTTP API + 单文件原生前端，仅绑 127.0.0.1）
+  │    └─ browser-session.mjs（常驻进程会话管理：懒连接 + 互斥串行 + 断线重连）
   └─ config.mjs（读取 agent/.env.local 的全部配置）
 ```
 
@@ -176,6 +179,8 @@ miaoda-code-completion-assistant/
 │   │   ├── loop.mjs                # 编排：单题流程 + watch / lite / course 常驻循环
 │   │   ├── perceive.mjs            # 感知：题干、编辑器、终端、评测结果、DOM 快照
 │   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定
+│   │   ├── browser-session.mjs     # 常驻进程浏览器会话：懒连接 + 互斥串行 + 断线重连
+│   │   ├── web-server.mjs          # 网页工作台（零新增依赖）：状态 / 探测 / 解题 / 日志流
 │   │   ├── act.mjs                 # 执行：写入、键入、勾选、点评测、翻页、导航
 │   │   ├── browser.mjs             # CDP 连接与标签页挑选
 │   │   ├── launch-browser.mjs      # 调试端口拉起（Windows 保留端口自动顺延）
@@ -188,11 +193,14 @@ miaoda-code-completion-assistant/
 │   ├── docs/
 │   │   └── TROUBLESHOOTING.md      # 14 个真实踩坑与排查方法论
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
+│   ├── public/
+│   │   └── index.html              # 网页工作台前端（单文件原生，无构建链）
 │   ├── start-my-edge.bat           # 接管你自己的 Edge（双击）
 │   ├── start-browser.bat           # 独立 profile 启动（双击）
 │   ├── start-watch.bat             # 常驻监听（双击）
 │   ├── start-lite.bat              # 刷新触发（双击）
 │   ├── start-course.bat            # 课程自动驾驶（双击）
+│   ├── start-web.bat               # 网页工作台（双击，仅本机访问）
 │   ├── .env.example                # 配置模板（不含任何真实值）
 │   ├── CHANGELOG.md                # 变更日志
 │   └── README.md                   # 完整文档：配置项、工作流、设计要点、已知限制
@@ -280,7 +288,7 @@ npm run lint      # ESLint 零问题
 | [`shared/capabilities/README.md`](shared/capabilities/README.md) | AI 能力配置说明 |
 | [`AGENTS.md`](AGENTS.md) | 面向 AI 开发代理的项目说明与硬约束 |
 
-早期版本包含一个手动粘贴式的 React 工作台前端，现已移除（项目聚焦自动执行层），历史版本见 git 提交 `3cc19d3`。
+早期版本包含一个手动粘贴式的 React 工作台前端，现已移除（项目聚焦自动执行层），历史版本见 git 提交 `3cc19d3`。本分支另提供一个**仅本机访问**的网页工作台（`npm run web`，单文件原生前端、无构建链）——定位是最小可用形态，与当年被移除的 React 工作台无关。
 
 ---
 

@@ -2,6 +2,23 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [Unreleased]（分支 feat/2-c-web-service）
+
+**网页工作台（方案 C 最小落地）**：把解题能力以本机 HTTP 服务 + 网页形式暴露。响应"多人使用/网页访问"的需求——注意这是**仅本机访问**的最小形态，真正的多用户需要浏览器池与账号隔离，不在本期范围。
+
+### Added
+
+- **HTTP 服务 `src/web-server.mjs`**（Node 内置 `node:http`，零新增依赖）：`GET /` 静态页、`GET /api/status`（只读状态，不触发浏览器连接）、`POST /api/probe`（只读感知）、`POST /api/solve`（解当前题，编排/反思循环留在 agent 侧）、`GET /api/logs?since=n`（内存环形缓冲最近 200 条，增量轮询）。安全边界：仅绑定 `127.0.0.1`、端点固定无参数、不做任何用户 URL 抓取、不新增密钥面（AI 配置复用 `.env.local`）
+- **单文件原生前端 `public/index.html`**：状态面板 + 探测/解题按钮 + 实时日志流。无 React、无构建链——尊重 2026-09-09 移除 React 工作台的决策，本服务刻意不重建该栈
+- **双击入口 `start-web.bat`**（与既有 5 个 bat 同风格）；新增 `npm run web` 与配置项 `WEB_PORT`（默认 `8787`）
+- **logger 日志汇点 `addLogSink`**（`src/logger.mjs`，约 15 行）：常驻 UI 进程订阅日志流用，汇点异常只吞不外抛
+
+### Notes
+
+- 验证：`npm test` 22/22、`npm run lint` 零问题；HTTP 冒烟实测——静态页 200、`/api/status`、`/api/logs`（汇点已捕获启动日志）、无浏览器时 `/api/probe` 结构化报错、404 兜底全通；`probe` / `solve` 真实链路需带调试端口且已登录评测站的浏览器，留用户实测
+- `src/browser-session.mjs` 与分支 `feat/1-ad-mcp-server` 内容一致（懒连接 + 互斥串行 + 断线重连），两分支合并预期零冲突；`logger.mjs` 的 `emit` 两分支均有改动，合并时取并集即可
+- 文档同步：`shared/capabilities/README.md` 中渲染函数名由 `renderPrompt` 修正为 `renderTemplate`（以 `ai.mjs:28` 实际实现为准，历史笔误）
+
 ## [1.1.0] - 2026-09-10
 
 **工程化基建版本**：补单测、统一日志落盘、接入 lint 与格式化、修正元数据与忽略规则。业务逻辑零变更，但**新增的首批单测当场暴露并修复了一个真实的判定缺陷**——`detectVerdict` 会把 EduCoder 的「0 组不匹配」误判为未通过，白白触发整轮反思重试。

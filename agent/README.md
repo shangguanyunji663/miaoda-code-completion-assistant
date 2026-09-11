@@ -114,6 +114,7 @@ npm run probe
 | `NAV_TIMEOUT_MS` | course：点「下一关」后等待跳转上限 | `10000` |
 | `LIST_TIMEOUT_MS` | course：退出/返回后等列表页重现上限 | `15000` |
 | `MAX_BOARDS_PER_SECTION` | course：单板块处理卡片数防呆上限 | `50` |
+| `WEB_PORT` | 网页工作台端口（**仅绑定 127.0.0.1**，不对局域网暴露） | `8787` |
 
 ## 工作流程
 
