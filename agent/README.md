@@ -57,14 +57,42 @@ npm run probe
 | `npm run course` | **课程自动驾驶**：遍历「课堂实验→板块→开始学习」，逐关作答直至板块做完（见下方专节） |
 | `npm run course-probe` | 只读诊断课程列表页：打印识别到的板块/卡片并导出快照，**course 卡住时先跑这个** |
 | `npm run models` | 列出可用文本模型 |
-| `npm test` | 运行核心纯函数单测（22 项，Node 内置 `node:test`，零新增依赖） |
+| `npm run mcp` | 以 stdio 启动 MCP Server：把解题能力暴露给 ZCode / Claude Desktop 等宿主（见下方「MCP 接入」） |
+| `npm test` | 运行核心纯函数单测（29 项，Node 内置 `node:test`，零新增依赖） |
 | `npm run lint` | ESLint 静态检查（`eslint.config.js`） |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 | `npm run format:check` | 只检查格式不写入，适合放进 CI |
 
 ## 日志
 
-统一由 `src/logger.mjs` 输出：控制台保持 `[模块] 消息` 形态，同时**落盘到 `logs/agent-<日期>.log`**（含时间戳与 INFO/WARN/ERROR 级别）。常驻模式（watch / lite）跑完关掉窗口后仍可回溯。设 `LOG_TO_FILE=0` 可关闭落盘。
+统一由 `src/logger.mjs` 输出：控制台保持 `[模块] 消息` 形态，同时**落盘到 `logs/agent-<日期>.log`**（含时间戳与 INFO/WARN/ERROR 级别）。常驻模式（watch / lite）跑完关掉窗口后仍可回溯。设 `LOG_TO_FILE=0` 可关闭落盘。设 `LOG_STREAM=stderr` 可把控制台输出切到 stderr（MCP Server 已内置，stdout 必须专用于 JSON-RPC）。
+
+## MCP 接入
+
+`npm run mcp` 以 stdio 传输启动 MCP Server（`src/mcp-server.mjs`），把解题能力暴露为三个工具，供 MCP 宿主（ZCode / Claude Desktop / Cursor 等）调用：
+
+| 工具 | 作用 | 风险 |
+|---|---|---|
+| `probe_page` | 只读感知当前评测页（题型 / 编辑器 / 题干摘要 / 可点击元素） | 只读 |
+| `solve_current_task` | 解当前题：感知 → AI 生成/作答 → 提交评测 → 失败反思重试 | **会真实提交评测** |
+| `list_models` | 列出 AI 端点可用文本模型 | 只读 |
+
+宿主配置示例（stdio，路径按实际仓库位置修改）：
+
+```json
+{
+  "mcpServers": {
+    "miaoda-agent": {
+      "command": "node",
+      "args": ["D:\\path\\to\\miaoda-code-completion-assistant\\agent\\src\\mcp-server.mjs"]
+    }
+  }
+}
+```
+
+设计边界（v1）：编排（生成 → 评测 → 反思循环）留在 agent 侧，不暴露原子浏览器操作与 chat 原语（`act.mjs` 的领域适配是核心资产）；工具调用全进程串行（一次只做一题）；浏览器连接懒建立、跨调用复用，CDP 断开自动重连（`browser.close()` 对 CDP 连接仅断开、不杀浏览器进程）；`courseLoop` 跑批暂不暴露。
+
+验证边界：stdio 协议握手、`tools/list`、`tools/call`（list_models 实调 AI 端点）与「EOF 排空后退出」均已实测；`probe_page` / `solve_current_task` 依赖真实浏览器（带调试端口且已登录评测站），请在宿主中实测。
 
 ## 配置项（`agent/.env.local`）
 

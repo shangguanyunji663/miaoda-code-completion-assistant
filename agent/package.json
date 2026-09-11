@@ -26,12 +26,14 @@
     "course": "node src/cli.mjs course",
     "course-probe": "node src/cli.mjs course-probe",
     "models": "node src/cli.mjs models",
+    "mcp": "node src/mcp-server.mjs",
     "test": "node --test test/*.test.mjs",
     "lint": "eslint src/ test/",
     "format": "prettier --write src/ test/ eslint.config.js",
     "format:check": "prettier --check src/ test/ eslint.config.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "playwright-core": "^1.49.1"
   },
   "devDependencies": {
