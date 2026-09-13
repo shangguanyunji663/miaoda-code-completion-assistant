@@ -22,5 +22,5 @@
 ## 修改约定
 
 - 改 AI 行为**只改本目录的 JSON**，不改 `agent/src/*.mjs`。
-- prompt 中的 `{{input.xxx}}` 由 `agent/src/ai.mjs` 的 `renderPrompt` 渲染，新增占位符需同步传入对应字段。
+- prompt 中的 `{{input.xxx}}` 由 `agent/src/ai.mjs` 的 `renderTemplate` 渲染，新增占位符需同步在 `paramsSchema.properties` 中声明并由调用方传入对应字段。
 - 历史上本目录同时服务一个手动工作台前端，该前端已于 2026-09-09 移除，当前消费方仅 agent。
