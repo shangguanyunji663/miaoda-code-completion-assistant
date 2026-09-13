@@ -16,6 +16,16 @@
 
 </div>
 
+> **📖 分支说明**：本分支（master）是最稳定的基线，只含「自动做题」本体。另有三个功能分支，按需选用：
+>
+> | 分支 | 在 master 基础上多什么 | 切换注意 |
+> |---|---|---|
+> | `feat/3-d-capability-guard` | 能力配置自动校验（配置写错启动即报，新增 `npm run caps-check`） | 无新增依赖 |
+> | `feat/1-ad-mcp-server` | MCP 出口：让 ZCode / Claude Desktop 等 AI 编程助手直接替你做题 | ⚠️ **有新增依赖**，切换后需在 `agent/` 下 `npm install` |
+> | `feat/2-c-web-service` | 网页工作台：`npm run web` 点按钮代替命令行（仅本机访问） | 无新增依赖 |
+>
+> 各分支根目录均有同名《[同学使用指南](同学使用指南.md)》，其第七节写明该分支的差异与用法。所有分支的原有 CLI 用法（watch / lite / course）完全一致。
+
 ---
 
 ## 这是什么
