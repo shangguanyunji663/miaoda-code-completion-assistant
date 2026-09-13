@@ -16,6 +16,8 @@
 
 </div>
 
+> **📖 分支说明**：本分支（`feat/3-d-capability-guard`）= master 基线 + **能力配置自动校验**——AI 加载配置前先体检，占位符拼写错误等配置缺陷从"默默做错"变为启动即报；新增 `npm run caps-check` 手动校验命令与 7 项单测。**无新增依赖**，从 master 切换后无需重新 `npm install`。做题行为与 master 完全一致。另有两个功能分支：`feat/1-ad-mcp-server`（MCP 出口，让 AI 编程助手替你做题，**有新增依赖**）、`feat/2-c-web-service`（网页工作台，点按钮代替命令行）。
+
 ---
 
 ## 这是什么

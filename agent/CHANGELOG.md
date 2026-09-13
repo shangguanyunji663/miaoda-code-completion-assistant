@@ -21,6 +21,7 @@
 
 - 验证：`npm test` 29/29 通过；`npm run lint` 零问题；`caps-check` 对真实 7 个能力文件通过；故障注入（坏 JSON / 占位符拼写 / required 漂移）均按预期启动即报并定位到文件
 - 文档同步：`shared/capabilities/README.md` 中渲染函数名由 `renderPrompt` 修正为 `renderTemplate`（以 `ai.mjs:28` 实际实现为准，该名称为历史笔误）
+- 分支说明落地：根 README 顶部与同学指南第七节标明本分支与 master 的差异（能力配置校验 + caps-check），并注明**无新增依赖**、切换分支无需重装
 
 ## [1.1.0] - 2026-09-10
 
