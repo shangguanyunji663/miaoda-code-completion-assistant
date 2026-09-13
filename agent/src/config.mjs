@@ -64,6 +64,11 @@ export const AI_DEFAULTS = {
 // 即便如此，launch-browser 仍会做一次保留区间检测并自动顺延。
 const DEBUG_PORT = pickNum('DEBUG_PORT', 9333);
 
+// 题目页 URL 形状默认正则：/tasks/<courseId>/<数字>/<串>。
+// eduCoder 官网（www.educoder.net）与校内部署（如 172.22.226.31）的题目页同构。
+// watch / lite 识别与 pickTargetPage 自动挑页共用这一个旋钮（TASK_URL_PATTERN）。
+export const DEFAULT_TASK_URL_PATTERN = '/tasks/[^/]+/\\d+/[A-Za-z0-9]+';
+
 export const cfg = {
   ai: {
     baseUrl: pick('AI_BASE_URL', AI_DEFAULTS.baseUrl),
@@ -103,7 +108,7 @@ export const cfg = {
     // 轮询间隔
     pollMs: pickNum('WATCH_POLL_MS', 2000),
     // 题目页 URL 正则。默认匹配形如 /tasks/<courseId>/<num>/<slug> 的路径
-    taskUrlPattern: pick('TASK_URL_PATTERN', '/tasks/[^/]+/\\d+/[A-Za-z0-9]+'),
+    taskUrlPattern: pick('TASK_URL_PATTERN', DEFAULT_TASK_URL_PATTERN),
     // 等待题目区渲染完成的超时
     readyTimeoutMs: pickNum('READY_TIMEOUT_MS', 15000),
   },
@@ -168,7 +173,8 @@ export function printConfig() {
     `AI_API_KEY       = ${masked}`,
     `AI_TEMPERATURE   = ${cfg.ai.temperature}`,
     `CDP_ENDPOINT     = ${cfg.browser.cdpEndpoint}`,
-    `TARGET_URL_HINT  = ${cfg.browser.urlHint || '(未配置，自动选择第一个标签页)'}`,
+    `TARGET_URL_HINT  = ${cfg.browser.urlHint || '(未配置，自动按 TASK_URL_PATTERN 识别题目页)'}`,
+    `TASK_URL_PATTERN = ${cfg.watch.taskUrlPattern}`,
     `MAX_RETRY        = ${cfg.loop.maxRetry}`,
     `DRY_RUN          = ${cfg.loop.dryRun ? 'yes' : 'no'}`,
   ].join('\n');

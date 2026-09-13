@@ -1,7 +1,7 @@
-// EXPORTS: probePage, readEditorCode, findClickable, writeEditorCode, dumpProbe,
+// EXPORTS: probePage, writeEditorCode, dumpProbe,
 //          collectCards, collectSections, collectCardCandidates, readEvalPanel, dumpCourseProbe,
 //          waitForTerminal, waitForEditor, readTerminalText, isTerminalAtPrompt, readTerminalLines,
-//          detectTerminalEnv
+//          detectTerminalEnv, looksLikeTaskPage
 // 页面感知层。
 //
 // 设计原则：**不硬编码任何站点 selector**。所有识别走启发式——
@@ -211,8 +211,6 @@ const READ_EVAL_PANEL = () => {
   // 稳定胜出——题干每次评测前后不变，判变化逻辑因此失效，60s 空等后
   // 误报"空结果"。必须先用结果区专属标记锁定，题干签名块直接排除。
   const RESULT_MARKER = /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/;
-  const PROBLEM_SIGNATURE = /任务描述/.test('');
-  void PROBLEM_SIGNATURE;
   const sel =
     'div, section, pre, article, code, [class*="result"], [class*="output"], [class*="eval"], [class*="console"], [class*="message"], [class*="modal"], [class*="panel"], [class*="toast"]';
   const cands = Array.from(document.querySelectorAll(sel)).filter((el) => {
@@ -255,6 +253,27 @@ const READ_EVAL_PANEL = () => {
   return best ? best.slice(0, 6000) : best;
 };
 
+/** 在浏览器上下文执行：单次轻量探测「这页像不像题目页」（挑页兜底用，不跑全页快照） */
+const TASK_PAGE_SIGNATURE = () => {
+  const q = (s) => document.querySelector(s);
+  // 强编辑器 = 专业代码编辑器；纯 textarea / contenteditable 不算——
+  // 普通网页的评论框、搜索框常见，误报多（pickTargetPage 兜底判据宁缺毋滥）
+  const strongEditor = Boolean(
+    q('.monaco-editor') || q('.ace_editor') || q('.CodeMirror') || q('.cm-editor'),
+  );
+  const text = (document.body?.innerText ?? '').slice(0, 20000);
+  const evalMarker = /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/.test(text);
+  const evalButton = Array.from(document.querySelectorAll('button, a, [role="button"]')).some(
+    (el) => {
+      const t = (el.innerText || '').trim();
+      if (!t || t.length > 12) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && /评测|自测运行|测测我/.test(t);
+    },
+  );
+  return { strongEditor, evalMarker, evalButton };
+};
+
 /**
  * 轻量读取评测结果面板：只扫结果区，不跑全页探测。
  * 与 probePage 的区别：probe 每次要取题干/输入控件/可点击元素等一大堆，
@@ -274,6 +293,37 @@ export async function readEvalPanel(page) {
     }
   }
   return '';
+}
+
+/**
+ * 内容级轻量判断：这页像不像题目页（pickTargetPage 兜底层专用）。
+ *
+ * 与 probePage 的区别：不取题干/输入控件/可点击枚举，每个 frame 只执行一次
+ * evaluate，逐页开销约百毫秒级。判据全部沿用本文件既有通用启发式，
+ * 不硬编码站点 selector；返回命中特征 {reasons} 或 null。
+ *   - 强代码编辑器（Monaco / Ace / CodeMirror5 / CodeMirror6）
+ *   - 评测结果面板专属标记（与 READ_EVAL_PANEL 的 RESULT_MARKER 同源文风）
+ *   - 可见的「评测 / 自测运行」类按钮
+ * @param {import('playwright-core').Page} page
+ * @returns {Promise<{reasons: string[]} | null>}
+ */
+export async function looksLikeTaskPage(page) {
+  const main = page.mainFrame();
+  const frames = [main, ...page.frames().filter((f) => f !== main)];
+  for (const f of frames) {
+    try {
+      const sig = await f.evaluate(TASK_PAGE_SIGNATURE);
+      if (!sig) continue;
+      const reasons = [];
+      if (sig.strongEditor) reasons.push('代码编辑器');
+      if (sig.evalMarker) reasons.push('评测结果面板');
+      if (sig.evalButton) reasons.push('评测按钮');
+      if (reasons.length > 0) return { reasons };
+    } catch {
+      /* frame 可能已 detach，跳过 */
+    }
+  }
+  return null;
 }
 
 /**
@@ -350,15 +400,6 @@ export function classifyTask({ editor, inputs }) {
 }
 
 /**
- * 读取编辑器当前代码
- * @param {import('playwright-core').Page} page
- */
-export async function readEditorCode(page) {
-  const p = await probePage(page);
-  return p.code ?? '';
-}
-
-/**
  * 轮询等待可见的 xterm 终端出现（命令行 tab 激活后内容懒渲染）。
  * 判定特征：.xterm-screen（xterm.js 标准结构，实测本平台为 DOM 渲染器，主 frame）。
  * @returns {Promise<boolean>} 超时前出现返回 true
@@ -401,21 +442,6 @@ export async function waitForEditor(page, timeoutMs = 10000) {
     await page.waitForTimeout(400);
   }
   return false;
-}
-
-/**
- * 在页面上按文本查找可点击元素，返回 Playwright locator（未点击）
- * 按关键词顺序匹配，返回第一个命中的
- * @param {import('playwright-core').Page} page
- * @param {string[]} keywords 如 ['评测','提交','运行']
- */
-export function findClickable(page, keywords) {
-  for (const kw of keywords) {
-    const loc = page.getByRole('button', { name: kw, exact: false }).first();
-    // 先不 await，交给调用方决定是否点击/计数
-    return { keyword: kw, locator: loc };
-  }
-  return null;
 }
 
 /**
