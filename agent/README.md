@@ -83,10 +83,10 @@ npm run probe
 | `CDP_ENDPOINT` | CDP 连接地址，留空由 `DEBUG_PORT` 拼出 | `http://127.0.0.1:9333` |
 | `USER_DATA_DIR` | 独立 profile 目录（须与日常使用 profile 隔离，否则调试端口不生效） | `agent/.browser-profile` |
 | `EDGE_PATH` / `BROWSER_PATH` | 浏览器路径，留空自动探测 | 自动 |
-| `TARGET_URL_HINT` | 评测页 URL 特征片段，多标签页时用于定位 | 留空取第一个 |
+| `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页） | 留空自动按 `TASK_URL_PATTERN` 识别 |
 | `AUTO_LAUNCH` | 连不上调试端口时自动拉起浏览器（独立 profile） | `1` |
 | `WATCH_POLL_MS` | watch/lite：标签页轮询间隔 | `2000` |
-| `TASK_URL_PATTERN` | 题目页 URL 正则（换平台改这里） | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
+| `TASK_URL_PATTERN` | 题目页 URL 形状正则（自动挑页与 watch/lite 识别共用；换平台改这里） | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `READY_TIMEOUT_MS` | 等题目区渲染完成的超时 | `15000` |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果上限 | `25000` |
@@ -127,7 +127,8 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 适用：想自己控制进度，只把「读题 + 选答案 + 点评测」这一步自动化。
 
 识别规则由 `TASK_URL_PATTERN` 决定，默认匹配 `/tasks/<courseId>/<num>/<slug>`。
-换平台时改 `.env.local` 里的这个正则即可。
+换平台时改 `.env.local` 里的这个正则即可。该旋钮与多标签页自动挑页
+（`browser.mjs` 四级挑页链）共用，改一处两边同时生效。
 
 > 实测注意：CDP 连接下所有标签页的 `document.visibilityState` **全部返回
 > `visible`**，无法据此判断"用户正在看哪个标签"。因此改为遍历所有标签页 +

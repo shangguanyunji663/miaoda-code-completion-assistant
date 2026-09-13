@@ -21,10 +21,10 @@
 > | 分支 | 在 master 基础上多什么 | 切换注意 |
 > |---|---|---|
 > | `feat/3-d-capability-guard` | 能力配置自动校验（配置写错启动即报，新增 `npm run caps-check`） | 无新增依赖 |
-> | `feat/1-ad-mcp-server` | MCP 出口：让 ZCode / Claude Desktop 等 AI 编程助手直接替你做题 | ⚠️ **有新增依赖**，切换后需在 `agent/` 下 `npm install` |
-> | `feat/2-c-web-service` | 网页工作台：`npm run web` 点按钮代替命令行（仅本机访问） | 无新增依赖 |
+> | `feat/1-ad-mcp-server` | 能力配置自动校验 + MCP 出口：让 ZCode / Claude Desktop 等 AI 编程助手直接替你做题 | ⚠️ **有新增依赖**（`@modelcontextprotocol/sdk`），切换后需在 `agent/` 下 `npm install` |
+> | `feat/2-c-web-service` | 能力配置自动校验 + 网页工作台：`npm run web` 点按钮代替命令行（仅本机访问） | 无新增依赖 |
 >
-> 各分支根目录均有同名《[同学使用指南](同学使用指南.md)》，其第七节写明该分支的差异与用法。所有分支的原有 CLI 用法（watch / lite / course）完全一致。
+> **版本演进说明**：四级挑页链（多标签页下自动识别题目页、多命中报错防解错页，详见《[同学使用指南](同学使用指南.md)》第八节）已同步回灌到**全部四个版本**，此能力各分支一致。其余差异如上表；所有分支的原有 CLI 用法（watch / lite / course）完全一致。各分支根目录均有同名指南，其第七节写明该分支的差异与用法。
 
 ---
 
@@ -138,7 +138,8 @@ Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-brows
 | `AI_REASONING_EFFORT` | 推理分级 `low` / `medium` / `high` | `medium` |
 | `AI_THINKING_CAP_MS` | 思考硬闸：持续纯思考超时即断流重试关闭思考 | `20000` |
 | `DEBUG_PORT` | CDP 调试端口（默认避开 Windows 保留区间 9137–9236） | `9333` |
-| `TASK_URL_PATTERN` | 题目页 URL 正则，换平台改这里 | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
+| `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。题目页 URL 不是 `/tasks/` 形状的平台在此改 | 留空自动按 `TASK_URL_PATTERN` 识别 |
+| `TASK_URL_PATTERN` | 题目页 URL 形状正则：自动挑页与 watch/lite 识别共用，换平台改这里 | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果上限 | `25000` |
 | `DRY_RUN` | `1` = 只感知与生成，不写入不点击 | `0` |
@@ -155,7 +156,7 @@ cli.mjs（入口：解析命令，分发到对应模式）
   │    ├─ perceive.mjs（感知：题干提取、编辑器/终端探测、评测结果读取、快照导出）
   │    ├─ ai.mjs（生成：意图路由 / 答案生成 / 反思修复 / 结果判定）
   │    └─ act.mjs（执行：写编辑器、键终端、勾选项、点评测、翻页、切工作区标签）
-  ├─ browser.mjs（CDP 连接浏览器 + 挑选目标标签页）
+  ├─ browser.mjs（CDP 连接浏览器 + 四级挑页链选目标标签页：hint → URL 形状 → 内容特征 → 首个非空白）
   │    └─ launch-browser.mjs（连不上时拉起浏览器；含 my-edge 的 junction 接管）
   └─ config.mjs（读取 agent/.env.local 的全部配置）
 ```
@@ -187,7 +188,8 @@ miaoda-code-completion-assistant/
 │   │   ├── perceive.mjs            # 感知：题干、编辑器、终端、评测结果、DOM 快照
 │   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定
 │   │   ├── act.mjs                 # 执行：写入、键入、勾选、点评测、翻页、导航
-│   │   ├── browser.mjs             # CDP 连接与标签页挑选
+│   │   ├── browser.mjs             # CDP 连接 + 四级挑页链（hint → URL 形状 → 内容特征 → 首个非空白）
+│   │   ├── task-url.mjs            # 题目页 URL 识别共享小模块（taskKey/isTaskUrl）
 │   │   ├── launch-browser.mjs      # 调试端口拉起（Windows 保留端口自动顺延）
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/

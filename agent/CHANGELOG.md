@@ -2,6 +2,44 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [Unreleased]（master 基线）
+
+本段内容为「四级挑页链」自分支 `feat/2-c-web-service` 的**回灌**（补丁等价于其 `cf07ab6` + `0f981c9`，未做任何分支合并），外加一处静态审计修复。master 仍是基线定位——不包含网页工作台（feat/2）、MCP 出口（feat/1）、能力配置校验（feat/1 / feat/3）。
+
+### Added
+
+- **四级挑页链 `pickTargetPageWithMeta`（`src/browser.mjs`）**：① `TARGET_URL_HINT`（显式指定，最高优先；唯一命中即选，**多命中报错列出全部**防解错页，零命中告警后降级）；② 内置题目页 URL 形状正则（复用 `TASK_URL_PATTERN`，与 watch/lite 同旋钮同源不漂移）；③ **内容级兜底**：URL 全落空时逐标签页跑单次探测 `looksLikeTaskPage`（强代码编辑器 Monaco/Ace/CM5/CM6——纯 textarea 不算，防普通网页评论框误报；评测结果面板专属标记；可见的评测/自测按钮）；④ 最终兜底（历史行为：第一个非空白页）。每级命中都打日志（层级 + URL），消除"静默选错页"。修复背景：真机开着 5 个标签页（课程列表在前）时旧版两档挑页永远选错页
+- **共享识别模块 `src/task-url.mjs`**：`taskKey`/`isTaskUrl` 从 `loop.mjs` 下沉（browser→loop 会成环），正则编译带缓存；`loop.mjs` 保留 `taskKey` 再导出兼容
+- **`looksLikeTaskPage`（`src/perceive.mjs`）**：内容级轻量判题，每个 frame 一次 `evaluate`（逐页约百毫秒级），判据全部沿用既有通用启发式、不硬编码站点 selector
+- **配置项文档补全**：`.env.example` 补上 `TASK_URL_PATTERN` 条目；`TARGET_URL_HINT` 注释改写为挑页链语义；`printConfig` 新增 `TASK_URL_PATTERN` 行
+
+### Fixed
+
+- **`clientFact` 变量遮蔽（`src/loop.mjs`）**：cmdline 分支内同名局部变量遮蔽了函数级实测结论——命令行题触发「逃生舱」转代码分支时，生成/反思 prompt 拿到的是空串，cmdline 阶段实测的客户端可用性事实被静默丢弃。现三分支共享同一份
+- **死代码清理（`src/perceive.mjs`）**：删除 `findClickable`（循环首关键词即 return 的逻辑性死代码、全仓库无调用方）、`readEditorCode`（死导出）、`PROBLEM_SIGNATURE`（恒 false 尸体常量）
+- **版本排序修正**：1.1.1（2026-09-11 实发）晚于 1.1.0（2026-09-10）一日，此前排在 1.1.0 之后，违反 Keep a Changelog 新版本在上原则，现调整为 1.1.1 → 1.1.0
+
+### Notes
+
+- 验证：`npm test` 34/34（原 22 项核心纯函数 + 回灌新增 12 项挑页链用例）；`node --check` 全部源文件通过
+- **版本差异提示**：回灌后四级挑页链在 master / feat/1 / feat/2 / feat/3 四个版本上行为一致；本分支仍**无**网页工作台、MCP 出口与能力配置校验——需要这三类能力请切对应功能分支（见根 README 顶部「分支说明」对照表）
+
+## [1.1.1] - 2026-09-11
+
+代码栏数据库命令题通用加固：执行层 echo 包裹兜底 + 题面例子命令形态守则 + 结果面板遮挡点击修复。由 2026-09-11 真机（MongoDB 地理位置索引题：AI 反复输出裸命令、且把题面例子的 `db.runCommand` 换成 `aggregate $geoNear` 导致输出格式不符）驱动。
+
+### Changed
+
+- **执行层 echo 双引号包裹兜底（`ai.mjs` `wrapDbCommandsInEcho` + `loop.mjs` 接入）**：AI 即使不遵守守则输出裸 db 命令，提交前确定性包裹为 `echo "…"`（裸 `$` 转义、幂等）。触发条件收紧保证通用性——**仅当代码栏主体是 `db.` 命令集**（≥70% 非空行为 `db.`/`use` 命令、且非编程语言特征开头），不误伤 Python/Java/Node 脚本、字符串字面量、MySQL 的 SELECT/use 等
+- **生成/反思守则强化（prompt 单一数据源）**：「严格按题面『相关知识/例子』给出的命令形态书写」（如 `db.runCommand({geoNear:...})`，禁止换成 `aggregate $geoNear`——输出格式由命令形态决定，平台按题面例子的返回结构比对）；反思侧「实际输出格式与预期不符（results/stats/ok vs 扁平文档）→ 检查是否用了题面例子之外的 API 形态」
+- **结果面板遮挡点击通用处理（`act.mjs`）**：`clickByKeywords` 点击被拦截（`evaluate-result-container` 拦截 pointer events）时，自动收起结果面板（标题/面板左上角/Escape）后重试，重试失败换候选
+- **TROUBLESHOOTING 新增 C-10**（结果面板遮挡点击）；C-9 预防补充「严格按题面例子命令形态」
+
+### Notes
+
+- 验证：索引题 AI 按守则直接生成 echo + runCommand（1243 字符，wrap 幂等跳过）；wrap 触发/幂等/误伤 7 组用例全过（裸命令包裹、已 echo 不重复、Python/Node/MySQL/字符串不触发、`$` 转义）
+- 平台机制边界如实标注：echo 提取实测于 EduCoder Mongo 题；MySQL/其它平台未实测（但「bash+eval 双执行」平台的裸命令都会 bash 报错，echo 是通用 bash 包装）
+
 ## [1.1.0] - 2026-09-10
 
 **工程化基建版本**：补单测、统一日志落盘、接入 lint 与格式化、修正元数据与忽略规则。业务逻辑零变更，但**新增的首批单测当场暴露并修复了一个真实的判定缺陷**——`detectVerdict` 会把 EduCoder 的「0 组不匹配」误判为未通过，白白触发整轮反思重试。
@@ -32,22 +70,6 @@
 - 验证：`eslint src/ test/` 零问题；`npm test` 22/22 通过；9 个 `.mjs` 语法校验通过；`node src/cli.mjs` 冒烟正常（配置读取、浏览器探测与自动拉起均工作）
 - 边界：单测仅覆盖与浏览器无关的纯函数，涉及 CDP / 页面交互的部分仍依赖真机验证，未声称已覆盖
 - 未做：`solveOnce`（`loop.mjs:182`，392 行单函数）拆分仍属高风险重构，建议等测试更充分后再动
-
-## [1.1.1] - 2026-09-11
-
-代码栏数据库命令题通用加固：执行层 echo 包裹兜底 + 题面例子命令形态守则 + 结果面板遮挡点击修复。由 2026-09-11 真机（MongoDB 地理位置索引题：AI 反复输出裸命令、且把题面例子的 `db.runCommand` 换成 `aggregate $geoNear` 导致输出格式不符）驱动。
-
-### Changed
-
-- **执行层 echo 双引号包裹兜底（`ai.mjs` `wrapDbCommandsInEcho` + `loop.mjs` 接入）**：AI 即使不遵守守则输出裸 db 命令，提交前确定性包裹为 `echo "…"`（裸 `$` 转义、幂等）。触发条件收紧保证通用性——**仅当代码栏主体是 `db.` 命令集**（≥70% 非空行为 `db.`/`use` 命令、且非编程语言特征开头），不误伤 Python/Java/Node 脚本、字符串字面量、MySQL 的 SELECT/use 等
-- **生成/反思守则强化（prompt 单一数据源）**：「严格按题面『相关知识/例子』给出的命令形态书写」（如 `db.runCommand({geoNear:...})`，禁止换成 `aggregate $geoNear`——输出格式由命令形态决定，平台按题面例子的返回结构比对）；反思侧「实际输出格式与预期不符（results/stats/ok vs 扁平文档）→ 检查是否用了题面例子之外的 API 形态」
-- **结果面板遮挡点击通用处理（`act.mjs`）**：`clickByKeywords` 点击被拦截（`evaluate-result-container` 拦截 pointer events）时，自动收起结果面板（标题/面板左上角/Escape）后重试，重试失败换候选
-- **TROUBLESHOOTING 新增 C-10**（结果面板遮挡点击）；C-9 预防补充「严格按题面例子命令形态」
-
-### Notes
-
-- 验证：索引题 AI 按守则直接生成 echo + runCommand（1243 字符，wrap 幂等跳过）；wrap 触发/幂等/误伤 7 组用例全过（裸命令包裹、已 echo 不重复、Python/Node/MySQL/字符串不触发、`$` 转义）
-- 平台机制边界如实标注：echo 提取实测于 EduCoder Mongo 题；MySQL/其它平台未实测（但「bash+eval 双执行」平台的裸命令都会 bash 报错，echo 是通用 bash 包装）
 
 ## [1.0.0] - 2026-09-10
 
