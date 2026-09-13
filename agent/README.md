@@ -75,14 +75,14 @@ npm run probe
 
 | 能力 | 端点 | 说明 |
 |---|---|---|
-| 状态面板 | `GET /api/status` | AI 配置 / 当前模型 / 浏览器连接（只读，不触发连接） |
-| 探测页面 | `POST /api/probe` | 只读感知：题型 / 编辑器 / 题干摘要 / 可点击元素 |
-| 解当前题 | `POST /api/solve` | 感知 → AI 生成/作答 → 提交评测 → 失败反思重试（**会真实提交**） |
+| 状态面板 | `GET /api/status` | AI 配置 / 当前模型 / 浏览器连接 / 版本号（只读，不触发连接） |
+| 探测页面 | `POST /api/probe` | 只读感知：题型 / 编辑器 / 题干摘要 / 可点击元素；响应含 `pickedBy`（挑页命中层级）与多候选时的 `candidates` |
+| 解当前题 | `POST /api/solve` | 感知 → AI 生成/作答 → 提交评测 → 失败反思重试（**会真实提交**）；响应含 `url` + `pickedBy`，解的是哪页可见 |
 | 运行日志 | `GET /api/logs?since=n` | 内存环形缓冲最近 200 条，前端 1.5s 增量轮询 |
 
 设计边界（v1，最小可用形态）：**仅绑定 127.0.0.1**，不对局域网/外网暴露；端点固定无参数；编排（反思循环）留在 agent 侧。真正的"多人使用"需要浏览器池与账号隔离，属产品化场景，不在本期范围。前端为单文件原生子页（`public/index.html`，无 React、无构建链——尊重 2026-09-09 移除 React 工作台的决策）。重复双击 `start-web.bat` 会报 `EADDRINUSE` 端口占用——最常见原因是已有一个工作台在运行（黑窗口需保持开着），直接用浏览器访问 `http://127.0.0.1:8787` 即可；仅当打开的不是工作台页面时才是端口被其他程序占用，此时用 `WEB_PORT` 换端口。
 
-验证边界：静态页、status、logs、无浏览器时的结构化报错、404 均已实测；`probe` / `solve` 真实链路需带调试端口且已登录评测站的浏览器，请实测确认。
+验证边界：静态页、status、logs、无浏览器时的结构化报错、404 均已实测；1.2.0 另实测了 `/api/probe` 真实全链（自动拉起 → 挑页链回退 → `pickedBy` 返回）。`solve` 对真实题目页的链路需带调试端口且已登录评测站的浏览器，请实测确认。
 
 ## 配置项（`agent/.env.local`）
 
@@ -101,10 +101,10 @@ npm run probe
 | `CDP_ENDPOINT` | CDP 连接地址，留空由 `DEBUG_PORT` 拼出 | `http://127.0.0.1:9333` |
 | `USER_DATA_DIR` | 独立 profile 目录（须与日常使用 profile 隔离，否则调试端口不生效） | `agent/.browser-profile` |
 | `EDGE_PATH` / `BROWSER_PATH` | 浏览器路径，留空自动探测 | 自动 |
-| `TARGET_URL_HINT` | 评测页 URL 特征片段，多标签页时用于定位 | 留空取第一个 |
+| `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。平台题目页 URL 不是 `/tasks/` 形状时在此改特征片段 | 留空自动按 `TASK_URL_PATTERN` 识别 |
 | `AUTO_LAUNCH` | 连不上调试端口时自动拉起浏览器（独立 profile） | `1` |
 | `WATCH_POLL_MS` | watch/lite：标签页轮询间隔 | `2000` |
-| `TASK_URL_PATTERN` | 题目页 URL 正则（换平台改这里） | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
+| `TASK_URL_PATTERN` | 题目页 URL 形状正则：自动挑页与 watch/lite 识别共用（换平台改这里） | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `READY_TIMEOUT_MS` | 等题目区渲染完成的超时 | `15000` |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果上限 | `25000` |
@@ -133,6 +133,23 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 - **命令行题**（头歌类平台的数据库/运维任务）：生成命令序列 → 逐条真实键入 xterm 终端（每条回车后自适应等提示符返回，`TERMINAL_GAP_MIN_MS`~`TERMINAL_GAP_MAX_MS`；含中文的命令由执行层合成 paste 事件直入 xterm 保证键入保真，纯 ASCII 走键盘逐字符）→ 评测；未通过时由 `cmdline_reflection_fixer_1` 结合评测输出重新生成完整命令序列再重试。bash 环境且题干涉数据库时，先实测客户端可用性（mongosh 是否存在这类硬事实进 prompt、缺失者入禁令并执行层别名替换），避免子命令被敲进 bash
 - **混合题**（如「先命令行插入文档、再代码栏写查询」）：**先命令行插入题面文档到指定库（必需，1.0.0 实测评测环境共享终端数据库、未插入则查询结果为空）**，再落入代码分支作答；代码栏数据库命令题用 `echo "` 双引号包裹裸查询（分号 `;` 分隔、`$`→`\$`，1.0.0 生成/反思守则——平台对代码栏双重执行：bash 环节 + 提取 echo 引号内内容做数据库 eval）
 - **选择题/填空题**：直接作答后评测；当前版本不做多轮反思
+
+## 多标签页挑页规则（探测/解题/once/run/dump 共用）
+
+工作台「探测页面 / 解当前题」与 CLI 的 `probe` / `dump` / `once` / `run` / `course-probe` 用同一条**四级挑页链**选目标标签页（1.2.0 起）：
+
+1. **`TARGET_URL_HINT`**（`.env.local` 显式指定）——唯一命中即选；**命中多个直接报错并列出全部**（防解错页，关闭多余标签或改更具体的片段后重试）；零命中告警后降级下一级；
+2. **内置题目页 URL 形状正则 `TASK_URL_PATTERN`**——默认匹配 `/tasks/<courseId>/<数字>/<串>`，eduCoder 官网（`www.educoder.net`）与校内部署（如 `172.22.226.31`）的题目页同构，**零配置即可识别**；同样多命中报错；
+3. **内容级兜底**——URL 两级都认不出时，逐标签页按「强代码编辑器（Monaco/Ace/CodeMirror）/ 评测结果面板 / 评测按钮」特征识别（纯 textarea 的普通网页不算，防误报），命中多个取标签序第一个并列日志；
+4. **最终兜底**——第一个非空白标签页（历史行为）。
+
+每级命中都在日志打印层级与 URL，工作台响应带 `pickedBy` 字段。**换平台时**：题目页 URL 不是 `/tasks/` 形状的，把 `.env.local` 的 `TARGET_URL_HINT` 改成其特征片段即可（如 `/exam/`）；URL 形状规整的也可以改 `TASK_URL_PATTERN` 正则。
+
+> CDP 下所有标签页的 `document.visibilityState` **全部返回 `visible`**
+> （TROUBLESHOOTING C-4 实测），无法识别"用户正在看哪个标签"，
+> 因此多命中一律报错列出而不是猜。
+
+watch / lite / course 不走挑页链：它们各自按 `TASK_URL_PATTERN` 遍历标签页（watch/lite）或按内容特征找列表页（course）。
 
 ## 常驻监听模式（推荐用法）
 

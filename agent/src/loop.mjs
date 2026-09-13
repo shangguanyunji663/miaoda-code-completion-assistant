@@ -13,6 +13,7 @@
 import { cfg } from './config.mjs';
 import { createLogger } from './logger.mjs';
 import { connectBrowser, pickTargetPage } from './browser.mjs';
+import { taskKey } from './task-url.mjs';
 import {
   probePage,
   writeEditorCode,
@@ -690,15 +691,8 @@ async function waitTaskReady(page, timeoutMs = cfg.watch.readyTimeoutMs) {
   return false;
 }
 
-/** 从 URL 中提取题目唯一键；非题目页返回 null */
-export function taskKey(url) {
-  try {
-    const m = String(url ?? '').match(new RegExp(cfg.watch.taskUrlPattern));
-    return m ? m[0] : null;
-  } catch {
-    return null;
-  }
-}
+/** 从 URL 中提取题目唯一键；非题目页返回 null（实现下沉到 task-url.mjs 供 browser.mjs 共用，此处保留导出兼容） */
+export { taskKey };
 
 /**
  * 常驻监听模式：程序一直运行，检测到用户切换到新的题目页就自动作答。

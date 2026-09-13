@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cfg } from './config.mjs';
-import { pickTargetPage } from './browser.mjs';
+import { pickTargetPageWithMeta } from './browser.mjs';
 import { probePage } from './perceive.mjs';
 import { solveOnce } from './loop.mjs';
 import { withBrowserSession, disconnectSession, sessionStatus } from './browser-session.mjs';
@@ -69,10 +69,14 @@ const server = http.createServer(async (req, res) => {
     // ---- 只读感知 ----
     if (req.method === 'POST' && url.pathname === '/api/probe') {
       const r = await withBrowserSession(async (session) => {
-        const page = await pickTargetPage(session.context);
-        const p = await probePage(page);
+        const pick = await pickTargetPageWithMeta(session.context);
+        const p = await probePage(pick.page);
         return {
           url: p.url,
+          // 挑页链命中层级：url-hint / url-pattern / content / first-page，
+          // 让用户能看到"探测的是哪个页面、怎么选中的"（多候选时前端可见 candidates）
+          pickedBy: pick.tier,
+          candidates: pick.candidates.length > 1 ? pick.candidates.map((c) => c.url()) : undefined,
           taskType: p.taskType,
           editor: p.editor ? { type: p.editor.type, hint: p.editor.hint } : null,
           problemLength: p.problem?.length ?? 0,
@@ -93,15 +97,18 @@ const server = http.createServer(async (req, res) => {
     // ---- 解当前题（会真实提交评测；编排/反思循环在 agent 侧） ----
     if (req.method === 'POST' && url.pathname === '/api/solve') {
       const r = await withBrowserSession(async (session) => {
-        const page = await pickTargetPage(session.context);
-        const probe = await probePage(page);
-        return solveOnce(page, probe);
+        const pick = await pickTargetPageWithMeta(session.context);
+        const probe = await probePage(pick.page);
+        const out = await solveOnce(pick.page, probe);
+        return { url: pick.page.url(), pickedBy: pick.tier, ...out };
       });
       return json(res, 200, {
         ok: r.ok,
         kind: r.kind ?? null,
         reason: r.reason ?? null,
         attempts: r.attempts ?? null,
+        url: r.url ?? null,
+        pickedBy: r.pickedBy ?? null,
         verdict: r.verdict ? { passed: r.verdict.passed, reason: r.verdict.reason } : null,
         evalText: (r.evalText ?? '').slice(0, 3000),
       });

@@ -131,7 +131,8 @@ Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-brows
 | `AI_REASONING_EFFORT` | 推理分级 `low` / `medium` / `high` | `medium` |
 | `AI_THINKING_CAP_MS` | 思考硬闸：持续纯思考超时即断流重试关闭思考 | `20000` |
 | `DEBUG_PORT` | CDP 调试端口（默认避开 Windows 保留区间 9137–9236） | `9333` |
-| `TASK_URL_PATTERN` | 题目页 URL 正则，换平台改这里 | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
+| `TASK_URL_PATTERN` | 题目页 URL 形状正则：自动挑页与 watch/lite 识别共用，换平台改这里 | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
+| `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。题目页 URL 不是 `/tasks/` 形状的平台在此改 | 留空自动按 `TASK_URL_PATTERN` 识别 |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果上限 | `25000` |
 | `DRY_RUN` | `1` = 只感知与生成，不写入不点击 | `0` |
@@ -148,7 +149,7 @@ cli.mjs（入口：解析命令，分发到对应模式）
   │    ├─ perceive.mjs（感知：题干提取、编辑器/终端探测、评测结果读取、快照导出）
   │    ├─ ai.mjs（生成：意图路由 / 答案生成 / 反思修复 / 结果判定）
   │    └─ act.mjs（执行：写编辑器、键终端、勾选项、点评测、翻页、切工作区标签）
-  ├─ browser.mjs（CDP 连接浏览器 + 挑选目标标签页）
+  ├─ browser.mjs（CDP 连接浏览器 + 四级挑页链选目标标签页：hint → URL 形状 → 内容特征 → 首个非空白）
   │    └─ launch-browser.mjs（连不上时拉起浏览器；含 my-edge 的 junction 接管）
   ├─ web-server.mjs（网页工作台：HTTP API + 单文件原生前端，仅绑 127.0.0.1）
   │    └─ browser-session.mjs（常驻进程会话管理：懒连接 + 互斥串行 + 断线重连）
@@ -184,7 +185,7 @@ miaoda-code-completion-assistant/
 │   │   ├── browser-session.mjs     # 常驻进程浏览器会话：懒连接 + 互斥串行 + 断线重连
 │   │   ├── web-server.mjs          # 网页工作台（零新增依赖）：状态 / 探测 / 解题 / 日志流
 │   │   ├── act.mjs                 # 执行：写入、键入、勾选、点评测、翻页、导航
-│   │   ├── browser.mjs             # CDP 连接与标签页挑选
+│   │   ├── browser.mjs             # CDP 连接与四级挑页链（hint→URL形状→内容→兜底）
 │   │   ├── launch-browser.mjs      # 调试端口拉起（Windows 保留端口自动顺延）
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
