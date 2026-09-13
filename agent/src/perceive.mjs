@@ -1,4 +1,4 @@
-// EXPORTS: probePage, readEditorCode, findClickable, writeEditorCode, dumpProbe,
+// EXPORTS: probePage, writeEditorCode, dumpProbe,
 //          collectCards, collectSections, collectCardCandidates, readEvalPanel, dumpCourseProbe,
 //          waitForTerminal, waitForEditor, readTerminalText, isTerminalAtPrompt, readTerminalLines,
 //          detectTerminalEnv, looksLikeTaskPage
@@ -211,8 +211,6 @@ const READ_EVAL_PANEL = () => {
   // 稳定胜出——题干每次评测前后不变，判变化逻辑因此失效，60s 空等后
   // 误报"空结果"。必须先用结果区专属标记锁定，题干签名块直接排除。
   const RESULT_MARKER = /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/;
-  const PROBLEM_SIGNATURE = /任务描述/.test('');
-  void PROBLEM_SIGNATURE;
   const sel =
     'div, section, pre, article, code, [class*="result"], [class*="output"], [class*="eval"], [class*="console"], [class*="message"], [class*="modal"], [class*="panel"], [class*="toast"]';
   const cands = Array.from(document.querySelectorAll(sel)).filter((el) => {
@@ -402,15 +400,6 @@ export function classifyTask({ editor, inputs }) {
 }
 
 /**
- * 读取编辑器当前代码
- * @param {import('playwright-core').Page} page
- */
-export async function readEditorCode(page) {
-  const p = await probePage(page);
-  return p.code ?? '';
-}
-
-/**
  * 轮询等待可见的 xterm 终端出现（命令行 tab 激活后内容懒渲染）。
  * 判定特征：.xterm-screen（xterm.js 标准结构，实测本平台为 DOM 渲染器，主 frame）。
  * @returns {Promise<boolean>} 超时前出现返回 true
@@ -453,21 +442,6 @@ export async function waitForEditor(page, timeoutMs = 10000) {
     await page.waitForTimeout(400);
   }
   return false;
-}
-
-/**
- * 在页面上按文本查找可点击元素，返回 Playwright locator（未点击）
- * 按关键词顺序匹配，返回第一个命中的
- * @param {import('playwright-core').Page} page
- * @param {string[]} keywords 如 ['评测','提交','运行']
- */
-export function findClickable(page, keywords) {
-  for (const kw of keywords) {
-    const loc = page.getByRole('button', { name: kw, exact: false }).first();
-    // 先不 await，交给调用方决定是否点击/计数
-    return { keyword: kw, locator: loc };
-  }
-  return null;
 }
 
 /**

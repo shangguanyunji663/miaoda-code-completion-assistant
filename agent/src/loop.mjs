@@ -237,9 +237,12 @@ export async function solveOnce(page, probe) {
   // 分支逃生舱状态：命令行多轮跑通仍评测不匹配 → 疑似路由误判，转代码分支
   let cmdlineFallback = false;
   let cmdlineEvalText = '';
-  // 客户端可用性实测结论（函数级）：mixed 分支数据准备阶段探测一次，落代码
-  // 分支后注入生成/反思 prompt——代码栏数据库命令题要用实测可用的客户端
-  //（本机只有 mongo 没有 mongosh 这类硬事实），并支撑 heredoc 守则落地
+  // 客户端可用性实测结论（函数级，cmdline/mixed/代码三分支共享同一份）：
+  // mixed 数据准备阶段或 cmdline 首轮探测一次，落代码分支（含 cmdline 逃生舱
+  // 转分支）后注入生成/反思 prompt——代码栏数据库命令题要用实测可用的客户端
+  //（本机只有 mongo 没有 mongosh 这类硬事实），并支撑 heredoc 守则落地。
+  // 注意：cmdline 分支内不得再声明同名局部变量——曾因遮蔽导致逃生舱转代码
+  // 分支时丢失实测事实（0.9.x 静默回归点）
   let clientFact = '';
 
   // ---- 混合题（0.9.1）：题干同时要求"命令行操作 + 代码栏编写"（如先在
@@ -318,7 +321,6 @@ export async function solveOnce(page, probe) {
     let lastEval = '';
     let sanitizeNote = ''; // shell 护栏清洗记录（喂给反思，供其理解上一轮实际提交内容）
     const bannedCmds = new Set(); // 本题内累积的 command not found 命令（跨反思轮生效）
-    let clientFact = ''; // 客户端可用性实测结论（bash 环境下探测一次）
     const lessons = []; // 各轮反思的诊断结论（Reflexion 式教训链，跨轮注入）
     let roundsCleanRun = 0; // 命令全部跑通（无输入期报错）的轮数——逃生舱判据
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {

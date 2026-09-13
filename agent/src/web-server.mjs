@@ -76,7 +76,17 @@ const server = http.createServer(async (req, res) => {
           // 挑页链命中层级：url-hint / url-pattern / content / first-page，
           // 让用户能看到"探测的是哪个页面、怎么选中的"（多候选时前端可见 candidates）
           pickedBy: pick.tier,
-          candidates: pick.candidates.length > 1 ? pick.candidates.map((c) => c.url()) : undefined,
+          // 页面可能正被销毁，url() 会抛错——逐个兜底为空串，不让探测整体 500
+          candidates:
+            pick.candidates.length > 1
+              ? pick.candidates.map((c) => {
+                  try {
+                    return c.url();
+                  } catch {
+                    return '';
+                  }
+                })
+              : undefined,
           taskType: p.taskType,
           editor: p.editor ? { type: p.editor.type, hint: p.editor.hint } : null,
           problemLength: p.problem?.length ?? 0,
