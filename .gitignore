@@ -81,3 +81,6 @@ agent/logs/
 
 # 上传的页面截图，可能含姓名学号
 uploaded_image.png
+
+# ZCode 本地运行态（plans 等），纯本地产物不入库
+.zcode/
