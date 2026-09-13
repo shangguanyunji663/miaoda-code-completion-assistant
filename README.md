@@ -16,6 +16,8 @@
 
 </div>
 
+> **📖 分支说明**：本分支（`feat/1-ad-mcp-server`）= master 基线 + 能力配置自动校验（`npm run caps-check`）+ **MCP 出口**——把解题能力暴露给 ZCode / Claude Desktop / Cursor 等 AI 编程助手，配置方法见 [agent/README.md](agent/README.md)「MCP 接入」。⚠️ **本分支有新增依赖**（`@modelcontextprotocol/sdk`）：从 master 或其他分支切换过来后，先在 `agent/` 下执行 `npm install` 再使用。原有 CLI 用法（watch / lite / course 等双击 bat）全部保留、零改动。
+
 ---
 
 ## 这是什么

@@ -28,6 +28,7 @@
 - 验证：`npm test` 29/29、`npm run lint` 零问题；MCP stdio 冒烟实测——协议握手、`tools/list` 三工具、`tools/call`（`list_models` 实调 AI 端点返回模型列表）、stdin EOF 后「在途归零 + 让出事件循环一拍」再退出（冒烟中两次踩坑定稿：直接退出会掐断最后一个响应）；Web 依赖路径 `probe_page` / `solve_current_task` 需带调试端口且已登录评测站的浏览器，留宿主实测
 - 实施修正（对分析文档第七节）：原定改造点「抽出 `ensureBrowser()` 单例、迁移 5 处 `browser.close()`」经核实不再必要——CDP 连接的 close 语义为仅断开，MCP Server 以独立会话管理器复用连接，`loop.mjs` / `cli.mjs` 零改动
 - 文档同步：`shared/capabilities/README.md` 中渲染函数名由 `renderPrompt` 修正为 `renderTemplate`（以 `ai.mjs:28` 实际实现为准，历史笔误）
+- 分支说明落地：根 README 顶部、同学指南第七节、agent/README「MCP 接入」均标明本分支与 master 的差异及**新增依赖提示**（切换分支后需先 `npm install`）
 
 ## [1.1.0] - 2026-09-10
 

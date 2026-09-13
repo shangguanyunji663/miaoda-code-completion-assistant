@@ -70,6 +70,8 @@ npm run probe
 
 ## MCP 接入
 
+> 本分支相对 master 新增依赖 `@modelcontextprotocol/sdk`：从其他分支切换过来后请先 `npm install`。原有 CLI 用法不受影响。
+
 `npm run mcp` 以 stdio 传输启动 MCP Server（`src/mcp-server.mjs`），把解题能力暴露为三个工具，供 MCP 宿主（ZCode / Claude Desktop / Cursor 等）调用：
 
 | 工具 | 作用 | 风险 |
