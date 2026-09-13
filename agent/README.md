@@ -69,6 +69,8 @@ npm run probe
 
 ## 网页工作台（web）
 
+> 本分支相对 master 无新增依赖：从其他分支切换过来后无需重新 `npm install`。原有 CLI 用法不受影响。
+
 `npm run web`（或双击 `start-web.bat`）启动本机网页工作台，浏览器打开 `http://127.0.0.1:8787`：
 
 | 能力 | 端点 | 说明 |

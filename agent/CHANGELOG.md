@@ -19,6 +19,7 @@
 - 验证：`npm test` 22/22、`npm run lint` 零问题；HTTP 冒烟实测——静态页 200、`/api/status`、`/api/logs`（汇点已捕获启动日志）、无浏览器时 `/api/probe` 结构化报错、404 兜底全通；`probe` / `solve` 真实链路需带调试端口且已登录评测站的浏览器，留用户实测
 - `src/browser-session.mjs` 与分支 `feat/1-ad-mcp-server` 内容一致（懒连接 + 互斥串行 + 断线重连），两分支合并预期零冲突；`logger.mjs` 的 `emit` 两分支均有改动，合并时取并集即可
 - 文档同步：`shared/capabilities/README.md` 中渲染函数名由 `renderPrompt` 修正为 `renderTemplate`（以 `ai.mjs:28` 实际实现为准，历史笔误）
+- 分支说明落地：根 README 顶部、同学指南第七节、agent/README「网页工作台」均标明本分支与 master 的差异（网页工作台），并注明**无新增依赖**、切换分支无需重装
 
 ## [1.1.0] - 2026-09-10
 
