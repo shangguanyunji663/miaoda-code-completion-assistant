@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.1.1-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.2.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -116,7 +116,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
-| `npm test` | 运行核心纯函数单测（22 项，零新增依赖） |
+| `npm test` | 运行单测（41 项：核心纯函数 + 挑页链 + 能力配置校验，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -243,7 +243,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 22 项纯函数单测必须全绿
+npm test          # 41 项单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 
