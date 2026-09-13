@@ -2,11 +2,27 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
-## [Unreleased]（分支 feat/2-c-web-service）
+## [1.2.0] - 2026-09-13（分支 feat/2-c-web-service）
+
+本版本两块内容：① 网页工作台（方案 C 最小落地）；② 智能挑页——`pickTargetPage` 升级为四级挑页链，eduCoder 官网与校内部署的题目页（`/tasks/<courseId>/<数字>/<串>`）**零配置自动识别**，不再依赖"第一个标签页就是题目页"的运气。由真机场景驱动：用户开着 5 个标签页（课程列表在前、题目页在后），工作台探测/解题永远选中最左边的课程列表页。
+
+### Added
+
+- **四级挑页链 `pickTargetPageWithMeta`（`src/browser.mjs`）**：① `TARGET_URL_HINT`（显式指定，最高优先；唯一命中即选，**多命中报错列出全部**防解错页，零命中告警后降级——旧版直接抛错）；② 内置题目页 URL 形状正则（复用 `TASK_URL_PATTERN`，与 watch/lite 同旋钮同源不漂移）；③ **内容级兜底**：URL 全落空时逐标签页跑单次探测 `looksLikeTaskPage`（强代码编辑器 Monaco/Ace/CM5/CM6——纯 textarea 不算，防普通网页评论框误报；评测结果面板专属标记；可见的评测/自测按钮），命中多个取标签序第一个并列日志；④ 最终兜底（历史行为：第一个非空白页）。每级命中都打日志（层级 + URL），消除"静默选错页"。`pickTargetPage` 保留为兼容薄包装
+- **共享识别模块 `src/task-url.mjs`**：`taskKey`/`isTaskUrl` 从 `loop.mjs` 下沉（browser→loop 会成环），正则编译带缓存；`loop.mjs` 保留 `taskKey` 再导出兼容
+- **`looksLikeTaskPage`（`src/perceive.mjs`）**：内容级轻量判题，每个 frame 一次 `evaluate`（逐页约百毫秒级），判据全部沿用既有通用启发式、不硬编码站点 selector
+- **工作台挑页透明化**：`/api/probe` 响应新增 `pickedBy`（命中层级）与多候选时的 `candidates`；`/api/solve` 响应新增 `url` + `pickedBy`——工作台上能看到"解的是哪页、怎么选中的"
+- **配置项文档补全**：`.env.example` 补上缺失的 `TASK_URL_PATTERN` 条目；`TARGET_URL_HINT` 注释改写为挑页链语义（平台题目页 URL 不是 `/tasks/` 形状时在此改特征片段）
+- **`printConfig`**：新增 `TASK_URL_PATTERN` 行；`TARGET_URL_HINT` 未配置时提示自动识别而非"选第一个标签页"
+
+### Changed
+
+- **配置**：`agent/.env.local` 设 `TARGET_URL_HINT=/tasks/`（双保险 + 显式声明；清空即回到全自动识别）
+- **版本**：`package.json` 1.1.1 → 1.2.0（工作台状态面板 `/api/status` 的 version 字段随之更新）
 
 **网页工作台（方案 C 最小落地）**：把解题能力以本机 HTTP 服务 + 网页形式暴露。响应"多人使用/网页访问"的需求——注意这是**仅本机访问**的最小形态，真正的多用户需要浏览器池与账号隔离，不在本期范围。
 
-### Added
+### Added（网页工作台）
 
 - **HTTP 服务 `src/web-server.mjs`**（Node 内置 `node:http`，零新增依赖）：`GET /` 静态页、`GET /api/status`（只读状态，不触发浏览器连接）、`POST /api/probe`（只读感知）、`POST /api/solve`（解当前题，编排/反思循环留在 agent 侧）、`GET /api/logs?since=n`（内存环形缓冲最近 200 条，增量轮询）。安全边界：仅绑定 `127.0.0.1`、端点固定无参数、不做任何用户 URL 抓取、不新增密钥面（AI 配置复用 `.env.local`）
 - **单文件原生前端 `public/index.html`**：状态面板 + 探测/解题按钮 + 实时日志流。无 React、无构建链——尊重 2026-09-09 移除 React 工作台的决策，本服务刻意不重建该栈
@@ -14,12 +30,42 @@
 - **启动自检 CDP 调试端口 `src/port-check.mjs`**（node:net 零依赖）：watch / lite / course 启动时探测调试端口并给出人话状态（就绪打勾 / 无响应指引）；web 启动页在 listen 回调后同样自检——浏览器是懒连接，此刻不查的话"没开受控浏览器"要到点按钮才暴露。真机反馈驱动，冒烟实测就绪/无响应两条路径
 - **logger 日志汇点 `addLogSink`**（`src/logger.mjs`，约 15 行）：常驻 UI 进程订阅日志流用，汇点异常只吞不外抛
 
+### Added（能力配置校验——回灌自分支 feat/3-d-capability-guard）
+
+- **能力 JSON 加载前校验 `src/capability-schema.mjs`**（零依赖，不引入 Ajv）：必填字段（`id` / `formValue.prompt` / `paramsSchema`）、prompt 占位符 ⊆ `paramsSchema.properties`（抓拼写错误——渲染时静默替换为空串）、`required` ⊆ `properties`（抓声明漂移）。`ai.mjs` 的 `readCapability` 首次读取时自动全量预检（fail-fast）；新增 CLI 命令 `npm run caps-check` 手动校验（不连浏览器、不调 AI）
+- **单测 34→41 项**（新增 `test/capability-schema.test.mjs` 7 项）：真实 7 能力文件全通过的回归闸 + 四类故障注入用例
+- 修复存量声明漂移：`code_reflection_fixer_1.json` 补声明 `terminal_state`（`ai.mjs` 实际已传该变量，仅元数据缺失，运行时行为不变）
+
+### Fixed
+
+- **`clientFact` 变量遮蔽（`src/loop.mjs`）**：cmdline 分支内同名局部变量遮蔽了函数级实测结论——命令行题触发「逃生舱」转代码分支时，`generateCode`/`reflectAndFix` 拿到的是空串，cmdline 阶段实测的客户端可用性事实（本机只有 mongo 没 mongosh 等）被静默丢弃。现 cmdline / mixed / 代码三分支共享同一份
+- **死代码清理（`src/perceive.mjs`）**：删除 `findClickable`（循环首关键词即 return 的逻辑性死代码、全仓库无调用方）、`readEditorCode`（死导出且内部走全量 probePage 代价失当）、`PROBLEM_SIGNATURE`（恒 false 尸体常量）；文件头 EXPORTS 清单同步。纯删除，无行为变更
+- **`src/web-server.mjs`**：`/api/probe` 的 `candidates` 组装逐页 try 包裹 `url()`——标签页销毁瞬间取 URL 抛错不再使整个探测请求 500
+
 ### Notes
 
-- 验证：`npm test` 22/22、`npm run lint` 零问题；HTTP 冒烟实测——静态页 200、`/api/status`、`/api/logs`（汇点已捕获启动日志）、无浏览器时 `/api/probe` 结构化报错、404 兜底全通；`probe` / `solve` 真实链路需带调试端口且已登录评测站的浏览器，留用户实测
+- 验证：`npm test` 41/41（22 项核心纯函数 + 12 项挑页链 + 7 项能力配置校验，hint 唯一/多命中报错/零命中降级、URL 正则唯一/多命中报错、内容级兜底、探测异常跳过、最终回退等用例以假 page 对象覆盖）+ `npm run lint` 零问题；HTTP 真实链路冒烟——`/api/status` 报 `1.2.0`、无浏览器时调 `/api/probe` 触发自动拉起并完整走通「CDP 连接 → 挑页链 → probePage」，响应含 `pickedBy: "first-page"`（Tier 4 回退在真机上按预期工作）。**边界（如实标注）**：`url-pattern` / `content` 两层对真实题目页的命中需带登录态的调试浏览器开着题目页，留用户日常实测；多候选报错（同时开多个题目页）为设计行为，同上
+- CDP 下 `document.visibilityState` 对所有标签页返回 visible（TROUBLESHOOTING C-4 实测），"优先挑用户正在看的标签"不可行，故多命中一律报错列出而非猜测
 - `src/browser-session.mjs` 与分支 `feat/1-ad-mcp-server` 内容一致（懒连接 + 互斥串行 + 断线重连），两分支合并预期零冲突；`logger.mjs` 的 `emit` 两分支均有改动，合并时取并集即可
 - 文档同步：`shared/capabilities/README.md` 中渲染函数名由 `renderPrompt` 修正为 `renderTemplate`（以 `ai.mjs:28` 实际实现为准，历史笔误）
 - 分支说明落地：根 README 顶部、同学指南第七节、agent/README「网页工作台」均标明本分支与 master 的差异（网页工作台），并注明**无新增依赖**、切换分支无需重装
+- 版本差异提示：本分支 = master 基线 + 网页工作台 + 四级挑页链 + 能力配置校验（回灌自 `feat/3-d-capability-guard`），**无新增依赖**，从其他分支切换后无需重新 `npm install`；MCP 出口层仅存在于 `feat/1-ad-mcp-server`（有新增依赖 `@modelcontextprotocol/sdk`，切换后需先 `npm install`）。各版本差异以该分支根 README 顶部「分支说明」为准，同学视角的版本选择见《同学使用指南》第七节
+
+## [1.1.1] - 2026-09-11
+
+代码栏数据库命令题通用加固：执行层 echo 包裹兜底 + 题面例子命令形态守则 + 结果面板遮挡点击修复。由 2026-09-11 真机（MongoDB 地理位置索引题：AI 反复输出裸命令、且把题面例子的 `db.runCommand` 换成 `aggregate $geoNear` 导致输出格式不符）驱动。
+
+### Changed
+
+- **执行层 echo 双引号包裹兜底（`ai.mjs` `wrapDbCommandsInEcho` + `loop.mjs` 接入）**：AI 即使不遵守守则输出裸 db 命令，提交前确定性包裹为 `echo "…"`（裸 `$` 转义、幂等）。触发条件收紧保证通用性——**仅当代码栏主体是 `db.` 命令集**（≥70% 非空行为 `db.`/`use` 命令、且非编程语言特征开头），不误伤 Python/Java/Node 脚本、字符串字面量、MySQL 的 SELECT/use 等
+- **生成/反思守则强化（prompt 单一数据源）**：「严格按题面『相关知识/例子』给出的命令形态书写」（如 `db.runCommand({geoNear:...})`，禁止换成 `aggregate $geoNear`——输出格式由命令形态决定，平台按题面例子的返回结构比对）；反思侧「实际输出格式与预期不符（results/stats/ok vs 扁平文档）→ 检查是否用了题面例子之外的 API 形态」
+- **结果面板遮挡点击通用处理（`act.mjs`）**：`clickByKeywords` 点击被拦截（`evaluate-result-container` 拦截 pointer events）时，自动收起结果面板（标题/面板左上角/Escape）后重试，重试失败换候选
+- **TROUBLESHOOTING 新增 C-10**（结果面板遮挡点击）；C-9 预防补充「严格按题面例子命令形态」
+
+### Notes
+
+- 验证：索引题 AI 按守则直接生成 echo + runCommand（1243 字符，wrap 幂等跳过）；wrap 触发/幂等/误伤 7 组用例全过（裸命令包裹、已 echo 不重复、Python/Node/MySQL/字符串不触发、`$` 转义）
+- 平台机制边界如实标注：echo 提取实测于 EduCoder Mongo 题；MySQL/其它平台未实测（但「bash+eval 双执行」平台的裸命令都会 bash 报错，echo 是通用 bash 包装）
 
 ## [1.1.0] - 2026-09-10
 
@@ -51,22 +97,6 @@
 - 验证：`eslint src/ test/` 零问题；`npm test` 22/22 通过；9 个 `.mjs` 语法校验通过；`node src/cli.mjs` 冒烟正常（配置读取、浏览器探测与自动拉起均工作）
 - 边界：单测仅覆盖与浏览器无关的纯函数，涉及 CDP / 页面交互的部分仍依赖真机验证，未声称已覆盖
 - 未做：`solveOnce`（`loop.mjs:182`，392 行单函数）拆分仍属高风险重构，建议等测试更充分后再动
-
-## [1.1.1] - 2026-09-11
-
-代码栏数据库命令题通用加固：执行层 echo 包裹兜底 + 题面例子命令形态守则 + 结果面板遮挡点击修复。由 2026-09-11 真机（MongoDB 地理位置索引题：AI 反复输出裸命令、且把题面例子的 `db.runCommand` 换成 `aggregate $geoNear` 导致输出格式不符）驱动。
-
-### Changed
-
-- **执行层 echo 双引号包裹兜底（`ai.mjs` `wrapDbCommandsInEcho` + `loop.mjs` 接入）**：AI 即使不遵守守则输出裸 db 命令，提交前确定性包裹为 `echo "…"`（裸 `$` 转义、幂等）。触发条件收紧保证通用性——**仅当代码栏主体是 `db.` 命令集**（≥70% 非空行为 `db.`/`use` 命令、且非编程语言特征开头），不误伤 Python/Java/Node 脚本、字符串字面量、MySQL 的 SELECT/use 等
-- **生成/反思守则强化（prompt 单一数据源）**：「严格按题面『相关知识/例子』给出的命令形态书写」（如 `db.runCommand({geoNear:...})`，禁止换成 `aggregate $geoNear`——输出格式由命令形态决定，平台按题面例子的返回结构比对）；反思侧「实际输出格式与预期不符（results/stats/ok vs 扁平文档）→ 检查是否用了题面例子之外的 API 形态」
-- **结果面板遮挡点击通用处理（`act.mjs`）**：`clickByKeywords` 点击被拦截（`evaluate-result-container` 拦截 pointer events）时，自动收起结果面板（标题/面板左上角/Escape）后重试，重试失败换候选
-- **TROUBLESHOOTING 新增 C-10**（结果面板遮挡点击）；C-9 预防补充「严格按题面例子命令形态」
-
-### Notes
-
-- 验证：索引题 AI 按守则直接生成 echo + runCommand（1243 字符，wrap 幂等跳过）；wrap 触发/幂等/误伤 7 组用例全过（裸命令包裹、已 echo 不重复、Python/Node/MySQL/字符串不触发、`$` 转义）
-- 平台机制边界如实标注：echo 提取实测于 EduCoder Mongo 题；MySQL/其它平台未实测（但「bash+eval 双执行」平台的裸命令都会 bash 报错，echo 是通用 bash 包装）
 
 ## [1.0.0] - 2026-09-10
 
