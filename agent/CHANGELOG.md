@@ -2,6 +2,40 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.3.0] - 2026-09-15
+
+**反思链路确定性 + 模板拼接兜底 + 模型配置双向同步**。本版本解决两个真机死循环：① 模板标记不成对/缩进被剥导致的 `IndentationError` 永续反思（购物车题）；② AI 对 Redis `zincrby` 参数顺序凭记忆反复横跳 3 轮（频率日志题）。核心思路：**拼接基准以"原始模板"为权威且可被重载纠正；反思以"报错回显的命令/测试输入"为证据，不再让 AI 凭记忆猜 API 签名；思考控制从"等超时"升级为"停滞/超字数主动断流"**。
+
+### Added
+
+- **完整代码直通（`ai.mjs` `spliceIntoTemplate`）**：AI 输出含 ≥2 个模块级语句（`import / from / def / class / @`）即视为"自成一体的完整代码"，直接返回 AI 输出、不再按标记归位——平台只按执行结果评测，整体直通最接近 AI 给出的正确完整实现。配套：**模板标记不成对（Begin ≠ End）同样整体直通**（2026-09-15 购物车题真机实证：模板 `get_cart_info` 只有 Begin 无 End，按标记归位会把 AI 输出中该函数实现整体丢弃 → 恒空函数体 → IndentationError 死循环）；新增单测 7 项覆盖（29→对应文件 36 项，全仓 48 项，下同）
+- **代码反思教训链（`loop.mjs` / `ai.mjs` `reflectAndFix`）**：cmdline 分支本有的 Reflexion 式教训链对称接入代码分支——每轮反思诊断沉淀进 `lessons` 注入下一轮，根治"这轮改对了、下轮又退回"的横跳（频率日志题 zincrby 参数顺序 3 轮横跳即无记忆导致）。反思 prompt 新增 `{{input.lessons}}` 段（`code_reflection_fixer_1`）
+- **Redis 报错解读守则（prompt 单一数据源，`code_reflection_fixer_1` 第 5 条）**：报错形如 `Command # N (ZINCRBY ...) ... value is not a valid float` → 括号内为本次实际执行的 Redis 命令，对照官方语法（`ZINCRBY key increment member` / `ZADD key score member`）核对参数位置，increment 位传了成员则交换实参——**严禁凭记忆猜 redis-py 版本签名**；`ZADD requires an equal number of values and scores` → 改题面模板示例给的三参数旧式写法
+- **思考停滞检测 + 思考字数配额（`ai.mjs` chat 流式）**：正文 0 字时，① 思考长度 `AI_THINKING_STALL_MS`（默认 45s）无增长判为空转主动断流重试关思考；② 思考累计达 `AI_THINKING_MAX_CHARS`（默认 24000 字）强制断流重试关思考（防御弱推理模型无限思考烧光预算）。事故：实证思考 40986 字正文 0、`finish_reason=length`，纯时间硬闸只能傻等
+- **长度兜底强化**：`finish_reason=length` 且正文为空时强制关思考重试（预算被思考吃光时空正文 = 思考过度而非模型瘫痪，关思考重试能快速出正文）
+- **首轮默认关思考（`AI_FIRST_PASS_THINKING=0`，时间优先）**：首次生成关思考 5~10s 出初稿，失败后才动用反思轮的 high 思考档一次修对
+- **模型配置双向同步（`web-server.mjs` + `public/index.html`）**：`/api/status` 每次请求比对 `.env.local`，手改文件自动检测差异并热生效（无需重启工作台）；新增 `/api/config` 支持页面写回模型名到 `.env.local`；页面模型输入框实时显示当前生效值——页面改、文件改两向同步
+- **连续同类报错重载兜底（`loop.mjs` 代码分支）**：同一 Python 异常（如 `IndentationError`）连续 ≥3 轮 → 自动 `page.reload()` 重载题目页取回平台原始模板 → 重新探测更新存档 → 从干净模板重新生成，重载至多 2 次防死循环——配合函数作用域存档，模板污染可自愈
+
+### Fixed
+
+- **模板拼接缩进被剥（2026-09-15 实证真正根因）**：旧 `spliceIntoTemplate` 用 `trim()` 提取代码体，把首行前导空格整体剥掉（AI 输出 `    return ...` 拼完变顶格 `return ...`），评测 `IndentationError` 且反思"每次都改对、拼接次次剥掉"表象同源。改为**仅清理行尾空白、行首缩进原样保留**（`keepIndent` 逐行处理）——含 Begin/End 位于函数体内部（4 空格缩进）的场景
+- **多标记模板只替换第一个块**：部分题目模板含多对 Begin/End 标记（如 Redis 令牌管理题三个函数各一对），旧实现只取第一对替换，后几个函数的实现被整体丢弃 → 评测 IndentationError 且反思死循环。改为按出现顺序逐对对应替换（AI 未带标记时整段填第一个块兼容旧行为）
+- **残缺反思产物提交评测**：思考超限断流→强制关思考的重试轮偶发输出 45~207 字符碎片（无顶层语句），旧版"按现状提交"会把垃圾代码写进编辑器制造新语法错误、把下一轮带偏。现检测到即**不提交、自动重试一次**；重试仍残缺则丢弃，退回上一版完整代码提交兜底
+- **`code_reflection_fixer_1` 缺 `lessons` 声明**：capability-schema 校验曾把反思 prompt 的 `{{input.lessons}}` 当占位符缺失告警——paramsSchema 补 `lessons` 属性（同步 `reflectAndFix` 渲染）
+
+### Changed
+
+- **思考硬闸默认值 20000 → 120000ms（时间优先调优）**：目标"最短时间通过"，high 档正常思考常达 60~120s，120s 内放行真思考；配合新增的停滞/字数双检测兜住空转与马拉松，而非生砍思考时间（5 分钟请求超时兜底终局）。`AI_THINKING_CAP_MS` 仍可调、`0` 关闭
+- **`config.mjs`**：新增 `AI_THINKING_STALL_MS`（默认 45000）/ `AI_THINKING_MAX_CHARS`（默认 24000）/ `AI_FIRST_PASS_THINKING`（默认 0）；`.env.example` 同步补全配置项并校准 `AI_THINKING_CAP_MS` 默认值为 120000（此前 20000 与实现漂移）
+- **反思/生成配置默认值**：`AI_THINKING_CAP_MS` 生效值随 `.env.local`（用户侧）；代码反思保持 `reasoningEffort: 'high'`（2026-09-15 实证：low 档近乎无思考、只能顺着评测文本说表面错误，high 档真正推演输出差异根因）
+
+### Notes
+
+- 验证：`npm test` 48/48（含完整的模板拼接直通/缩进/多标记/不成对、教训链渲染等用例）；`npm run caps-check` 通过（7 个能力文件占位符一致）；`node --check` 全过
+- 真机实证：① 购物车题在模板标记不成对时，新直通逻辑一次通过（AI 输出 860 字符整体直通、第 1 次评测即"恭喜您通过本关"）；② 频率日志题在加入 Redis 守则 + 教训链后，`zincrby` 参数顺序不再横跳（此前 10 轮/约 4 分钟，含 3 轮同因横跳 + 1 轮残缺产物白费）
+- 边界（如实标注）：重载兜底依赖平台重载后编辑器恢复为原始模板（真机实测 EduCoder 如此，其他平台待验证）；思考停滞/字数双检测只对流式通道生效（整体 JSON 兜底路径无中途流可掐）；`AI_FIRST_PASS_THINKING=1` 对需要深度推理的首题（如复杂算法）可能更稳，时间/质量权衡未见统计性结论
+
 ## [1.2.0] - 2026-09-13（分支 feat/2-c-web-service）
 
 本版本两块内容：① 网页工作台（方案 C 最小落地）；② 智能挑页——`pickTargetPage` 升级为四级挑页链，eduCoder 官网与校内部署的题目页（`/tasks/<courseId>/<数字>/<串>`）**零配置自动识别**，不再依赖"第一个标签页就是题目页"的运气。由真机场景驱动：用户开着 5 个标签页（课程列表在前、题目页在后），工作台探测/解题永远选中最左边的课程列表页。

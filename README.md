@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.2.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -59,7 +59,7 @@ flowchart LR
 
 1. **Prompt 单一数据源**——AI 行为只定义在 `shared/capabilities/*.json`（7 个能力配置），Agent 读取后渲染 `{{input.xxx}}` 占位符，代码内不复制 prompt，杜绝两份漂移。
 2. **写入优先走编辑器 API**——Monaco / CodeMirror 先 `model.setValue` / `cm.setValue`，触发平台的自动保存；实测 `insertText` 会被 Monaco 的 `formatOnPaste / autoIndent` 逐行重排，导致评测不匹配，故键盘输入仅作回退。
-3. **模板拼接而非整体覆写**——以编辑器原始模板为权威，只把 AI 生成的代码体拼回 `Begin/End` 标记之间，平台脚手架字节级不变。
+3. **模板拼接防格式错 + 兜底直通**——以编辑器原始模板为权威，把 AI 代码体拼回 `Begin/End` 标记之间，平台脚手架字节级不变。模板标记不成对（Begin≠End）或 AI 输出为完整代码（≥2 个模块级语句）时整体直通——平台只按执行结果评测，宁可整体写入 AI 完整实现，也绝不按不可信的标记丢函数（1.3.0 起，根治 IndentationError 死循环）。
 4. **环境事实靠实测不靠模型记忆**——数据库客户端是否存在（`mongosh` / `mysql` / `psql` …）一律探测后写入 prompt；缺失客户端入禁令并在执行层做别名替换（`mongosh` → `mongo`）。
 5. **不硬编码站点 selector**——换平台优先靠 `npm run dump` 导出真实结构后调规则，而非凭假设写死。
 
@@ -116,7 +116,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
-| `npm test` | 运行单测（41 项：核心纯函数 + 挑页链 + 能力配置校验，零新增依赖） |
+| `npm test` | 运行单测（48 项：核心纯函数 + 挑页链 + 能力配置校验，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -129,7 +129,9 @@ Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-brows
 |---|---|---|
 | `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` | OpenAI 兼容端点、密钥、模型名（必填） | 无 |
 | `AI_REASONING_EFFORT` | 推理分级 `low` / `medium` / `high` | `medium` |
-| `AI_THINKING_CAP_MS` | 思考硬闸：持续纯思考超时即断流重试关闭思考 | `20000` |
+| `AI_THINKING_CAP_MS` | 思考硬闸：持续纯思考超时即断流重试关闭思考 | `120000` |
+| `AI_THINKING_STALL_MS` | 思考停滞检测：正文 0 字且思考连续无增长 → 主动断流重试 | `45000` |
+| `AI_THINKING_MAX_CHARS` | 思考字数配额：正文 0 字且思考累计超上限 → 强制断流重试 | `24000` |
 | `DEBUG_PORT` | CDP 调试端口（默认避开 Windows 保留区间 9137–9236） | `9333` |
 | `TASK_URL_PATTERN` | 题目页 URL 形状正则：自动挑页与 watch/lite 识别共用，换平台改这里 | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。题目页 URL 不是 `/tasks/` 形状的平台在此改 | 留空自动按 `TASK_URL_PATTERN` 识别 |
@@ -243,7 +245,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 41 项单测必须全绿
+npm test          # 48 项单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 
