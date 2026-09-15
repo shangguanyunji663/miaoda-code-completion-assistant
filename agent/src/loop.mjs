@@ -582,7 +582,7 @@ export async function solveOnce(page, probe) {
       `正在调用 AI 代码反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
     );
     const rt0 = Date.now();
-    const fixed = await reflectAndFix({
+    let fixed = await reflectAndFix({
       problem: slimForReflection(problem),
       // 反思看的是实际提交评测的代码（模板拼接后、经护栏清洗、写入验证的版本）
       previousCode: submitted,
@@ -600,6 +600,29 @@ export async function solveOnce(page, probe) {
     if (!fixed.code) {
       log('反思未产出代码，终止本题');
       break;
+    }
+    // 残缺产物检测（2026-09-15 放开轮数实验沉淀）：思考超限断流→强制关思考的
+    // 重试轮偶发输出 45~207 字符碎片（无顶层语句）。直接提交只会制造新的语法
+    // 错误把下一轮带偏、白费一次评测——检测到即不提交、重试一次。
+    const isFragment = (cc) => {
+      const t = String(cc ?? '').trim();
+      return t.length > 0 && t.length < 300 && !/(?:^|\n)(?:def |class |import |from |@)\S/m.test(t);
+    };
+    if (isFragment(fixed.code)) {
+      log(`反思产物疑似残缺（${fixed.code.length} 字符且无顶层语句），不提交评测，重试一次…`);
+      const retry = await reflectAndFix({
+        problem: slimForReflection(problem),
+        previousCode: submitted,
+        evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
+        terminalState: clientFact,
+      });
+      if (retry.code && !isFragment(retry.code)) {
+        fixed = retry;
+        if (retry.analysis) log(`重试反思分析：${String(retry.analysis).replace(/\s+/g, ' ')}`);
+        log(`重试反思完成（${retry.code.length} 字符），提交评测`);
+      } else {
+        log('重试仍残缺，按现状提交（以评测反馈兜底）');
+      }
     }
     code = fixed.code;
   }
