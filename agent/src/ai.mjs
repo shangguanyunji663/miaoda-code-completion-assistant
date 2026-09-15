@@ -63,6 +63,7 @@ export async function chat(messages, opts = {}) {
   // 注意：整体 JSON 兜底路径（非流式端点）无法中途拦截，硬闸仅对流式生效。
   const effort = opts.reasoningEffort ?? cfg.ai.reasoningEffort;
   const capMs = cfg.ai.thinkingCapMs;
+  const thinkMaxChars = cfg.ai.thinkingMaxChars; // 思考字数配额（0=禁用）
   let forceThinkingOff = false; // 上一轮思考超限 → 重试强制关思考
 
   const maxAttempts = opts.maxAttempts ?? 2;
@@ -87,6 +88,7 @@ export async function chat(messages, opts = {}) {
     let finish = '';
     let capped = false; // 本次轮次是否因思考超限（时间硬闸）被主动断流
     let stalled = false; // 本次轮次是否因思考停滞（无进展空转）被主动断流
+    let thinkExceeded = false; // 本次轮次是否因思考超字数配额被主动断流
     let prevReasoningLen = 0;
     let lastGrowTs = Date.now(); // 思考长度最后一次增长的时刻（停滞检测用）
     // 空闲超时 + 心跳：每收到一块数据就重置空闲计时——"有输出就不断流"，
@@ -116,14 +118,14 @@ export async function chat(messages, opts = {}) {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         // 防御：部分端点对超过模型单次输出上限的 max_tokens 会直接报 400
-        //（vLLM 系常见）。命中特征时把预算降到保守值 8192，让下一次重试
-        // 立即生效。
+        //（vLLM 系常见）。命中特征时把预算降到保守值 16384，让下一次重试
+        // 立即生效（16384 为实测端点接受的档位；不能降到更小否则思考又挤没正文）
         if (
           res.status === 400 &&
-          body.max_tokens > 8192 &&
+          body.max_tokens > 16384 &&
           /(max_tokens|max_output_tokens|max_model_len|context)/i.test(text)
         ) {
-          body.max_tokens = 8192;
+          body.max_tokens = 16384;
         }
         throw new Error(`HTTP ${res.status} ${text.slice(0, 300)}`);
       }
@@ -174,6 +176,13 @@ export async function chat(messages, opts = {}) {
               stalled = true;
               ac.abort();
             }
+            // 思考字数配额（2026-09-15）：正文 0 字、思考累计超 thinkMaxChars →
+            // 判定"喂不饱的无限思考"（端点 max_tokens 是思考+正文共享预算，弱推理
+            // 模型会一直想到烧光 length），提前断流、重试强制关思考保底出正文
+            if (thinkMaxChars > 0 && !content && reasoning.length > thinkMaxChars) {
+              thinkExceeded = true;
+              ac.abort();
+            }
             // 思考硬闸：只在"还在思考、正文零字"阶段计时；正文一旦开流
             // 就不再限制（避免误杀正常生成长度）
             if (capMs > 0 && !content && reasoning && Date.now() - t0 > capMs) {
@@ -184,11 +193,13 @@ export async function chat(messages, opts = {}) {
         }
       }
       // 空正文必须视为失败：finish_reason=length 且思考有内容 = 预算被思考
-      // 耗尽（确定性失败，重试无效），把思考尾部带出来便于定位
+      // 耗尽（确定性失败，重试无效——但必须强制关思考再试：预算被思考吃光
+      // 时空正文=思考过度而非模型瘫痪，关思考重试能快速出正文）
       if (!content.trim()) {
+        if (finish === 'length') forceThinkingOff = true;
         const hint =
           finish === 'length'
-            ? `finish_reason=length：max_tokens=${body.max_tokens} 预算耗尽（思考 ${reasoning.length} 字），请调大该调用的 maxTokens｜思考尾部：${reasoning.slice(-120).replace(/\s+/g, ' ')}`
+            ? `finish_reason=length：max_tokens=${body.max_tokens} 预算耗尽（思考 ${reasoning.length} 字），重试将强制关思考｜思考尾部：${reasoning.slice(-120).replace(/\s+/g, ' ')}`
             : '流式响应结束但无正文内容';
         throw new Error(`AI 返回内容为空（${hint}）`);
       }
@@ -197,7 +208,12 @@ export async function chat(messages, opts = {}) {
         raw: { finish_reason: finish, reasoning_length: reasoning.length },
       };
     } catch (err) {
-      if (stalled) {
+      if (thinkExceeded) {
+        forceThinkingOff = true;
+        err = new Error(
+          `思考超配额：正文 0 字且思考已 ${reasoning.length} 字（上限 ${thinkMaxChars}），弱推理模型无限思考风险，已主动断流；重试将强制关思考（AI_THINKING_MAX_CHARS 可调，0=关闭配额）`,
+        );
+      } else if (stalled) {
         forceThinkingOff = true;
         err = new Error(
           `思考停滞：正文 0 字且思考 ${(stallMs / 1000)}s 无增长（思考已 ${reasoning.length} 字），疑似空转循环，已主动断流；重试将强制关思考（AI_THINKING_STALL_MS 可调，0=关闭停滞检测）`,
@@ -241,6 +257,9 @@ export async function generateCode({ problem, codeTemplate, extra = '' }) {
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature,
     maxTokens: cap.formValue?.modelParams?.maxTokens,
+    // 首轮快速出稿：默认关思考（时间优先，见 cfg.firstPassThinking）；
+    // 失败后的反思轮（reflectAndFix）才动用 high 思考档一次修对
+    enableThinking: cfg.ai.firstPassThinking,
   });
   return extractCodeFromMarkdown(content);
 }

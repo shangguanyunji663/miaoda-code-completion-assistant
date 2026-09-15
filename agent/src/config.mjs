@@ -52,7 +52,7 @@ export const AI_DEFAULTS = {
   // deepseek-v4-flash-0731-free-2 当时 502 不可用。模型可用性随时变化，用 npm run models 实测。
   model: '',
   temperature: 0.3,
-  maxTokens: 16384,
+  maxTokens: 32768,
   // 单次 AI 请求超时（毫秒）。推理模型思考+生成可达数分钟，默认 5 分钟兜底：
   // 端点挂起时请求按失败处理并重试，而不是整个 loop 永久停摆
   //（实测表现即"切完 tab 后毫无动作、再无任何日志"）。
@@ -88,6 +88,16 @@ export const cfg = {
     // 停滞，纯时间硬闸只能傻等满 120s。停滞检测只掐"无进展"，不误伤正常
     // 深思考（正常思考会持续增长）。
     thinkingStallMs: pickNum('AI_THINKING_STALL_MS', 45000),
+    // 思考字数配额（字）：流式响应中"正文仍 0 字、思考累计达到该字数"即强制
+    // 断流重试（0 = 禁用）。端点兼容模型的 max_tokens 是思考+正文共享预算，
+    // 弱推理模型会无限思考直到烧光预算（2026-09-15 实测思考 40986 字正文 0、
+    // finish_reason=length），喂多少都不收敛——这是"产品层强制思考有界"，
+    // 与商用 Agent 的思考预算分账对齐：思考到线即收，正文留足预算。
+    thinkingMaxChars: pickNum('AI_THINKING_MAX_CHARS', 24000),
+    // 首轮（首次生成）是否开思考：AI_FIRST_PASS_THINKING=1 开（默认关）。
+    // 时间优先策略（2026-09-15）：大多数题首轮无需思考，关思考 5~10s 出初稿
+    // 最快；只有失败后的反思轮才动用 high 思考档一次修对。
+    firstPassThinking: pick('AI_FIRST_PASS_THINKING', '0') === '1',
     // 思考硬闸（毫秒）：流式响应中"仍在思考、正文 0 字"持续超过该时长即
     // 主动断流，重试强制关思考（双通道 enable_thinking）。0 = 不设限。
     // 兜底场景：端点忽略思考开关、推理模型对简单反思题穷举假设拖到数分钟。
