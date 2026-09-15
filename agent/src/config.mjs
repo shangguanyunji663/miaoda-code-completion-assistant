@@ -52,7 +52,7 @@ export const AI_DEFAULTS = {
   // deepseek-v4-flash-0731-free-2 当时 502 不可用。模型可用性随时变化，用 npm run models 实测。
   model: '',
   temperature: 0.3,
-  maxTokens: 8192,
+  maxTokens: 16384,
   // 单次 AI 请求超时（毫秒）。推理模型思考+生成可达数分钟，默认 5 分钟兜底：
   // 端点挂起时请求按失败处理并重试，而不是整个 loop 永久停摆
   //（实测表现即"切完 tab 后毫无动作、再无任何日志"）。
@@ -85,10 +85,10 @@ export const cfg = {
     // 思考硬闸（毫秒）：流式响应中"仍在思考、正文 0 字"持续超过该时长即
     // 主动断流，重试强制关思考（双通道 enable_thinking）。0 = 不设限。
     // 兜底场景：端点忽略思考开关、推理模型对简单反思题穷举假设拖到数分钟。
-    // 默认 60s（2026-09-15 反思升档调优）：反思已升 high 档，20s 会掐断
-    // medium/high 正常思考（实测反思思考 4564 字在 20s 内正文 0 被误断）。
-    // 60s 下正常思考有足够空间，真马拉松仍会被拦。
-    thinkingCapMs: pickNum('AI_THINKING_CAP_MS', 60000),
+    // 默认 120s（2026-09-15 时间优先调优）：目标是最短时间通过而非省 token，
+    // high 档正常思考常达 60~120s，120s 内放行，真马拉松仍被拦（5 分钟请求
+    // 超时兜底终局）。
+    thinkingCapMs: pickNum('AI_THINKING_CAP_MS', 120000),
   },
   browser: {
     // 连接用户已登录的浏览器（Edge / Chrome），需以 --remote-debugging-port 启动
