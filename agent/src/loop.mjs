@@ -54,6 +54,7 @@ import {
   answerBatch,
   detectVerdict,
   spliceIntoTemplate,
+  emptyMarkerBlocks,
   sanitizeShellSubmission,
   wrapDbCommandsInEcho,
   classifyProblemIntent,
@@ -514,6 +515,13 @@ export async function solveOnce(page, probe) {
     // 实际提交评测的是"模板拼接后"的版本；反思必须带上它而不是 AI 原始
     // 输出，否则 AI 审的是一份没提交过的文本（2026-09-09 用户指出）
     let submitted = spliceIntoTemplate(codeProbe.code, code);
+    // 多标记模板校验（2026-09-15）：模板含多处 Begin/End 区域时，AI 漏补全的
+    // 空区域会让评测直接 IndentationError——拼完立即打点，让反思轮感知
+    const emptyBlocks = emptyMarkerBlocks(submitted);
+    if (emptyBlocks.length) {
+      log(`⚠ 拼接后仍有 ${emptyBlocks.length} 处 Begin/End 区域为空（#${emptyBlocks.join('、#')}），AI 未补全全部区域`);
+    }
+
     // shell 书写护栏（0.9.1）：数据库脚本题（模板含 db. 调用）中，AI 偶发把
     // 中文标签拼在命令前（"输出集合前3条文档: db.educoder…"）——送进 shell
     // eval 必报 SyntaxError: illegal character。写入前确定性清洗：

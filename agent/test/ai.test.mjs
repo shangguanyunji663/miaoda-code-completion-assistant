@@ -14,6 +14,7 @@ import {
   detectVerdict,
   sanitizeShellSubmission,
   spliceIntoTemplate,
+  emptyMarkerBlocks,
   renderTemplate,
   parseAnswers,
 } from '../src/ai.mjs';
@@ -120,6 +121,70 @@ test('spliceIntoTemplate：不会把 Redis 事务的 BEGIN 当平台标记', () 
   const tpl = ['MULTI', 'BEGIN', 'SET k v', 'END', 'EXEC'].join('\n');
   const out = spliceIntoTemplate(tpl, 'SET a b');
   assert.equal(out, 'SET a b');
+});
+
+test('spliceIntoTemplate：多对 Begin/End 标记逐对替换，不丢后面的实现', () => {
+  // 2026-09-15 事故：Redis 令牌管理题模板三个函数各一对标记，旧实现只替换
+  // 第一对，导致 update_token/clean_tokens 恒为空 → IndentationError + 反思死循环
+  const tpl = [
+    'import time',
+    'def check_token(token):',
+    '#******** Begin ********#',
+    '    return None',
+    '#******** End ********#',
+    '',
+    'def update_token(token, user_id):',
+    '#******** Begin ********#',
+    '    pass',
+    '#******** End ********#',
+    '',
+    'def clean_tokens():',
+    '#******** Begin ********#',
+    '    pass',
+    '#******** End ********#',
+  ].join('\n');
+  const ai = [
+    'import time',
+    'def check_token(token):',
+    '#******** Begin ********#',
+    "    return conn.hget('login', token)",
+    '#******** End ********#',
+    '',
+    'def update_token(token, user_id):',
+    '#******** Begin ********#',
+    "    conn.hset('login', token, user_id)",
+    '#******** End ********#',
+    '',
+    'def clean_tokens():',
+    '#******** Begin ********#',
+    "    conn.hdel('login', 'expired')",
+    '#******** End ********#',
+  ].join('\n');
+  const out = spliceIntoTemplate(tpl, ai);
+  assert.match(out, /conn\.hget/); // 第一个块
+  assert.match(out, /conn\.hset/); // 第二个块不再被丢弃
+  assert.match(out, /conn\.hdel/); // 第三个块不再被丢弃
+  assert.doesNotMatch(out, /return None/);
+  assert.doesNotMatch(out, /def update_token[\s\S]*?\n\s*pass/);
+});
+
+test('emptyMarkerBlocks：缺实现的区域=块内无实质代码（仅注释/空行判空）', () => {
+  const tpl = [
+    '#******** Begin ********#',
+    '    return 1',
+    '#******** End ********#',
+    '',
+    '#******** Begin ********#',
+    '    # 仅注释，不算实现',
+    '#******** End ********#',
+    '',
+    '#******** Begin ********#',
+    '#******** End ********#',
+  ].join('\n');
+  // 块 2（仅注释）与块 3（空白）都缺实质代码，判空；块 1 已实现
+  assert.deepEqual(emptyMarkerBlocks(tpl), [2, 3]);
+  assert.deepEqual(emptyMarkerBlocks('return 1'), []);
+  assert.deepEqual(emptyMarkerBlocks(['#******** Begin ********#', 'x', '#******** End ********#'].join('\n')), []);
 });
 
 test('sanitizeShellSubmission：普通编程题零触发', () => {

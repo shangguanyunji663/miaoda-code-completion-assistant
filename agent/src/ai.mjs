@@ -331,6 +331,11 @@ export function extractCodeFromMarkdown(markdown) {
  * 实测模型常漏掉 / 改写标记，导致平台判定"不符合格式"。此处以「原始模板」为权威，
  * AI 只负责标记之间的代码体，从根上消除格式错。
  *
+ * 多标记模板（2026-09-15 事故修复）：部分题目的模板含多对 Begin/End 标记
+ * （如 Redis 令牌管理题三个函数各一对）。旧实现只取第一对替换，导致
+ * AI 输出里后几个函数的实现被整体丢弃、模板其余块保持空白 → 评测
+ * IndentationError 且反思死循环。现按出现顺序逐对对应替换。
+ *
  * @param {string} originalTemplate 写入前从编辑器读取的原始模板（含 Begin/End 标记）
  * @param {string} aiOutput AI 返回的完整输出（可能含标记，也可能仅含代码体）
  * @returns {string} 可直接写入编辑器的最终代码
@@ -339,48 +344,87 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
   const orig = String(originalTemplate ?? '');
   const ai = String(aiOutput ?? '');
 
-  const origBegin = findMarkerLine(orig, 'Begin');
-  const origEnd = findMarkerLine(orig, 'End');
+  const origPairs = collectMarkerPairs(orig);
   // 原始模板无标记：纯编辑器，直接信任 AI 输出（已做 markdown 抽取）
-  if (origBegin < 0 || origEnd < 0 || origEnd <= origBegin) {
-    return ai.trim();
-  }
+  if (!origPairs.length) return ai.trim();
 
+  const aiPairs = collectMarkerPairs(ai);
   const origLines = orig.split(/\r?\n/);
-  const head = origLines.slice(0, origBegin + 1); // 含 Begin 标记行
-  const tail = origLines.slice(origEnd); // 含 End 标记行
+  const aiLines = ai.split(/\r?\n/);
 
-  // 从 AI 输出里取标记之间的代码体；若 AI 也未带标记，则把整段当作代码体
-  const aiBegin = findMarkerLine(ai, 'Begin');
-  const aiEnd = findMarkerLine(ai, 'End');
-  let body;
-  if (aiBegin >= 0 && aiEnd >= 0 && aiEnd > aiBegin) {
-    body = ai
-      .split(/\r?\n/)
-      .slice(aiBegin + 1, aiEnd)
-      .join('\n');
+  // 逐块取代码体：AI 带有标记时按序一一对应；AI 未带标记时整段填第一块、
+  // 其余块保留模板原文（与旧行为「head + 整段 body + tail」一致）
+  let bodies;
+  if (!aiPairs.length) {
+    bodies = origPairs.map((pair, i) =>
+      i === 0 ? ai.trim() : origLines.slice(pair[0] + 1, pair[1]).join('\n').trim(),
+    );
   } else {
-    body = ai;
+    bodies = origPairs.map((pair, i) =>
+      i < aiPairs.length
+        ? aiLines.slice(aiPairs[i][0] + 1, aiPairs[i][1]).join('\n').trim()
+        : origLines.slice(pair[0] + 1, pair[1]).join('\n').trim(),
+    );
   }
 
-  return [...head, body.trim(), ...tail].join('\n');
+  // 逐块重组：模板行按原样保留（Begin/End 行字节不变），仅替换块内代码体
+  const out = [];
+  let next = 0;
+  for (let i = 0; i < origPairs.length; i++) {
+    const [b, e] = origPairs[i];
+    out.push(...origLines.slice(next, b + 1)); // 含 Begin 行
+    out.push(bodies[i]);
+    out.push(origLines[e]); // End 行
+    next = e + 1;
+  }
+  out.push(...origLines.slice(next));
+  return out.join('\n');
 }
 
 /**
- * 定位 Begin/End 标记行号。
- * 容错：不限定 # 注释前缀、星号数量；但要求行内同时含一个 ≥3 的装饰符串
- * （* / = / # / -），以区分平台标记与代码里可能出现的 begin/end 关键字
- * （如 Redis 事务里的 "BEGIN"）。
- * @returns {number} 行号，未找到返回 -1
+ * 检测 Begin/End 区域内是否缺少实质代码（只有注释/空白视为空）。
+ * 供提交前校验：AI 漏补全某些区域时在日志打点，提示反思轮对照模板补全。
+ * @param {string} text
+ * @returns {number[]} 空区域的序号（从 1 起）
  */
-function findMarkerLine(text, keyword) {
-  const kw = keyword === 'Begin' ? /\bbegin\b/i : /\bend\b/i;
+export function emptyMarkerBlocks(text) {
+  const pairs = collectMarkerPairs(text);
+  const lines = String(text ?? '').split(/\r?\n/);
+  const empty = [];
+  pairs.forEach(([b, e], i) => {
+    const hasCode = lines.slice(b + 1, e).some((l) => {
+      const t = l.trim();
+      return t && !t.startsWith('#');
+    });
+    if (!hasCode) empty.push(i + 1);
+  });
+  return empty;
+}
+
+/**
+ * 收集文本中所有平台 Begin/End 标记行号对（按出现顺序），每个 Begin 匹配其
+ * 后第一个 End。行匹配规则与旧 findMarkerLine 一致：行内同时含 begin/end
+ * 关键字与一个 ≥3 的装饰符串（* / = / # / -），以区分平台标记与代码里可能
+ * 出现的 begin/end 关键字（如 Redis 事务里的 "BEGIN"）。
+ * @param {string} text
+ * @returns {Array<[number, number]>}
+ */
+function collectMarkerPairs(text) {
   const deco = /[*=#-]{3,}/;
   const lines = String(text ?? '').split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    if (kw.test(lines[i]) && deco.test(lines[i])) return i;
+  const begins = [];
+  const ends = [];
+  lines.forEach((line, i) => {
+    if (/\bbegin\b/i.test(line) && deco.test(line)) begins.push(i);
+    else if (/\bend\b/i.test(line) && deco.test(line)) ends.push(i);
+  });
+  const pairs = [];
+  let e = 0;
+  for (const b of begins) {
+    while (e < ends.length && ends[e] <= b) e++;
+    if (e < ends.length) pairs.push([b, ends[e++]]);
   }
-  return -1;
+  return pairs;
 }
 
 /** 分离反思输出中的「分析」与「代码」两部分 */
