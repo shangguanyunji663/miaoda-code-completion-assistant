@@ -85,8 +85,10 @@ export const cfg = {
     // 思考硬闸（毫秒）：流式响应中"仍在思考、正文 0 字"持续超过该时长即
     // 主动断流，重试强制关思考（双通道 enable_thinking）。0 = 不设限。
     // 兜底场景：端点忽略思考开关、推理模型对简单反思题穷举假设拖到数分钟。
-    // 默认 20s（2026-09-10 用户指定上限）：正常思考 30s 内应见正文，超时多为空转
-    thinkingCapMs: pickNum('AI_THINKING_CAP_MS', 20000),
+    // 默认 60s（2026-09-15 反思升档调优）：反思已升 high 档，20s 会掐断
+    // medium/high 正常思考（实测反思思考 4564 字在 20s 内正文 0 被误断）。
+    // 60s 下正常思考有足够空间，真马拉松仍会被拦。
+    thinkingCapMs: pickNum('AI_THINKING_CAP_MS', 60000),
   },
   browser: {
     // 连接用户已登录的浏览器（Edge / Chrome），需以 --remote-debugging-port 启动

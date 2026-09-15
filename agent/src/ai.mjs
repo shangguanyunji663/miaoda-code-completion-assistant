@@ -311,7 +311,8 @@ export async function reflectAndFix({ problem, previousCode, evalResult, termina
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.4,
     maxTokens: cap.formValue?.modelParams?.maxTokens,
-    reasoningEffort: 'low', // 反思降档：证据已在提示词中，low 档思考足够且更快
+    reasoningEffort: 'high', // 反思升档（2026-09-15）：low 档+思考硬闸曾让反思近乎无思考，
+    // 只能顺着评测文本说表面错误；high 档配合放宽后的 60s 思考硬闸，真正推演输出差异根因
   });
   return splitAnalysisAndCode(content);
 }

@@ -888,21 +888,30 @@ const COLLECT_TEST_SETS = () => {
     let expected = '';
     let actual = '';
     if (iE < iA) {
-      expected = cut(t.slice(iE + 4, iA)).slice(0, 1200);
-      actual = cut(t.slice(iA + 4).replace(/展示原始输出/g, '')).slice(0, 1200);
+      expected = cut(t.slice(iE + 4, iA)).slice(0, 2000);
+      actual = cut(t.slice(iA + 4).replace(/展示原始输出/g, '')).slice(0, 2000);
     } else {
-      actual = cut(t.slice(iA + 4, iE).replace(/展示原始输出/g, '')).slice(0, 1200);
-      expected = cut(t.slice(iE + 4)).slice(0, 1200);
+      actual = cut(t.slice(iA + 4, iE).replace(/展示原始输出/g, '')).slice(0, 2000);
+      expected = cut(t.slice(iE + 4)).slice(0, 2000);
     }
     if (!expected && !actual) continue;
+    // 测试输入：位于「测试输入」标签之后、预期输出来临之前（2026-09-15 补充：
+    // 反射要结合"针对什么输入"理解失败场景，不能再只喂预期/实际输出）
+    let input = '';
+    const iI = t.indexOf('测试输入');
+    if (iI >= 0) {
+      const start = iI + 4; // 跳过「测试输入」标签本身
+      const end = iE < iA ? iE : iA; // 测试输入出现在预期/实际输出来临之前
+      if (end > start) input = cut(t.slice(start, end)).slice(0, 500);
+    }
     // 只认带正文的区块：纯标签行迷你容器（只有栏目头+耗时行、无实际内容）
     // 会以"最小容器"胜出，喂给反思的只是百余字符的空壳（2026-09-09 实测）
     const bodyLen = (expected + actual).replace(/\s+/g, '').length;
     if (bodyLen < 20) continue;
-    picked.push({ _el: el, title, expected, actual });
+    picked.push({ _el: el, title, expected, actual, input });
     if (picked.length >= 8) break;
   }
-  return picked.map(({ title, expected, actual }) => ({ title, expected, actual }));
+  return picked.map(({ title, expected, actual, input }) => ({ title, expected, actual, input }));
 };
 
 /**
@@ -924,8 +933,8 @@ const COLLECT_TEST_SETS = () => {
  */
 export async function collectTestSetDetails(page, opts = {}) {
   const maxSets = opts.maxSets ?? 8;
-  const perSetCap = opts.perSetCap ?? 1200;
-  const totalCap = opts.totalCap ?? 8000;
+  const perSetCap = opts.perSetCap ?? 2000;
+  const totalCap = opts.totalCap ?? 12000;
   const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
 
   // 1) 展开：只点「未展开」的折叠头（已展开的容器文本含 预期输出/实际输出）；
@@ -1003,7 +1012,7 @@ export async function collectTestSetDetails(page, opts = {}) {
     .slice(0, maxSets)
     .map(
       (s) =>
-        `【${s.title || '测试集'}】\n预期输出：\n${dropDashLines(s.expected.slice(0, perSetCap))}\n实际输出：\n${dropDashLines(s.actual.slice(0, perSetCap))}`,
+        `【${s.title || '测试集'}】${s.input ? `\n测试输入：\n${dropDashLines(s.input)}` : ''}\n预期输出：\n${dropDashLines(s.expected.slice(0, perSetCap))}\n实际输出：\n${dropDashLines(s.actual.slice(0, perSetCap))}`,
     )
     .join('\n\n');
   log(`已展开 ${clicked} 个折叠块，抓取 ${sets.length} 组预期/实际输出明细（${text.length} 字符）`);
