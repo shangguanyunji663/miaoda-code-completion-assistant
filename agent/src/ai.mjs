@@ -358,6 +358,12 @@ export function extractCodeFromMarkdown(markdown) {
  * AI 输出里后几个函数的实现被整体丢弃、模板其余块保持空白 → 评测
  * IndentationError 且反思死循环。现按出现顺序逐对对应替换。
  *
+ * 缩进保持（2026-09-15 实测复现，真正根因）：模板 Begin/End 行位于函数体
+ * 内（如 4 空格缩进），代码体必须保留行首缩进。旧实现用 trim() 提取代码体，
+ * 会把首行前导空格整体剥掉——AI 输出 `    return ...`，拼完变顶格
+ * `return ...`，评测 IndentationError 与「AI 没反思」表象同源：反思每次都
+ * 改对，但拼接次次把缩进剥掉。现改为仅清理行尾空白、行首缩进原样保留。
+ *
  * @param {string} originalTemplate 写入前从编辑器读取的原始模板（含 Begin/End 标记）
  * @param {string} aiOutput AI 返回的完整输出（可能含标记，也可能仅含代码体）
  * @returns {string} 可直接写入编辑器的最终代码
@@ -374,18 +380,18 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
   const origLines = orig.split(/\r?\n/);
   const aiLines = ai.split(/\r?\n/);
 
+  // 保留行首缩进、仅去行尾空白（见函数头注释：缩进被 trim 剥掉是死循环真正根因）
+  const keepIndent = (lines) => lines.map((l) => l.replace(/\s+$/, '')).join('\n');
+  const origBody = (pair) => keepIndent(origLines.slice(pair[0] + 1, pair[1]));
+
   // 逐块取代码体：AI 带有标记时按序一一对应；AI 未带标记时整段填第一块、
   // 其余块保留模板原文（与旧行为「head + 整段 body + tail」一致）
   let bodies;
   if (!aiPairs.length) {
-    bodies = origPairs.map((pair, i) =>
-      i === 0 ? ai.trim() : origLines.slice(pair[0] + 1, pair[1]).join('\n').trim(),
-    );
+    bodies = origPairs.map((pair, i) => (i === 0 ? keepIndent(aiLines) : origBody(pair)));
   } else {
     bodies = origPairs.map((pair, i) =>
-      i < aiPairs.length
-        ? aiLines.slice(aiPairs[i][0] + 1, aiPairs[i][1]).join('\n').trim()
-        : origLines.slice(pair[0] + 1, pair[1]).join('\n').trim(),
+      i < aiPairs.length ? keepIndent(aiLines.slice(aiPairs[i][0] + 1, aiPairs[i][1])) : origBody(pair),
     );
   }
 

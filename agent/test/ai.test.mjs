@@ -187,6 +187,22 @@ test('emptyMarkerBlocks：缺实现的区域=块内无实质代码（仅注释/�
   assert.deepEqual(emptyMarkerBlocks(['#******** Begin ********#', 'x', '#******** End ********#'].join('\n')), []);
 });
 
+test('spliceIntoTemplate：函数体内的代码缩进必须保留（2026-09-15 真正根因）', () => {
+  // 模板 Begin/End 行在函数体内（4 空格缩进），AI 输出相对 Begin 行同级的
+  // 4 空格实现。旧实现 body.trim() 把首行缩进剥掉，拼完顶格 → IndentationError，
+  // 与评测平台报错逐字一致（实测复现）
+  const tpl = ['def check_token(token):', '    #*** Begin ***#', '    #*** End ***#'].join('\n');
+  const ai = [
+    'def check_token(token):',
+    '    #*** Begin ***#',
+    "    return conn.hget('login', token)",
+    '    #*** End ***#',
+  ].join('\n');
+  const out = spliceIntoTemplate(tpl, ai);
+  assert.match(out, /\n    return conn\.hget\('login', token\)\n/); // 保留 4 空格
+  assert.doesNotMatch(out, /\nreturn conn\.hget/); // 禁止顶格
+});
+
 test('sanitizeShellSubmission：普通编程题零触发', () => {
   const r = sanitizeShellSubmission('print("你好；世界")');
   assert.deepEqual(r.changes, []);
