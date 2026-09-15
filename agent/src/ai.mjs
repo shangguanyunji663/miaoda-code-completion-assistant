@@ -340,13 +340,17 @@ export async function answerBatch({ questions, reference = '' }) {
  * 反思修复：复用 code_reflection_fixer_1 的 prompt 与参数
  * @returns {Promise<{analysis: string, code: string}>}
  */
-export async function reflectAndFix({ problem, previousCode, evalResult, terminalState = '' }) {
+export async function reflectAndFix({ problem, previousCode, evalResult, terminalState = '', lessons = [] }) {
   const cap = readCapability('code_reflection_fixer_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
     previous_code: previousCode,
     evaluation_result: evalResult,
     terminal_state: terminalState,
+    // 教训链（与 reflectCommands 的 lessons 同构）：各轮已确诊的原因注入本
+    // 轮 prompt，防"这轮改对了、下轮又退回"的摇摆（2026-09-15：zincrby 参数
+    // 顺序 3 轮横跳就是反思无记忆导致的）
+    lessons: lessons.map((l, i) => `第${i + 1}轮教训：${l}`).join('\n'),
   });
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.4,
@@ -391,6 +395,19 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
   const orig = String(originalTemplate ?? '');
   const ai = String(aiOutput ?? '');
 
+  // 完整代码直通（2026-09-15 真机实证 + 2026-09-15 标记可信方案）：
+  // 触发条件任意一个满足 → 直接返回 AI 完整输出，不按标记归位：
+  // 1. 模板本身标记不成对（Begin ≠ End 数量）：模板本身不完整，标记归位必丢函数
+  // 2. AI 输出含 ≥2 个模块级语句（import/from/def/class/@）：AI 已完整复刻结构
+  // 两种情况都意味着标记已不可信，标记归位只会丢代码、报 IndentationError。
+  // 平台只按执行结果评测，整体直通最接近 AI 给出的正确完整实现。
+  const matchesBegin = (orig.match(/\bbegin\b.*[*=#-]{3,}/i) || []).length;
+  const matchesEnd = (orig.match(/\bend\b.*[*=#-]{3,}/i) || []).length;
+  const topLevelStatements = (ai.match(/^(import |from |def |class |@)\S/m) || []).length;
+  if (matchesBegin !== matchesEnd || topLevelStatements >= 2) {
+    return ai.trim();
+  }
+
   const origPairs = collectMarkerPairs(orig);
   // 原始模板无标记：纯编辑器，直接信任 AI 输出（已做 markdown 抽取）
   if (!origPairs.length) return ai.trim();
@@ -406,13 +423,7 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
   // 逐块取代码体：AI 带有标记时按序一一对应
   let bodies;
   if (!aiPairs.length) {
-    // AI 未复现模板标记（常见于反思轮直接给出干净实现）。若输出是自成一体的
-    // 完整代码——含多个顶层语句（def/class/import/from/@）——直接整段作为最终
-    // 代码信任（2026-09-15 事故：旧逻辑把整段塞进第一个 Begin/End 块，函数互相
-    // 嵌套、import 错位，评测 unexpected indent，反思看到错乱结构死循环）。
-    // 仍是单语句片段时退化为旧的"整段填第一个块"。
-    const topLevel = (ai.match(/^(def |class |import |from |@)\S/m) || []).length;
-    if (topLevel >= 2) return ai.trim();
+    // AI 未复现模板标记且不是完整代码（单语句片段）→ 整段填第一个块（兼容旧行为）
     bodies = origPairs.map((pair, i) => (i === 0 ? keepIndent(aiLines) : origBody(pair)));
   } else {
     bodies = origPairs.map((pair, i) =>

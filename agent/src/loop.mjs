@@ -473,7 +473,8 @@ export async function solveOnce(page, probe) {
     log('代码编辑器未在超时内出现，终止本题');
     return { ok: false, kind: 'code', reason: 'no-editor' };
   }
-  const codeProbe = await probePage(page); // 切 tab 后重新探测，拿最新模板
+  const codeProbe0 = await probePage(page); // 切 tab 后重新探测，拿最新模板
+  let codeProbe = codeProbe0;
 
   // 逃生舱防呆：转代码分支后发现编辑器模板为空 → 该题本来就没有代码文件可写，
   // 转过去只会凭空生成，按命令行题失败收场（模板非空才继续）
@@ -485,6 +486,14 @@ export async function solveOnce(page, probe) {
   let code = null;
   let lastEval = '';
   let sanitizeNote = ''; // shell 护栏清洗记录（喂给反思，供其理解上一轮实际提交内容）
+  // 连续同类报错重载兜底状态（2026-09-15）：同一错误签名连续 ≥3 轮时，拼接
+  // 基准（编辑器现存模板）可能已被污染，重载题目页重取平台原始模板并更新存档
+  let lastErrSig = '';
+  let sameErrStreak = 0;
+  let reloadCount = 0;
+  // 代码反思教训链（与 cmdline 分支同构，2026-09-15）：每轮反思诊断沉淀，
+  // 下一轮注入，防止"这轮改对了、下轮又退回"的横跳（zincrby 3 轮横跳即无记忆）
+  const lessons = [];
 
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     if (code === null) {
@@ -568,6 +577,46 @@ export async function solveOnce(page, probe) {
       if (detail) {
         lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
       }
+
+      // 连续同类报错重载兜底（2026-09-15 方案，仅代码题）：同一 Python 异常
+      //（如 IndentationError）连续出现 ≥3 轮，说明拼接基准可能已被污染——题目页
+      // 重载后编辑器回到平台原始模板，重新探测并更新存档、从干净模板重新生成。
+      // 重载至多 2 次，防重载-同类报错死循环。
+      const sigMatch = String(lastEval).match(/\b[A-Z][A-Za-z]*(?:Error|Exception)[^\n]{0,80}/);
+      const sig = sigMatch ? sigMatch[0].trim() : '';
+      if (sig) {
+        if (sig === lastErrSig) sameErrStreak++;
+        else {
+          lastErrSig = sig;
+          sameErrStreak = 1;
+        }
+      }
+      if (sameErrStreak >= 3 && reloadCount < 2) {
+        reloadCount++;
+        log(`连续 ${sameErrStreak} 轮同类错误「${sig}」——重载题目页重取平台原始模板（第 ${reloadCount}/2 次）…`);
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          await page.waitForTimeout(cfg.loop.cooldownMs);
+          const tab = await switchTaskTab(page, '代码文件');
+          if (tab.found && tab.clicked) await settle(page);
+          if (await waitForEditor(page)) {
+            const fresh = await probePage(page);
+            if ((fresh.code ?? '').trim()) {
+              codeProbe = fresh; // 存档更新为平台原始模板
+              code = null; // 强制重新生成
+              sameErrStreak = 0;
+              lastErrSig = '';
+              log(`已重取新模板（${codeProbe.code.length} 字符），从干净模板重新生成…`);
+              continue;
+            }
+            log('重载后模板仍为空，放弃重载按反思继续');
+          } else {
+            log('重载后编辑器未在超时内出现，放弃重载按反思继续');
+          }
+        } catch (e) {
+          log(`重载失败（${e.message}），按反思继续`);
+        }
+      }
     }
 
     if (v.passed) {
@@ -589,6 +638,8 @@ export async function solveOnce(page, probe) {
       evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
       // 注入客户端实测事实：反思守则第 4 条按它选 heredoc 的客户端名
       terminalState: clientFact,
+      // 教训链：此前各轮已确诊的原因（2026-09-15 新增强化，防横跳）
+      lessons: lessons.slice(-6),
     });
     log(`AI 代码反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
     if (fixed.analysis) {
@@ -596,6 +647,8 @@ export async function solveOnce(page, probe) {
       // "根据"SyntaxError: missing…"源" 戛然而止），用户无法判断是真截断
       // 还是 AI 没想全。分析被 prompt 约束 3 句话内，全量打印成本可忽略
       log(`反思分析：${String(fixed.analysis).replace(/\s+/g, ' ')}`);
+      // 诊断沉淀进教训链：下一轮必须吸收，防止"改对又退回"摇摆
+      lessons.push(String(fixed.analysis).replace(/\s+/g, ' '));
     }
     if (!fixed.code) {
       log('反思未产出代码，终止本题');
@@ -615,13 +668,18 @@ export async function solveOnce(page, probe) {
         previousCode: submitted,
         evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
         terminalState: clientFact,
+        lessons: lessons.slice(-6),
       });
       if (retry.code && !isFragment(retry.code)) {
         fixed = retry;
         if (retry.analysis) log(`重试反思分析：${String(retry.analysis).replace(/\s+/g, ' ')}`);
         log(`重试反思完成（${retry.code.length} 字符），提交评测`);
       } else {
-        log('重试仍残缺，按现状提交（以评测反馈兜底）');
+        // 2026-09-15：残缺碎片不再"按现状提交"——碎片无顶层语句，写进编辑器
+        // 只会制造新语法错误、把下一轮带偏（真机事故：碎片把报错文本混进代码）。
+        // 退回上一版完整代码，让下一轮反思仍从完整代码出发。
+        log('重试仍残缺——丢弃残缺产物，退回上一版完整代码提交（以评测反馈兜底）');
+        fixed.code = submitted;
       }
     }
     code = fixed.code;

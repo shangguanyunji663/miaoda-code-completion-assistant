@@ -224,6 +224,66 @@ test('spliceIntoTemplate：AI 未标记且是单语句片段仍整段填第一�
   assert.equal(spliceIntoTemplate(tpl, 'return 1'), '#*** Begin ***#\nreturn 1\n#*** End ***#');
 });
 
+test('spliceIntoTemplate：模板标记不成对时 AI 完整代码直通，不丢函数实现', () => {
+  // 2026-09-15 真机实证（step2 购物车题）：模板的 get_cart_info 只有 Begin 无 End
+  //（平台保存截断/无标记），旧按标记归位把 AI 输出中无法映射的实现整体丢掉 →
+  // get_cart_info 恒空 → IndentationError 死循环。AI 输出为完整代码时必须整体直通
+  const tpl = [
+    'import redis',
+    'conn = redis.Redis()',
+    'def add_item(name, price):',
+    '    #*** Begin ***#',
+    '    return 1',
+    '    #*** End ***#',
+    'def get_cart_info(user_id):',
+    '    #*** Begin ***#', // Begin 后无 End（模板不完整）
+  ].join('\n');
+  const ai = [
+    'import redis',
+    'conn = redis.Redis()',
+    'def add_item(name, price):',
+    '    #*** Begin ***#',
+    '    return 1',
+    '    #*** End ***#',
+    'def get_cart_info(user_id):',
+    '    #*** Begin ***#',
+    "    return conn.hgetall('cart:' + str(user_id))",
+    '    #*** End ***#',
+  ].join('\n');
+  const out = spliceIntoTemplate(tpl, ai);
+  assert.equal(out.trim(), ai);
+  assert.match(out, /hgetall/); // get_cart_info 实现不再丢失
+});
+
+test('spliceIntoTemplate：模板标记 Begin≠End 时即使 AI 只有一个函数也整体直通', () => {
+  // 2026-09-15 兜底方案：模板本身标记不成对 = 模板不可信，不能再按标记归位
+  //（归位必把无法映射的块丢弃）。此时连「AI 仅 1 个模块级语句」也直通——
+  // 标记归位的前提已不存在，保 AI 全部实现优先于保模板结构
+  const tpl = [
+    'def add_item(name, price):',
+    '    #*** Begin ***#',
+    '    return 1',
+    '    #*** End ***#',
+    'def get_cart_info(user_id):',
+    '    #*** Begin ***#', // Begin 后无 End
+  ].join('\n');
+  const ai = [
+    'import redis',
+    "conn = redis.Redis()",
+    'def add_item(name, price):',
+    '    #*** Begin ***#',
+    "    return conn.hset('item:' + str(name), 'price', price)",
+    '    #*** End ***#',
+    'def get_cart_info(user_id):',
+    '    #*** Begin ***#',
+    "    return conn.hgetall('cart:' + str(user_id))",
+    '    #*** End ***#',
+  ].join('\n');
+  const out = spliceIntoTemplate(tpl, ai);
+  assert.equal(out.trim(), ai); // 直接整体直通
+  assert.match(out, /hgetall/);
+});
+
 test('sanitizeShellSubmission：普通编程题零触发', () => {
   const r = sanitizeShellSubmission('print("你好；世界")');
   assert.deepEqual(r.changes, []);
