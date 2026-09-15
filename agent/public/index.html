@@ -21,6 +21,10 @@
   pre { background:#0b0e14; border:1px solid var(--line); border-radius:8px; padding:10px 12px; max-height:320px; overflow:auto; font-size:12px; white-space:pre-wrap; word-break:break-all; margin:8px 0 0; }
   .err { color:var(--bad); }
   .hint { color:var(--dim); font-size:12px; margin-top:8px; }
+  /* 页内确认层：固定遮罩 + 居中卡片，替代浏览器 confirm（消除对话框行为差异） */
+  #confirmMask[hidden] { display:none; }
+  #confirmMask { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:999; }
+  #confirmMask .card { width:380px; max-width:90vw; }
 </style>
 </head>
 <body>
@@ -53,11 +57,31 @@
     <pre id="logs"></pre>
   </div>
 
+  <!-- 页内确认层（替代浏览器 confirm） -->
+  <div id="confirmMask" hidden>
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:8px">确认提交评测</div>
+      <div class="kv" id="confirmText" style="margin-bottom:14px">确定后点击「评测」真实提交本题，并按需进入反思重试。</div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="ghost" id="confirmCancel">取消</button>
+        <button id="confirmOk">确定，开始解题</button>
+      </div>
+    </div>
+  </div>
+
 <script>
   let lastSeq = 0;
+  let confirmOnOk = null;
 
   const $ = (id) => document.getElementById(id);
   const setBusy = (t) => { $('busy').textContent = t || ''; $('btnProbe').disabled = !!t; $('btnSolve').disabled = !!t; };
+
+  function showConfirm(text, onOk) {
+    $('confirmText').textContent = text;
+    confirmOnOk = onOk;
+    $('confirmMask').hidden = false;
+  }
+  function hideConfirm() { $('confirmMask').hidden = true; confirmOnOk = null; }
 
   async function refreshStatus() {
     try {
@@ -70,8 +94,7 @@
     } catch (e) { $('aiReady').textContent = '状态获取失败'; }
   }
 
-  async function callApi(path, confirmText) {
-    if (confirmText && !confirm(confirmText)) return;
+  async function callApi(path) {
     setBusy('执行中…（可能需要数十秒到数分钟，看下方日志）');
     $('result').textContent = '执行中…';
     try {
@@ -103,7 +126,10 @@
 
   $('btnStatus').onclick = refreshStatus;
   $('btnProbe').onclick = () => callApi('/api/probe');
-  $('btnSolve').onclick = () => callApi('/api/solve', '将真实点击「评测」提交本题，确认继续？');
+  $('btnSolve').onclick = () => showConfirm('将真实点击「评测」按钮提交本题，确认继续？', () => callApi('/api/solve'));
+  $('confirmOk').onclick = () => { const f = confirmOnOk; hideConfirm(); if (f) f(); };
+  $('confirmCancel').onclick = hideConfirm;
+  $('confirmMask').onclick = (e) => { if (e.target === $('confirmMask')) hideConfirm(); };
 
   refreshStatus();
   setInterval(refreshStatus, 5000);
