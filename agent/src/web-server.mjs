@@ -14,7 +14,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cfg } from './config.mjs';
+import { cfg, loadEnv } from './config.mjs';
 import { pickTargetPageWithMeta } from './browser.mjs';
 import { probePage } from './perceive.mjs';
 import { solveOnce } from './loop.mjs';
@@ -27,6 +27,7 @@ const PKG = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.WEB_PORT ?? 8787);
 const INDEX_HTML = path.join(__dirname, '..', 'public', 'index.html');
+const ENV_FILE = path.join(__dirname, '..', '.env.local');
 
 const log = createLogger('web');
 
@@ -44,6 +45,53 @@ function json(res, code, value) {
   res.end(JSON.stringify(value, null, 2));
 }
 
+/** 读请求体（限 1MB） */
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => {
+      data += c;
+      if (data.length > 1e6) req.destroy();
+    });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * 以 .env.local 文件的 AI_MODEL 为准自愈运行态（双向同步的一侧）：
+ * 用户手改文件后无需重启，下次 /api/status 轮询即检测差异并热生效。
+ */
+function syncModelFromEnv() {
+  try {
+    const env = loadEnv();
+    if (env.AI_MODEL && env.AI_MODEL !== cfg.ai.model) {
+      const old = cfg.ai.model;
+      cfg.ai.model = env.AI_MODEL;
+      log(`检测到 .env.local 模型变更：${old || '(空)'} → ${env.AI_MODEL}（已热生效，无需重启）`);
+    }
+  } catch {
+    /* 读失败静默，维持运行态 */
+  }
+  return cfg.ai.model;
+}
+
+/** 把模型名写回 .env.local 的 AI_MODEL 行并热生效（双向同步的另一侧） */
+function updateModelInEnv(value) {
+  const raw = fs.existsSync(ENV_FILE) ? fs.readFileSync(ENV_FILE, 'utf8') : '';
+  const lines = raw.split(/\r?\n/);
+  const re = /^AI_MODEL\s*=/;
+  const line = `AI_MODEL=${value}`;
+  if (lines.some((l) => re.test(l))) {
+    for (let i = 0; i < lines.length; i++) if (re.test(lines[i])) lines[i] = line;
+  } else {
+    lines.push(line);
+  }
+  fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n', 'utf8');
+  cfg.ai.model = value;
+  log(`模型已更新并写回 .env.local：${value}`);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? HOST}`);
   try {
@@ -55,15 +103,31 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // ---- 状态（只读，不触发浏览器连接） ----
+    // ---- 状态（只读，不触发浏览器连接；模型以 .env.local 为准自愈同步） ----
     if (req.method === 'GET' && url.pathname === '/api/status') {
       return json(res, 200, {
         version: PKG.version,
         aiReady: Boolean(cfg.ai.baseUrl && cfg.ai.apiKey),
-        model: cfg.ai.model,
+        model: syncModelFromEnv(),
         browser: sessionStatus(),
         logs: { buffered: logRing.length, lastSeq: logSeq },
       });
+    }
+
+    // ---- 模型名配置（页面 ↔ .env.local 双向同步；不涉及密钥） ----
+    if (req.method === 'POST' && url.pathname === '/api/config') {
+      let body = {};
+      try {
+        body = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        return json(res, 400, { error: '请求体不是合法 JSON' });
+      }
+      const model = String(body.model ?? '').trim();
+      if (!model || /[\s#=]/.test(model)) {
+        return json(res, 400, { error: '模型名不能为空，且不能包含空白、# 或 =（仅模型名）' });
+      }
+      updateModelInEnv(model);
+      return json(res, 200, { model: cfg.ai.model, saved: true });
     }
 
     // ---- 只读感知 ----
