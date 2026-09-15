@@ -515,6 +515,9 @@ export async function solveOnce(page, probe) {
     // 实际提交评测的是"模板拼接后"的版本；反思必须带上它而不是 AI 原始
     // 输出，否则 AI 审的是一份没提交过的文本（2026-09-09 用户指出）
     let submitted = spliceIntoTemplate(codeProbe.code, code);
+    // 拼接方式留痕（2026-09-15 定位用）：AI 输出是否带标记、模式块数 → 判断
+    // 走的是逐块归位还是无标记直通，失败时可快速归因
+    log(`拼接方式：模板 ${(codeProbe.code.match(/\bbegin\b/i) || []).length} 对标记 / AI 输出 ${(code.match(/\bbegin\b/i) || []).length} 对标记 / 拼后 ${submitted.length} 字符`);
     // 多标记模板校验（2026-09-15）：模板含多处 Begin/End 区域时，AI 漏补全的
     // 空区域会让评测直接 IndentationError——拼完立即打点，让反思轮感知
     const emptyBlocks = emptyMarkerBlocks(submitted);
