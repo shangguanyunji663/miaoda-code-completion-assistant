@@ -81,10 +81,14 @@ export async function chat(messages, opts = {}) {
       body.reasoning_effort = effort;
     }
     const t0 = Date.now();
+    const stallMs = cfg.ai.thinkingStallMs;
     let content = '';
     let reasoning = '';
     let finish = '';
-    let capped = false; // 本次轮次是否因思考超限被主动断流
+    let capped = false; // 本次轮次是否因思考超限（时间硬闸）被主动断流
+    let stalled = false; // 本次轮次是否因思考停滞（无进展空转）被主动断流
+    let prevReasoningLen = 0;
+    let lastGrowTs = Date.now(); // 思考长度最后一次增长的时刻（停滞检测用）
     // 空闲超时 + 心跳：每收到一块数据就重置空闲计时——"有输出就不断流"，
     // 端点挂起/断流才触发超时（AbortSignal.timeout 是绝对超时，会误杀长生成）；
     // 心跳每 30s 汇报已接收的思考/正文量与最新思考尾部，长思考全程可见
@@ -158,6 +162,18 @@ export async function chat(messages, opts = {}) {
             if (typeof d.content === 'string') content += d.content;
             if (j?.choices?.[0]?.finish_reason) finish = j.choices[0].finish_reason;
             bumpIdle();
+            // 思考停滞检测（2026-09-15）：思考长度有增长即视为有进展，持续重新计时；
+            // 正文 0 字且思考连续 stallMs 无增长 → 空转/卡死（如对题干信号矛盾反复
+            // "重新审视"），提前断流重试（强制关思考）。只掐"无进展"，正常深思考
+            // 的思考会持续增长，不受影响。
+            if (reasoning.length > prevReasoningLen) {
+              prevReasoningLen = reasoning.length;
+              lastGrowTs = Date.now();
+            }
+            if (stallMs > 0 && !content && reasoning && Date.now() - lastGrowTs > stallMs) {
+              stalled = true;
+              ac.abort();
+            }
             // 思考硬闸：只在"还在思考、正文零字"阶段计时；正文一旦开流
             // 就不再限制（避免误杀正常生成长度）
             if (capMs > 0 && !content && reasoning && Date.now() - t0 > capMs) {
@@ -181,7 +197,12 @@ export async function chat(messages, opts = {}) {
         raw: { finish_reason: finish, reasoning_length: reasoning.length },
       };
     } catch (err) {
-      if (capped) {
+      if (stalled) {
+        forceThinkingOff = true;
+        err = new Error(
+          `思考停滞：正文 0 字且思考 ${(stallMs / 1000)}s 无增长（思考已 ${reasoning.length} 字），疑似空转循环，已主动断流；重试将强制关思考（AI_THINKING_STALL_MS 可调，0=关闭停滞检测）`,
+        );
+      } else if (capped) {
         forceThinkingOff = true;
         err = new Error(
           `思考超限：${Math.round(capMs / 1000)}s 内正文仍为 0 字（思考已 ${reasoning.length} 字），已主动断流；重试将强制关思考（AI_THINKING_CAP_MS 可调，0=关闭硬闸）`,
