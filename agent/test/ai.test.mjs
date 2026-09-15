@@ -203,6 +203,27 @@ test('spliceIntoTemplate：函数体内的代码缩进必须保留（2026-09-15 
   assert.doesNotMatch(out, /\nreturn conn\.hget/); // 禁止顶格
 });
 
+test('spliceIntoTemplate：AI 输出无标记但为完整代码时整体直通，不再塞进第一个块', () => {
+  // 2026-09-15 事故：反思轮 AI 直接给出"干净版完整代码"（无 Begin/End 标记，
+  // 含多个顶层 def/import）。旧逻辑整段塞进第一个 Begin/End 块 → 函数嵌套、
+  // import 错位 → 评测 unexpected indent 且反思死循环
+  const tpl = ['def check_token(token):', '    #*** Begin ***#', '    #*** End ***#', ''].join('\n');
+  const ai = [
+    'import time',
+    'import redis',
+    'def check_token(token):',
+    "    return conn.hget('login', token)",
+    'def update_token(token, user_id):',
+    "    conn.hset('login', token, user_id)",
+  ].join('\n');
+  assert.equal(spliceIntoTemplate(tpl, ai).trim(), ai);
+});
+
+test('spliceIntoTemplate：AI 未标记且是单语句片段仍整段填第一个块（旧行为兼容）', () => {
+  const tpl = ['#*** Begin ***#', '#*** End ***#'].join('\n');
+  assert.equal(spliceIntoTemplate(tpl, 'return 1'), '#*** Begin ***#\nreturn 1\n#*** End ***#');
+});
+
 test('sanitizeShellSubmission：普通编程题零触发', () => {
   const r = sanitizeShellSubmission('print("你好；世界")');
   assert.deepEqual(r.changes, []);

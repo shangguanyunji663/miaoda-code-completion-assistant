@@ -403,10 +403,16 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
   const keepIndent = (lines) => lines.map((l) => l.replace(/\s+$/, '')).join('\n');
   const origBody = (pair) => keepIndent(origLines.slice(pair[0] + 1, pair[1]));
 
-  // 逐块取代码体：AI 带有标记时按序一一对应；AI 未带标记时整段填第一块、
-  // 其余块保留模板原文（与旧行为「head + 整段 body + tail」一致）
+  // 逐块取代码体：AI 带有标记时按序一一对应
   let bodies;
   if (!aiPairs.length) {
+    // AI 未复现模板标记（常见于反思轮直接给出干净实现）。若输出是自成一体的
+    // 完整代码——含多个顶层语句（def/class/import/from/@）——直接整段作为最终
+    // 代码信任（2026-09-15 事故：旧逻辑把整段塞进第一个 Begin/End 块，函数互相
+    // 嵌套、import 错位，评测 unexpected indent，反思看到错乱结构死循环）。
+    // 仍是单语句片段时退化为旧的"整段填第一个块"。
+    const topLevel = (ai.match(/^(def |class |import |from |@)\S/m) || []).length;
+    if (topLevel >= 2) return ai.trim();
     bodies = origPairs.map((pair, i) => (i === 0 ? keepIndent(aiLines) : origBody(pair)));
   } else {
     bodies = origPairs.map((pair, i) =>
