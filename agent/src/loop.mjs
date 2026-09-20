@@ -1,4 +1,4 @@
-// EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop
+// EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop, slimForReflection, looksLikeOwnDraft
 // 主编排：感知 → 意图判定 → 生成/作答 → 提交评测 → 读结果 → 失败反思 → 成功翻页。
 //
 // 单题流程（代码题 / 命令行题 / 混合题，按题干意图分流）：
@@ -186,6 +186,50 @@ export function slimForReflection(p) {
   }
   if (start === Number.POSITIVE_INFINITY) return p.slice(0, 3000);
   return p.slice(Math.max(0, start - 400), Math.min(p.length, end + 2400));
+}
+
+/** 连续同类报错重载兜底的最大重载次数（防"重载-同类报错"死循环） */
+const RELOAD_MAX = 2;
+
+/**
+ * 判据（1.4.3）：重载题目页后拿回的编辑器内容，是不是「我们自己上一轮提交的那份草稿」。
+ *
+ * 背景（2026-09-20 真机）：本平台**持久化编辑器草稿且无「恢复初始代码」按钮**，
+ * 于是 `page.reload()` / 重新 goto 都拿不回平台原始模板。而旧实现的重载兜底判据是
+ * 「`fresh.code` 非空即视为重取成功」——草稿恰好非空，于是走进 `codeProbe = fresh`，
+ * **把函数作用域里那份干净的原始模板存档覆盖成污染草稿**，再强制基于污染模板重新生成。
+ * 即该兜底在本平台不是"无效"，而是"主动把基准从干净降级为污染"，比不触发更糟。
+ *
+ * 设计取舍：**判实际拿回的内容，而不是读 `platform-facts.json` 里的
+ * `editor.draft_persisted_by_platform`**——① 该行为随平台/题目容器可能变化，实测内容
+ * 永远比配置更可信；② 事实档案是给 AI 的提示材料，不应同时充当代码分支的开关
+ * （否则改一处风险面翻倍）。
+ *
+ * 判据分两级：先按"去空行 + 逐行 trim"归一化后**精确相等**（平台通常是原样保存草稿）；
+ * 不等时再看行集重合度与长度比（防御平台对草稿做了轻量规整，如缩进/末尾换行）。
+ * @param {string} fresh 重载后探测到的编辑器内容
+ * @param {string} lastSubmitted 上一轮实际提交（写入编辑器）的完整文本
+ * @returns {boolean} true = 拿回的是自己的草稿，重载无效，必须保留原模板存档
+ */
+export function looksLikeOwnDraft(fresh, lastSubmitted) {
+  const norm = (s) =>
+    String(s ?? '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join('\n');
+  const a = norm(fresh);
+  const b = norm(lastSubmitted);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  // 近似判据：行集重合度高且长度接近（两侧都不低于 0.85，避免把"同模板不同实现"误判成草稿）
+  const setB = new Set(b.split('\n'));
+  const setA = new Set(a.split('\n'));
+  const hit = [...setA].filter((l) => setB.has(l)).length;
+  const lineRatio = hit / Math.max(setA.size, setB.size);
+  const lenRatio = Math.min(a.length, b.length) / Math.max(a.length, b.length);
+  return lineRatio >= 0.85 && lenRatio >= 0.85;
 }
 
 /**
@@ -530,6 +574,9 @@ async function solveOnceInner(page, probe) {
   let lastErrSig = '';
   let sameErrStreak = 0;
   let reloadCount = 0;
+  // 上一轮实际提交的完整文本（重载兜底的草稿判据，见 looksLikeOwnDraft）：平台持久化
+  // 草稿时，重载只能拿回它——据此识别「重载无效」，避免覆盖干净的模板存档
+  let lastSubmitted = '';
   // 代码反思教训链（与 cmdline 分支同构，2026-09-15）：每轮反思诊断沉淀，
   // 下一轮注入，防止"这轮改对了、下轮又退回"的横跳（zincrby 3 轮横跳即无记忆）
   const lessons = [];
@@ -593,6 +640,7 @@ async function solveOnceInner(page, probe) {
       log('数据库命令题 echo 双引号包裹兜底（bash 环节零噪音，平台提取引号内命令 eval）');
     }
     checkStop('写入编辑器');
+    lastSubmitted = submitted; // 重载兜底的草稿判据（写入什么，草稿就长什么样）
     await writeEditorCode(page, submitted);
     await settle(page);
 
@@ -623,7 +671,11 @@ async function solveOnceInner(page, probe) {
       // 连续同类报错重载兜底（2026-09-15 方案，仅代码题）：同一 Python 异常
       //（如 IndentationError）连续出现 ≥3 轮，说明拼接基准可能已被污染——题目页
       // 重载后编辑器回到平台原始模板，重新探测并更新存档、从干净模板重新生成。
-      // 重载至多 2 次，防重载-同类报错死循环。
+      // 重载至多 RELOAD_MAX 次，防重载-同类报错死循环。
+      // 1.4.3 修正：本平台**持久化草稿、无「恢复初始代码」**，重载拿回的是上一轮
+      // 提交的草稿而非原始模板 ⇒ 该兜底在此平台不可用；若照旧覆盖存档，会把干净的
+      // 模板基准换成污染草稿（比不重载更糟）。故重载后先用 looksLikeOwnDraft 判据
+      // 识别"拿回的是自己的草稿"，命中即保留原存档并停用兜底。
       const sigMatch = String(lastEval).match(/\b[A-Z][A-Za-z]*(?:Error|Exception)[^\n]{0,80}/);
       const sig = sigMatch ? sigMatch[0].trim() : '';
       if (sig) {
@@ -633,9 +685,11 @@ async function solveOnceInner(page, probe) {
           sameErrStreak = 1;
         }
       }
-      if (sameErrStreak >= 3 && reloadCount < 2) {
+      if (sameErrStreak >= 3 && reloadCount < RELOAD_MAX) {
         reloadCount++;
-        log(`连续 ${sameErrStreak} 轮同类错误「${sig}」——重载题目页重取平台原始模板（第 ${reloadCount}/2 次）…`);
+        log(
+          `连续 ${sameErrStreak} 轮同类错误「${sig}」——重载题目页重取平台原始模板（第 ${reloadCount}/${RELOAD_MAX} 次）…`,
+        );
         checkStop('重载题目页');
         try {
           await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
@@ -645,14 +699,28 @@ async function solveOnceInner(page, probe) {
           if (await waitForEditor(page)) {
             const fresh = await probePage(page);
             if ((fresh.code ?? '').trim()) {
-              codeProbe = fresh; // 存档更新为平台原始模板
-              code = null; // 强制重新生成
-              sameErrStreak = 0;
-              lastErrSig = '';
-              log(`已重取新模板（${codeProbe.code.length} 字符），从干净模板重新生成…`);
-              continue;
+              // 关键：先判"这是不是我们自己上一轮提交的草稿"。本平台持久化草稿且无
+              // 「恢复初始代码」，重载拿回的就是草稿——此时覆盖存档会把干净模板换成
+              // 污染草稿，比不重载更糟（见 looksLikeOwnDraft 头注）
+              if (lastSubmitted && looksLikeOwnDraft(fresh.code, lastSubmitted)) {
+                reloadCount = RELOAD_MAX; // 本平台该兜底不可用：停用，不再反复重载
+                sameErrStreak = 0;
+                lastErrSig = '';
+                log(
+                  '重载后编辑器仍是上一轮提交的草稿（平台持久化草稿、无「恢复初始代码」）' +
+                    '——重载兜底在本平台不可用，保留现有模板存档，按反思继续',
+                );
+              } else {
+                codeProbe = fresh; // 存档更新为平台原始模板
+                code = null; // 强制重新生成
+                sameErrStreak = 0;
+                lastErrSig = '';
+                log(`已重取新模板（${codeProbe.code.length} 字符），从干净模板重新生成…`);
+                continue;
+              }
+            } else {
+              log('重载后模板仍为空，放弃重载按反思继续');
             }
-            log('重载后模板仍为空，放弃重载按反思继续');
           } else {
             log('重载后编辑器未在超时内出现，放弃重载按反思继续');
           }

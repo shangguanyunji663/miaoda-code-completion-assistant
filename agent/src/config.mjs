@@ -166,6 +166,9 @@ export const cfg = {
     agentRoot: AGENT_ROOT,
     // prompt 单一数据源：复用仓库根 shared/capabilities 下的配置
     capabilitiesDir: path.resolve(AGENT_ROOT, '..', 'shared', 'capabilities'),
+    // 平台事实单一数据源（1.4.2）：由 ai.mjs 注入所有能力 prompt，由 cli caps-check 校验结构。
+    // 路径也收敛到此处，避免 ai.mjs / cli.mjs 各自 resolve 出两份真相
+    platformFactsFile: path.resolve(AGENT_ROOT, '..', 'shared', 'platform-facts.json'),
     dumpDir: path.join(AGENT_ROOT, 'dumps'),
   },
 };

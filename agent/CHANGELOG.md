@@ -2,6 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.4.3] - 2026-09-20（分支 feat/2-c-web-service）
+
+**两处"静默失效"收口**：① 重载兜底在本平台不是"无效"而是"主动把干净模板换成污染草稿"；② 平台事实档案此前不在 caps-check 覆盖范围内，坏 JSON 只在运行时降级为空串。两者同属一类问题——**失效不产生错误、只产生更差的结果**。均为离线改动，无真机步骤。
+
+### Fixed
+
+- **重载兜底会覆盖干净模板存档（`loop.mjs`）**：旧判据是「重载后 `fresh.code` 非空即视为重取成功」。但本平台持久化草稿且无「恢复初始代码」，重载拿回的正是**上一轮自己提交的草稿**——于是走 `codeProbe = fresh` 把函数作用域里的干净原始模板**覆盖成污染草稿**，再强制基于它重新生成。净效果是拼接基准从"干净"降级为"污染"，比不触发更糟（1.4.1 CHANGELOG 第 53 行仅记为"无效"，措辞偏轻，此处更正）。现新增纯函数判据 `looksLikeOwnDraft(fresh, lastSubmitted)`：按"去空行 + 逐行 trim"归一化后精确相等即判定草稿（平台通常原样保存），不等时再用行集重合度 ≥0.85 且长度比 ≥0.85 防御轻量规整；命中则**保留原存档、不重新生成**，并把 `reloadCount` 置满以停用兜底、按反思继续。重载上限提为具名常量 `RELOAD_MAX`
+- **判据取"实际拿回的内容"而非读 `platform-facts.json` 的 `editor.draft_persisted_by_platform`（设计取舍）**：① 平台行为可能随题目容器变化，实测内容永远比配置可信；② 事实档案是给 AI 的提示材料，不应同时充当代码分支开关（否则改一处风险面翻倍）
+
+### Added
+
+- **`src/platform-facts-schema.mjs`（新增，零依赖）**：把 `shared/platform-facts.json` 的填写纪律变成可执行的校验——事实段必须带证据（段级 `evidence` 或逐条 `<名>_evidence`）与 `date`(YYYY-MM-DD)；事实段内不得出现"待验证/未验证/待确认/推断"字样，也不得内嵌 `unknowns` 字段；`unknowns` 必须是字符串数组；顶层非 `_` 前缀字段必须是事实段对象。规则**全部取自该文件自己的 `_readme`**，不新增约定
+- **`caps-check` 覆盖事实档案（`cli.mjs`）**：此前只校验 `shared/capabilities/*.json`，事实档案是盲区——坏 JSON 时 `buildPlatformFactsBlock` 仅在运行时降级为空串 + 告警一次，**prompt 静默退回「无平台事实」而解题链路不报错**（与 `capability-schema.mjs` 头注里"占位符拼错 → 静默渲染空串"同构）。现 fail-fast 并打印两行通过信息；文件路径收敛到 `cfg.paths.platformFactsFile`（`config.mjs`），`ai.mjs` 与 `cli.mjs` 共用一份真相
+- **新增单测 16 项**：`test/reload-draft-guard.test.mjs` 6 项（草稿识别 / 空白与 CRLF 差异 / 原始模板不误判 / 同模板不同实现不误判 / 近似判据两条硬约束 / 空输入不判草稿）+ `test/platform-facts-schema.test.mjs` 10 项（真实档案通过 + 逐条故障注入）
+
+### Notes
+
+- 验证：`npm test` **81/81**；`npm run caps-check` 通过（7 个能力文件 + 事实档案）；`npm run lint` 与 `npm run format:check` 对本次新增/修改文件均通过
+- **如实标注（本次未修，属既有欠债）**：`npm run format:check` 仍报 `src/ai.mjs`、`src/loop.mjs`、`test/ai.test.mjs` 三处漂移（经与 `HEAD` blob 逐一对齐确认为**本次改动之前**既有，非本次引入；`src/loop.mjs` 现存 2 处、`src/ai.mjs` 4 处、`test/ai.test.mjs` 3 处，均为长行未折行）；`npm run lint` 另有 `test/ai.test.mjs:202` 的 `no-regex-spaces` 1 项。跑一次 `npm run format` 与 `--fix` 即可清账，但会把这批无关重排混进本次语义修复，故留待单独提交
+- **未验证边界**：本平台"重载无效"的结论来自 2026-09-20 单题真机实测（草稿持久化 + 无重置按钮）；`looksLikeOwnDraft` 的近似判据阈值（0.85）为防御性取值，**尚无真机样本覆盖到该分支**（真机命中应为精确相等分支）
+- **package.json 版本对齐**：此前停留在 `1.4.1`（1.4.2 漏 bump），本次一并对齐到 `1.4.3`
+
 ## [1.4.2] - 2026-09-20（分支 feat/2-c-web-service）
 
 **平台事实档案（单一数据源 + 统一注入）**。同一类根因（平台是老版本、与官方文档冲突）在两天内**连续两题复发**（IP 地址库、自动补全），说明"把事实散落成 prompt 规则"这条路必然漏——本次就漏在生成端。故收敛为**一处维护、处处注入**。

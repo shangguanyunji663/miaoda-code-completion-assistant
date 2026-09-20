@@ -39,7 +39,7 @@ let capabilitiesChecked = false;
 let factsWarned = false;
 let factsLogged = false;
 export function buildPlatformFactsBlock() {
-  const file = path.resolve(CAP_DIR, '..', 'platform-facts.json');
+  const file = cfg.paths.platformFactsFile;
   try {
     const obj = JSON.parse(fs.readFileSync(file, 'utf8'));
     const body = JSON.stringify(obj, null, 2);
