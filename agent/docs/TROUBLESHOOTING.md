@@ -181,7 +181,21 @@ spawn(exe, args, { stdio: ['ignore', logFd, logFd] })
 
 **解决**：放弃 visibility 方案，改为**遍历所有标签页 + URL 去重**（`loop.mjs` 的 `findNewTaskPage`）：只要出现新的题目 URL 就处理一次。
 
-**预防**：依赖浏览器运行时状态做决策前，先在目标环境实测一遍。
+**延伸（1.2.0）**：同一结论约束了挑页链的设计——`pickTargetPageWithMeta` 无法"优先挑用户正在看的标签"，因此 `TARGET_URL_HINT` / `TASK_URL_PATTERN` 两级**命中多个一律报错列出全部**（附各页 URL），让用户自己关多余标签，而不是静默猜第一个。见下 C-11。
+
+---
+
+### C-11. 多标签页时探测/解题选错页面（挑页链）
+
+**现象**（1.2.0 前的真机场景）：浏览器开着 5 个标签页，课程列表页在标签栏第一位、题目页（`…/tasks/XBLSCWNL/4879/fs7w4pziklnc`）在第四位；`npm run probe` 永远探到课程列表页。
+
+**根因**：旧 `pickTargetPage` 逻辑是「`TARGET_URL_HINT` 子串匹配 → 第一个非 about:blank 页」，`.env.local` 里 `TARGET_URL_HINT=` 为空值时直接走兜底，永远选中标签序第一个；CDP 又拿不到"哪个标签在前台"（见 C-4）。
+
+**解决**：`pickTargetPageWithMeta` 四级挑页链——① `TARGET_URL_HINT`（显式指定；多命中报错列出、零命中告警降级）；② 内置题目页 URL 形状正则（复用 `TASK_URL_PATTERN`，eduCoder 官网/校内同构，零配置识别）；③ 内容级兜底 `looksLikeTaskPage`（强代码编辑器 / 评测结果面板标记 / 评测按钮；纯 textarea 不算防误报）；④ 第一个非空白页。每级命中都打日志（层级 + URL），返回值 `pickedBy` 给出命中层级。
+
+**诊断**：挑页报错信息里会列出全部命中页 URL；`npm run probe` 的日志会显示命中层级。报"命中了 N 个标签页"时关掉多余的题目页标签即可；平台题目页 URL 不是 `/tasks/` 形状的改 `.env.local` 的 `TARGET_URL_HINT` 特征片段。
+
+**预防**：多候选场景下绝不静默取第一个——要么报错列出，要么日志高亮降级路径；新增挑页层级时先想清楚 C-4 的约束。
 
 ---
 
