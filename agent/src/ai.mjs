@@ -1,7 +1,7 @@
 // EXPORTS: chat, generateCode, reflectAndFix, extractCodeFromMarkdown,
 //          splitAnalysisAndCode, detectVerdict, listChatModels,
 //          classifyProblemIntent, generateCommands, reflectCommands, parseCommandLines,
-//          sanitizeShellSubmission
+//          sanitizeShellSubmission, buildPlatformFactsBlock, readCapability
 // AI 调用层。
 // 设计要点：
 //   1. prompt 单一数据源 —— 直接读取仓库根 shared/capabilities/*.json 中的 prompt 模板，
@@ -21,7 +21,46 @@ const CAP_DIR = cfg.paths.capabilitiesDir;
 // 而不是等渲染出残缺 prompt 后静默失败（见 capability-schema.mjs 头注）。
 let capabilitiesChecked = false;
 
-function readCapability(id) {
+/**
+ * 平台事实档案（`shared/platform-facts.json`）→ 注入每个能力 prompt 末尾。
+ *
+ * 背景（2026-09-20 真机，同一类根因连续两题复发）：平台运行环境显著落后于官方文档
+ * （Python 2 + 旧版 redis-py：`zadd` 是「先成员后分值」、不支持字典写法、`open()` 无
+ * `encoding=`），而这类"事实"此前只能散落在各条 prompt 规则里——**新增场景就要改多处、
+ * 且必然漏**（本次就漏在生成端）。现收敛为单一数据源 + 统一注入：
+ * 「没有哪个能力会忘记平台事实，新增事实只改那一处」。
+ *
+ * 取舍：**不缓存**，每次调用重读磁盘——与 readCapability 一致，保证手改事实文件即刻生效
+ *（本项目的既定风格：prompt/事实都是热生效）。文件缺失或损坏时降级为空串并告警一次，
+ * 不阻断主流程（事实是增强信息，不是运行必需）。
+ * @returns {string} 事实块（含标题）；读取失败返回空串
+ */
+let factsWarned = false;
+let factsLogged = false;
+export function buildPlatformFactsBlock() {
+  const file = cfg.paths.platformFactsFile;
+  try {
+    const obj = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const body = JSON.stringify(obj, null, 2);
+    if (!factsLogged) {
+      factsLogged = true;
+      log(`已加载平台事实档案 ${path.basename(file)}（${body.length} 字符），将注入所有能力 prompt`);
+    }
+    return (
+      '### 平台事实（本平台**实测**结论，优先于任何官方文档与你的既有记忆；' +
+      '涉及接口形态 / 语法 / 运行环境 / 输出格式 / 数据格式时一律以此为准）\n' +
+      body
+    );
+  } catch (e) {
+    if (!factsWarned) {
+      factsWarned = true;
+      log.warn(`平台事实档案读取失败（${file}）：${e.message} —— 本次不注入该段`);
+    }
+    return '';
+  }
+}
+
+export function readCapability(id) {
   if (!capabilitiesChecked) {
     assertCapabilitiesValid(CAP_DIR);
     capabilitiesChecked = true;
@@ -30,7 +69,13 @@ function readCapability(id) {
   if (!fs.existsSync(p)) {
     throw new Error(`找不到能力配置文件：${p}`);
   }
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
+  const cap = JSON.parse(fs.readFileSync(p, 'utf8'));
+  // 统一注入平台事实（见 buildPlatformFactsBlock 头注）：单一注入点，能力新增不会漏
+  const facts = buildPlatformFactsBlock();
+  if (facts && cap?.formValue?.prompt) {
+    cap.formValue.prompt = `${cap.formValue.prompt}\n\n${facts}`;
+  }
+  return cap;
 }
 
 /** 渲染 {{input.xxx}} 占位符；缺失变量渲染为空串（与原平台行为一致） */
@@ -300,13 +345,22 @@ export async function answerBatch({ questions, reference = '' }) {
  * 反思修复：复用 code_reflection_fixer_1 的 prompt 与参数
  * @returns {Promise<{analysis: string, code: string}>}
  */
-export async function reflectAndFix({ problem, previousCode, evalResult, terminalState = '' }) {
+export async function reflectAndFix({
+  problem,
+  previousCode,
+  evalResult,
+  terminalState = '',
+  lessons = [],
+}) {
   const cap = readCapability('code_reflection_fixer_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
     previous_code: previousCode,
     evaluation_result: evalResult,
     terminal_state: terminalState,
+    // 教训链（与 reflectCommands 的 lessons 同构）：各轮已确诊的原因注入本轮，
+    // 防止"第 N 轮改对了、第 N+1 轮又退回"的摇摆
+    lessons: lessons.map((l, i) => `第${i + 1}轮教训：${l}`).join('\n'),
   });
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.4,
