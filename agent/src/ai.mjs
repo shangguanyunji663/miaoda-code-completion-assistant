@@ -1,7 +1,7 @@
 // EXPORTS: chat, generateCode, reflectAndFix, extractCodeFromMarkdown,
 //          splitAnalysisAndCode, detectVerdict, listChatModels,
 //          classifyProblemIntent, generateCommands, reflectCommands, parseCommandLines,
-//          sanitizeShellSubmission
+//          sanitizeShellSubmission, buildPlatformFactsBlock, readCapability
 // AI 调用层。
 // 设计要点：
 //   1. prompt 单一数据源 —— 直接读取仓库根 shared/capabilities/*.json 中的 prompt 模板，
@@ -22,7 +22,46 @@ const CAP_DIR = cfg.paths.capabilitiesDir;
 // 而不是等渲染出残缺 prompt 后静默失败（见 capability-schema.mjs 头注）。
 let capabilitiesChecked = false;
 
-function readCapability(id) {
+/**
+ * 平台事实档案（`shared/platform-facts.json`）→ 注入每个能力 prompt 末尾。
+ *
+ * 背景（2026-09-20 真机，同一类根因连续两题复发）：平台运行环境显著落后于官方文档
+ * （Python 2 + 旧版 redis-py：`zadd` 是「先成员后分值」、不支持字典写法、`open()` 无
+ * `encoding=`），而这类"事实"此前只能散落在各条 prompt 规则里——**新增场景就要改多处、
+ * 且必然漏**（本次就漏在生成端）。现收敛为单一数据源 + 统一注入：
+ * 「没有哪个能力会忘记平台事实，新增事实只改那一处」。
+ *
+ * 取舍：**不缓存**，每次调用重读磁盘——与 readCapability 一致，保证手改事实文件即刻生效
+ *（本项目的既定风格：prompt/事实都是热生效）。文件缺失或损坏时降级为空串并告警一次，
+ * 不阻断主流程（事实是增强信息，不是运行必需）。
+ * @returns {string} 事实块（含标题）；读取失败返回空串
+ */
+let factsWarned = false;
+let factsLogged = false;
+export function buildPlatformFactsBlock() {
+  const file = path.resolve(CAP_DIR, '..', 'platform-facts.json');
+  try {
+    const obj = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const body = JSON.stringify(obj, null, 2);
+    if (!factsLogged) {
+      factsLogged = true;
+      log(`已加载平台事实档案 ${path.basename(file)}（${body.length} 字符），将注入所有能力 prompt`);
+    }
+    return (
+      '### 平台事实（本平台**实测**结论，优先于任何官方文档与你的既有记忆；' +
+      '涉及接口形态 / 语法 / 运行环境 / 输出格式 / 数据格式时一律以此为准）\n' +
+      body
+    );
+  } catch (e) {
+    if (!factsWarned) {
+      factsWarned = true;
+      log.warn(`平台事实档案读取失败（${file}）：${e.message} —— 本次不注入该段`);
+    }
+    return '';
+  }
+}
+
+export function readCapability(id) {
   if (!capabilitiesChecked) {
     assertCapabilitiesValid(CAP_DIR);
     capabilitiesChecked = true;
@@ -31,7 +70,13 @@ function readCapability(id) {
   if (!fs.existsSync(p)) {
     throw new Error(`找不到能力配置文件：${p}`);
   }
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
+  const cap = JSON.parse(fs.readFileSync(p, 'utf8'));
+  // 统一注入平台事实（见 buildPlatformFactsBlock 头注）：单一注入点，能力新增不会漏
+  const facts = buildPlatformFactsBlock();
+  if (facts && cap?.formValue?.prompt) {
+    cap.formValue.prompt = `${cap.formValue.prompt}\n\n${facts}`;
+  }
+  return cap;
 }
 
 /** 渲染 {{input.xxx}} 占位符；缺失变量渲染为空串（与原平台行为一致） */
@@ -417,12 +462,13 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
   const matchesEnd = (orig.match(/\bend\b.*[*=#-]{3,}/i) || []).length;
   const topLevelStatements = (ai.match(/^(import |from |def |class |@)\S/m) || []).length;
   if (matchesBegin !== matchesEnd || topLevelStatements >= 2) {
-    return ai.trim();
+    // 直通也必须带头部编码声明：平台是 Python 2，丢声明 + 中文注释 = SyntaxError
+    return withTemplateLeadingDecl(orig, ai);
   }
 
   const origPairs = collectMarkerPairs(orig);
   // 原始模板无标记：纯编辑器，直接信任 AI 输出（已做 markdown 抽取）
-  if (!origPairs.length) return ai.trim();
+  if (!origPairs.length) return withTemplateLeadingDecl(orig, ai);
 
   const aiPairs = collectMarkerPairs(ai);
   const origLines = orig.split(/\r?\n/);
@@ -455,6 +501,34 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
   }
   out.push(...origLines.slice(next));
   return out.join('\n');
+}
+
+/**
+ * 直通模式下补回模板的前导声明（shebang / 编码声明）。
+ *
+ * 背景（2026-09-20 真机实证）：评测平台跑的是 **Python 2**，源文件缺少
+ * `#-*- coding:utf-8 -*-` 时，任何中文注释都会触发
+ * `SyntaxError: Non-ASCII character '\xe5' ... but no encoding declared`。
+ * 而「完整代码直通」分支整体采用 AI 输出，文件头全靠 AI 自觉复述模板——
+ * 实测 AI 有时会省略这两行。这里做确定性兜底：模板前两行是注释且含编码声明、
+ * AI 输出前两行没有时，把模板声明行补回（AI 已自带则原样返回，幂等）。
+ * @param {string} originalTemplate 平台原始模板
+ * @param {string} aiOutput 直通采用的 AI 输出
+ * @returns {string} 保证带编码声明的完整代码
+ */
+function withTemplateLeadingDecl(originalTemplate, aiOutput) {
+  const out = String(aiOutput ?? '').trim();
+  if (/coding\s*[:=]/.test(out.split(/\r?\n/).slice(0, 2).join('\n'))) return out;
+  const tplLines = String(originalTemplate ?? '').split(/\r?\n/);
+  const decl = [];
+  for (let i = 0; i < Math.min(2, tplLines.length); i++) {
+    const t = tplLines[i].trim();
+    if (!t || t.startsWith('#')) decl.push(tplLines[i].replace(/\s+$/, ''));
+    else break;
+  }
+  // 只补"模板前导里确实有编码声明"的情况：否则可能把无关注释塞进 AI 代码
+  if (!decl.length || !/coding\s*[:=]/.test(decl.join('\n'))) return out;
+  return [...decl, out].join('\n');
 }
 
 /**
