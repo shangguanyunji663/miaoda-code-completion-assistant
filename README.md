@@ -12,7 +12,7 @@
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
 [![License](https://img.shields.io/badge/license-MIT-9b59b6?style=flat-square)](LICENSE)
 
-[快速开始](#-快速开始) · [核心能力](#-核心能力) · [架构](#-架构与模块职责) · [目录结构](#-目录结构) · [贡献指南](#-贡献指南) · [已知边界](#-已知限制与边界)
+[快速开始](#快速开始) · [核心能力](#核心能力) · [架构](#架构与模块职责) · [目录结构](#目录结构) · [贡献指南](#贡献指南) · [已知边界](#已知限制与边界)
 
 </div>
 
@@ -55,7 +55,7 @@ flowchart LR
 | **反思** | 未通过时以「题目 + 上一版产物 + 评测输出」为上下文重新生成，最多 `MAX_RETRY` 轮 |
 | **常驻** | `watch` 模式跟随你切换的题目页自动作答，**不替你点「下一关」**，导航权始终在你手里 |
 | **重做** | `lite` 模式刷新题目页即重新作答——反思重试仍未过时，F5 即可换思路重做一遍 |
-| **自动驾驶** | `course` 模式遍历「课堂实验 → 板块 → 开始学习」逐关推进（⚠️ 尚未端到端验证，见[已知边界](#-已知限制与边界)） |
+| **自动驾驶** | `course` 模式遍历「课堂实验 → 板块 → 开始学习」逐关推进（⚠️ 尚未端到端验证，见[已知边界](#已知限制与边界)） |
 
 ### 设计上的几个关键点
 
@@ -119,7 +119,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run caps-check` | 校验能力配置 JSON：占位符与 `paramsSchema` 声明一致性（编辑 `shared/capabilities/` 后先跑） |
 | `npm run models` | 列出可用文本模型 |
 | `npm run mcp` | 以 stdio 启动 MCP Server，把解题能力暴露给 ZCode / Claude Desktop 等宿主（见 `agent/README.md`「MCP 接入」） |
-| `npm test` | 运行核心纯函数单测（29 项，零新增依赖） |
+| `npm test` | 运行单测（73 项：核心纯函数 + 挑页链 + 能力配置/平台事实档案校验，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -132,9 +132,10 @@ Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-brows
 |---|---|---|
 | `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` | OpenAI 兼容端点、密钥、模型名（必填） | 无 |
 | `AI_REASONING_EFFORT` | 推理分级 `low` / `medium` / `high` | `medium` |
-| `AI_THINKING_CAP_MS` | 思考硬闸：持续纯思考超时即断流重试关闭思考 | `20000` |
+| `AI_THINKING_CAP_MS` | 思考硬闸：持续纯思考超时即断流重试关闭思考 | `120000` |
 | `DEBUG_PORT` | CDP 调试端口（默认避开 Windows 保留区间 9137–9236） | `9333` |
-| `TASK_URL_PATTERN` | 题目页 URL 正则，换平台改这里 | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
+| `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。题目页 URL 不是 `/tasks/` 形状的平台在此改 | 留空自动按 `TASK_URL_PATTERN` 识别 |
+| `TASK_URL_PATTERN` | 题目页 URL 形状正则：自动挑页与 watch/lite 识别共用，换平台改这里 | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果上限 | `25000` |
 | `DRY_RUN` | `1` = 只感知与生成，不写入不点击 | `0` |
@@ -149,11 +150,14 @@ Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-brows
 cli.mjs（入口：解析命令，分发到对应模式）
   ├─ loop.mjs（编排：单题流程 + watch / lite / course 三种常驻循环）
   │    ├─ perceive.mjs（感知：题干提取、编辑器/终端探测、评测结果读取、快照导出）
-  │    ├─ ai.mjs（生成：意图路由 / 答案生成 / 反思修复 / 结果判定；能力 JSON 加载前自动校验）
-  │    │    └─ capability-schema.mjs（能力配置校验：占位符与 paramsSchema 声明一致性）
+  │    ├─ ai.mjs（生成：意图路由 / 答案生成 / 反思修复 / 结果判定；加载前预检能力配置 + 注入平台事实）
+  │    │    ├─ capability-schema.mjs（能力 JSON 加载前校验：占位符 ⊆ paramsSchema）
+  │    │    └─ platform-facts-schema.mjs（平台事实档案结构校验：事实须带 evidence/date）
   │    └─ act.mjs（执行：写编辑器、键终端、勾选项、点评测、翻页、切工作区标签）
-  ├─ browser.mjs（CDP 连接浏览器 + 挑选目标标签页）
-  │    └─ launch-browser.mjs（连不上时拉起浏览器；含 my-edge 的 junction 接管）
+  ├─ browser.mjs（CDP 连接浏览器 + 四级挑页链选目标标签页：hint → URL 形状 → 内容特征 → 首个非空白）
+  │    ├─ task-url.mjs（题目页 URL 识别共享小模块：taskKey / isTaskUrl）
+  │    ├─ launch-browser.mjs（连不上时拉起浏览器；含 my-edge 的 junction 接管）
+  │    └─ port-check.mjs（启动自检 CDP 调试端口，给出人话状态）
   ├─ mcp-server.mjs（MCP 出口：stdio 三工具，编排留在 agent 侧）
   │    └─ browser-session.mjs（常驻进程会话管理：懒连接 + 互斥串行 + 断线重连）
   └─ config.mjs（读取 agent/.env.local 的全部配置）
@@ -184,22 +188,31 @@ miaoda-code-completion-assistant/
 │   │   ├── cli.mjs                 # CLI 入口：命令解析与分发
 │   │   ├── loop.mjs                # 编排：单题流程 + watch / lite / course 常驻循环
 │   │   ├── perceive.mjs            # 感知：题干、编辑器、终端、评测结果、DOM 快照
-│   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定（能力 JSON 加载前自动校验）
-│   │   ├── capability-schema.mjs   # 能力 JSON 加载前校验：占位符与 paramsSchema 声明一致性
+│   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定 + 平台事实注入
+│   │   ├── capability-schema.mjs   # 能力 JSON 加载前校验（fail-fast）
+│   │   ├── platform-facts-schema.mjs  # 平台事实档案结构校验
 │   │   ├── browser-session.mjs     # 常驻进程浏览器会话：懒连接 + 互斥串行 + 断线重连
 │   │   ├── mcp-server.mjs          # MCP Server（stdio）：probe_page / solve_current_task / list_models
 │   │   ├── act.mjs                 # 执行：写入、键入、勾选、点评测、翻页、导航
-│   │   ├── browser.mjs             # CDP 连接与标签页挑选
+│   │   ├── browser.mjs             # CDP 连接 + 四级挑页链（hint → URL 形状 → 内容特征 → 首个非空白）
+│   │   ├── task-url.mjs            # 题目页 URL 识别共享小模块（taskKey/isTaskUrl）
 │   │   ├── launch-browser.mjs      # 调试端口拉起（Windows 保留端口自动顺延）
+│   │   ├── port-check.mjs          # 启动自检 CDP 调试端口
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
-│   ├── test/
-│   │   ├── ai.test.mjs             # 核心纯函数单测（node:test，零依赖）
-│   │   └── capability-schema.test.mjs # 能力配置校验单测（含 7 个真实 JSON 回归闸）
+│   ├── test/                       # 单测：8 个文件 / 73 项（node:test，零新增依赖）
+│   │   ├── ai.test.mjs             # 核心纯函数（判定 / 拼接 / 渲染 / 解析）
+│   │   ├── capability-schema.test.mjs # 能力配置校验（含 7 个真实 JSON 回归闸）
+│   │   ├── pick-target.test.mjs    # 四级挑页链
+│   │   ├── click-fallback.test.mjs # 按钮点击有界重扫
+│   │   ├── slim-for-reflection.test.mjs
+│   │   ├── reload-draft-guard.test.mjs
+│   │   ├── platform-facts.test.mjs
+│   │   └── platform-facts-schema.test.mjs
 │   ├── eslint.config.js            # ESLint flat config
 │   ├── .prettierrc                 # 格式化规则
 │   ├── docs/
-│   │   └── TROUBLESHOOTING.md      # 14 个真实踩坑与排查方法论
+│   │   └── TROUBLESHOOTING.md      # 16 个真实踩坑与排查方法论
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
 │   ├── start-my-edge.bat           # 接管你自己的 Edge（双击）
 │   ├── start-browser.bat           # 独立 profile 启动（双击）
@@ -210,7 +223,8 @@ miaoda-code-completion-assistant/
 │   ├── CHANGELOG.md                # 变更日志
 │   └── README.md                   # 完整文档：配置项、工作流、设计要点、已知限制
 ├── shared/
-│   └── capabilities/               # AI prompt 单一数据源（7 个能力配置）
+│   ├── capabilities/               # AI prompt 单一数据源（7 个能力配置）
+│   └── platform-facts.json         # 平台实测事实单一数据源（统一注入所有能力 prompt）
 ├── AGENTS.md                       # 面向 AI 开发代理的项目说明
 ├── LICENSE                         # MIT
 └── README.md                       # 你正读的这份
@@ -245,7 +259,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 29 项纯函数单测必须全绿
+npm test          # 73 项单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 
@@ -289,7 +303,7 @@ npm run lint      # ESLint 零问题
 |---|---|
 | [`同学使用指南.md`](同学使用指南.md) | **傻瓜式教程**：从零装环境到自动做题，给第一次用的同学 |
 | [`agent/README.md`](agent/README.md) | 完整文档：全部配置项、三种工作模式详解、设计要点、平台兼容性 |
-| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 14 个真实踩坑（环境级 + 代码级）与排查方法论 |
+| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 16 个真实踩坑（环境级 + 代码级）与排查方法论 |
 | [`agent/CHANGELOG.md`](agent/CHANGELOG.md) | 变更日志 |
 | [`shared/capabilities/README.md`](shared/capabilities/README.md) | AI 能力配置说明 |
 | [`AGENTS.md`](AGENTS.md) | 面向 AI 开发代理的项目说明与硬约束 |

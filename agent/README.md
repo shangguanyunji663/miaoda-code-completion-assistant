@@ -105,16 +105,16 @@ npm run probe
 | `AI_API_KEY` | 密钥，必填 | 无默认 |
 | `AI_MODEL` | 模型名，`npm run models` 查看全部，必填 | 无默认 |
 | `AI_TEMPERATURE` | 采样温度 | `0.3` |
-| `AI_MAX_TOKENS` | 单次生成的最大 token 数 | `8192` |
+| `AI_MAX_TOKENS` | 单次生成的最大 token 数（代码默认 `32768`；`.env.example` 模板给 `8192`） | `32768` |
 | `AI_REASONING_EFFORT` | 推理分级：`low` / `medium` / `high`（medium 实测思考有界且多步命令完整；off 会漏多步要求） | `medium` |
 | `AI_ENABLE_THINKING` | `1` = 开启思考走分级；`0` = 思考全关（极简任务） | `1` |
-| `AI_THINKING_CAP_MS` | 思考硬闸：流式响应"仍在思考、正文 0 字"持续超时即断流并重试关思考；`0` = 不设限 | `20000` |
+| `AI_THINKING_CAP_MS` | 思考硬闸：流式响应"仍在思考、正文 0 字"持续超时即断流并重试关思考；`0` = 不设限 | `120000` |
 | `AI_TIMEOUT_MS` | 单次 AI 请求超时，端点挂起按失败重试，避免 loop 永久停摆 | `300000` |
 | `DEBUG_PORT` | 调试端口 | `9333` |
 | `CDP_ENDPOINT` | CDP 连接地址，留空由 `DEBUG_PORT` 拼出 | `http://127.0.0.1:9333` |
 | `USER_DATA_DIR` | 独立 profile 目录（须与日常使用 profile 隔离，否则调试端口不生效） | `agent/.browser-profile` |
 | `EDGE_PATH` / `BROWSER_PATH` | 浏览器路径，留空自动探测 | 自动 |
-| `TARGET_URL_HINT` | 评测页 URL 特征片段，多标签页时用于定位 | 留空取第一个 |
+| `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。平台题目页 URL 不是 `/tasks/` 形状时在此改特征片段 | 留空自动按 `TASK_URL_PATTERN` 识别 |
 | `AUTO_LAUNCH` | 连不上调试端口时自动拉起浏览器（独立 profile） | `1` |
 | `WATCH_POLL_MS` | watch/lite：标签页轮询间隔 | `2000` |
 | `TASK_URL_PATTERN` | 题目页 URL 正则（换平台改这里） | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
@@ -130,6 +130,7 @@ npm run probe
 | `LIST_TIMEOUT_MS` | course：退出/返回后等列表页重现上限 | `15000` |
 | `MAX_BOARDS_PER_SECTION` | course：单板块处理卡片数防呆上限 | `50` |
 | `LOG_STREAM` | 控制台日志输出流；设 `stderr` 用于常驻协议进程（MCP Server 内置切换，stdout 专用于 JSON-RPC） | 未设置（stdout） |
+| `LOG_TO_FILE` | 日志落盘开关：`0` = 只输出控制台，不写 `logs/agent-<日期>.log` | `1` |
 
 ## 工作流程
 

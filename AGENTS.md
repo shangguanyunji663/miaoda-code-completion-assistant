@@ -14,7 +14,8 @@
 - `config.mjs` — 配置层，读 `agent/.env.local`
 - `ai.mjs` — OpenAI 兼容调用 + `detectVerdict()` 加固版成功判定；`classifyProblemIntent()` 意图路由（code / cmdline / mixed）；prompt 读 `shared/capabilities/*.json`（首次读取自动触发全量预检）
 - `capability-schema.mjs` — 能力 JSON 加载前校验（必填字段、prompt 占位符 ⊆ paramsSchema.properties、required 一致性），防"占位符拼写错误静默渲染为空串"
-- `browser.mjs` — `connectOverCDP` + 多标签页遍历（连接前临时摘除代理环境变量）
+- `browser.mjs` — `connectOverCDP` + 四级挑页链选目标标签页（`pickTargetPageWithMeta`：TARGET_URL_HINT → TASK_URL_PATTERN 形状 → 内容级特征 → 首个非空白；URL 层多命中报错防解错页）+ 连接前临时摘除代理环境变量
+- `task-url.mjs` — 题目页 URL 识别共享小模块（`taskKey`/`isTaskUrl`，正则编译带缓存；watch/lite 与挑页链共用 `TASK_URL_PATTERN` 单旋钮）
 - `browser-session.mjs` — 常驻进程的浏览器会话管理（懒连接 + 互斥串行 + 断线重连），供 mcp-server 等复用
 - `mcp-server.mjs` — MCP Server 入口（stdio）：`probe_page` / `solve_current_task` / `list_models` 三工具；编排留在 agent 侧，不暴露原子浏览器操作与 chat 原语
 - `launch-browser.mjs` — 启动带调试端口的浏览器，含 Windows 保留端口区间自动顺延
