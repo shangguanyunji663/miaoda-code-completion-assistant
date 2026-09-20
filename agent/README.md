@@ -57,7 +57,8 @@ npm run probe
 | `npm run course` | **课程自动驾驶**：遍历「课堂实验→板块→开始学习」，逐关作答直至板块做完（见下方专节） |
 | `npm run course-probe` | 只读诊断课程列表页：打印识别到的板块/卡片并导出快照，**course 卡住时先跑这个** |
 | `npm run models` | 列出可用文本模型 |
-| `npm test` | 运行单测（34 项：核心纯函数 + 挑页链，Node 内置 `node:test`，零新增依赖） |
+| `npm run facts-check` | 校验 `shared/platform-facts.json` 结构：事实段必须带 `evidence`/`date`、推断类字样不得混入事实、待验证项只能在 `unknowns`（编辑事实档案后先跑） |
+| `npm test` | 运行单测（66 项：核心纯函数 + 挑页链 + 平台事实档案校验，Node 内置 `node:test`，零新增依赖） |
 | `npm run lint` | ESLint 静态检查（`eslint.config.js`） |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 | `npm run format:check` | 只检查格式不写入，适合放进 CI |
@@ -74,10 +75,10 @@ npm run probe
 | `AI_API_KEY` | 密钥，必填 | 无默认 |
 | `AI_MODEL` | 模型名，`npm run models` 查看全部，必填 | 无默认 |
 | `AI_TEMPERATURE` | 采样温度 | `0.3` |
-| `AI_MAX_TOKENS` | 单次生成的最大 token 数 | `8192` |
+| `AI_MAX_TOKENS` | 单次生成的最大 token 数（代码默认 `32768`；`.env.example` 模板给 `8192`） | `32768` |
 | `AI_REASONING_EFFORT` | 推理分级：`low` / `medium` / `high`（medium 实测思考有界且多步命令完整；off 会漏多步要求） | `medium` |
 | `AI_ENABLE_THINKING` | `1` = 开启思考走分级；`0` = 思考全关（极简任务） | `1` |
-| `AI_THINKING_CAP_MS` | 思考硬闸：流式响应"仍在思考、正文 0 字"持续超时即断流并重试关思考；`0` = 不设限 | `20000` |
+| `AI_THINKING_CAP_MS` | 思考硬闸：流式响应"仍在思考、正文 0 字"持续超时即断流并重试关思考；`0` = 不设限 | `120000` |
 | `AI_TIMEOUT_MS` | 单次 AI 请求超时，端点挂起按失败重试，避免 loop 永久停摆 | `300000` |
 | `DEBUG_PORT` | 调试端口 | `9333` |
 | `CDP_ENDPOINT` | CDP 连接地址，留空由 `DEBUG_PORT` 拼出 | `http://127.0.0.1:9333` |
@@ -98,6 +99,7 @@ npm run probe
 | `NAV_TIMEOUT_MS` | course：点「下一关」后等待跳转上限 | `10000` |
 | `LIST_TIMEOUT_MS` | course：退出/返回后等列表页重现上限 | `15000` |
 | `MAX_BOARDS_PER_SECTION` | course：单板块处理卡片数防呆上限 | `50` |
+| `LOG_TO_FILE` | 日志落盘开关：`0` = 只输出控制台，不写 `logs/agent-<日期>.log` | `1` |
 
 ## 工作流程
 
