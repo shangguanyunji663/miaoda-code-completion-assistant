@@ -1,4 +1,4 @@
-// EXPORTS: clickEval, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
+// EXPORTS: clickEval, clickByKeywords, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
 //          readTaskNo, waitTaskAdvance, clickExitTask, clickBackArrow,
 //          clickContinueChallenge, clickStartLearning, switchTaskTab, runTerminalCommands,
 //          collectTestSetDetails, dismissPassModal, ensureTaskPage
@@ -58,42 +58,64 @@ async function dismissResultPanel(page) {
 }
 
 /** 按关键词列表点击第一个可见按钮 */
-async function clickByKeywords(page, keywords, label) {
-  for (const kw of keywords) {
-    // 按角色优先级尝试。实测该评测平台上「评测」是 <button>，而「上一关/下一关」
-    // 是 <a>（class ghost-link），只查 button 会漏掉后者，因此必须覆盖 link。
-    // 最后退化为精确文本匹配，兜住非标准角色元素。
-    const candidates = [
-      page.getByRole('button', { name: kw, exact: false }),
-      page.getByRole('link', { name: kw, exact: false }),
-      page.getByText(kw, { exact: true }),
-    ];
-    for (const loc of candidates) {
-      const n = await loc.count().catch(() => 0);
-      for (let i = 0; i < n; i++) {
-        const el = loc.nth(i);
-        if (!(await el.isVisible().catch(() => false))) continue;
-        if (!guard(`点击「${label}」（匹配词：${kw}）`)) return { clicked: false, keyword: kw };
-        let clicked = false;
-        try {
-          await el.click({ timeout: 8000 });
-          clicked = true;
-        } catch {
-          // 被评测结果面板遮挡：收起面板后重试一次（1.1.0 通用处理）
-          log(`点击「${label}」被拦截（疑似被评测结果面板遮挡），收起后重试`);
-          await dismissResultPanel(page);
-          clicked = await el
-            .click({ timeout: 8000 })
-            .then(() => true)
-            .catch(() => false);
+export async function clickByKeywords(page, keywords, label, opts = {}) {
+  // 重扫窗口（毫秒）：短暂遮挡/渲染竞态时自愈；0 表示只试一轮（旧行为）
+  const settleMs = opts.settleMs ?? 6000;
+  const stepMs = opts.settleStepMs ?? 2000;
+  const deadline = Date.now() + settleMs;
+  let sawAny = false;
+  for (let round = 1; ; round++) {
+    for (const kw of keywords) {
+      // 按角色优先级尝试。实测该评测平台上「评测」是 <button>，而「上一关/下一关」
+      // 是 <a>（class ghost-link），只查 button 会漏掉后者，因此必须覆盖 link。
+      // 最后退化为精确文本匹配，兜住非标准角色元素。
+      const candidates = [
+        page.getByRole('button', { name: kw, exact: false }),
+        page.getByRole('link', { name: kw, exact: false }),
+        page.getByText(kw, { exact: true }),
+      ];
+      for (const loc of candidates) {
+        const n = await loc.count().catch(() => 0);
+        for (let i = 0; i < n; i++) {
+          const el = loc.nth(i);
+          if (!(await el.isVisible().catch(() => false))) continue;
+          sawAny = true;
+          if (!guard(`点击「${label}」（匹配词：${kw}）`)) return { clicked: false, keyword: kw };
+          let clicked = false;
+          try {
+            await el.click({ timeout: 8000 });
+            clicked = true;
+          } catch {
+            // 被评测结果面板遮挡：收起面板后重试一次（1.1.0 通用处理）
+            log(`点击「${label}」被拦截（疑似被评测结果面板遮挡），收起后重试`);
+            await dismissResultPanel(page);
+            clicked = await el
+              .click({ timeout: 8000 })
+              .then(() => true)
+              .catch(() => false);
+          }
+          if (!clicked) continue; // 重试仍失败，换下一个候选
+          log(`已点击「${label}」（匹配词：${kw}）`);
+          return { clicked: true, keyword: kw };
         }
-        if (!clicked) continue; // 重试仍失败，换下一个候选
-        log(`已点击「${label}」（匹配词：${kw}）`);
-        return { clicked: true, keyword: kw };
       }
     }
+    // 整轮都没点中：等一会儿再重扫（1.4.1 加，2026-09-20 真机事故）
+    // 现象：连续三次「点击被拦截」后即放弃 → loop 判「未找到评测按钮」终止整题；
+    // 但实测该按钮**存在且可见**（`评测 @1608,941 visible=true`），页面上也没有真实遮罩
+    //（唯一命中项是 Monaco 内部的 margin-view-overlays），属渲染/收起面板的瞬时态。
+    // 给一个有界重扫窗口，比误判"没有评测按钮"而整题作废划算。
+    if (Date.now() >= deadline) break;
+    await dismissResultPanel(page);
+    log(`「${label}」本轮未点中（第 ${round} 轮），${Math.round(stepMs / 1000)}s 后重扫`);
+    await page.waitForTimeout(stepMs);
   }
-  log(`未找到「${label}」按钮（尝试词：${keywords.join('/')}）`);
+  // 区分两种失败：按钮根本不存在 vs 存在但一直点不动——排查方向完全不同
+  log(
+    sawAny
+      ? `「${label}」按钮存在但始终未点中（疑似被遮挡/未就绪），放弃本次点击`
+      : `未找到「${label}」按钮（尝试词：${keywords.join('/')}）`,
+  );
   return { clicked: false, keyword: null };
 }
 
@@ -110,12 +132,12 @@ export async function settle(page) {
 
 /** 点击「评测」按钮 */
 export async function clickEval(page) {
-  return clickByKeywords(page, BTN_EVAL, '评测');
+  return clickByKeywords(page, BTN_EVAL, '评测', { settleMs: 20000, settleStepMs: 2000 });
 }
 
 /** 点击「下一题」按钮 */
 export async function clickNext(page) {
-  return clickByKeywords(page, BTN_NEXT, '下一题');
+  return clickByKeywords(page, BTN_NEXT, '下一题', { settleMs: 4000, settleStepMs: 2000 });
 }
 
 /**
@@ -146,6 +168,8 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
     );
 
   while (Date.now() < deadline) {
+    // 手动停止检查点：评测等待最长 25s，是单步里最长的静默期，
+    // 用户点停止后应当在这里就断，而不是等满超时再走下一步
     await page.waitForTimeout(400); // 2026-09-10：800→400ms，判定延迟减半
     // 「恭喜您通过本关」弹窗是平台权威通过宣告：出现即判过并立即返回。
     // （2026-09-10 真机实测：弹窗带入场动画、可能早于面板文本稳定出现，
@@ -583,6 +607,7 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   let prevCount = 0;
   const termErrors = [];
   for (let ci = 0; ci < commands.length; ci++) {
+    // 检查点放在命令边界：不在键入中途断，避免终端留下半条命令
     const cmd = commands[ci];
     // 非 ASCII 行（中文文件名/数据值等）走合成 paste；纯 ASCII 仍走键盘
     // 逐字符（快且稳）。合成 paste 失败回退 keyboard.type 并告警（该路径
@@ -888,21 +913,30 @@ const COLLECT_TEST_SETS = () => {
     let expected = '';
     let actual = '';
     if (iE < iA) {
-      expected = cut(t.slice(iE + 4, iA)).slice(0, 1200);
-      actual = cut(t.slice(iA + 4).replace(/展示原始输出/g, '')).slice(0, 1200);
+      expected = cut(t.slice(iE + 4, iA)).slice(0, 2000);
+      actual = cut(t.slice(iA + 4).replace(/展示原始输出/g, '')).slice(0, 2000);
     } else {
-      actual = cut(t.slice(iA + 4, iE).replace(/展示原始输出/g, '')).slice(0, 1200);
-      expected = cut(t.slice(iE + 4)).slice(0, 1200);
+      actual = cut(t.slice(iA + 4, iE).replace(/展示原始输出/g, '')).slice(0, 2000);
+      expected = cut(t.slice(iE + 4)).slice(0, 2000);
     }
     if (!expected && !actual) continue;
+    // 测试输入：位于「测试输入」标签之后、预期输出来临之前（2026-09-15 补充：
+    // 反射要结合"针对什么输入"理解失败场景，不能再只喂预期/实际输出）
+    let input = '';
+    const iI = t.indexOf('测试输入');
+    if (iI >= 0) {
+      const start = iI + 4; // 跳过「测试输入」标签本身
+      const end = iE < iA ? iE : iA; // 测试输入出现在预期/实际输出来临之前
+      if (end > start) input = cut(t.slice(start, end)).slice(0, 500);
+    }
     // 只认带正文的区块：纯标签行迷你容器（只有栏目头+耗时行、无实际内容）
     // 会以"最小容器"胜出，喂给反思的只是百余字符的空壳（2026-09-09 实测）
     const bodyLen = (expected + actual).replace(/\s+/g, '').length;
     if (bodyLen < 20) continue;
-    picked.push({ _el: el, title, expected, actual });
+    picked.push({ _el: el, title, expected, actual, input });
     if (picked.length >= 8) break;
   }
-  return picked.map(({ title, expected, actual }) => ({ title, expected, actual }));
+  return picked.map(({ title, expected, actual, input }) => ({ title, expected, actual, input }));
 };
 
 /**
@@ -924,8 +958,8 @@ const COLLECT_TEST_SETS = () => {
  */
 export async function collectTestSetDetails(page, opts = {}) {
   const maxSets = opts.maxSets ?? 8;
-  const perSetCap = opts.perSetCap ?? 1200;
-  const totalCap = opts.totalCap ?? 8000;
+  const perSetCap = opts.perSetCap ?? 2000;
+  const totalCap = opts.totalCap ?? 12000;
   const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
 
   // 1) 展开：只点「未展开」的折叠头（已展开的容器文本含 预期输出/实际输出）；
@@ -1003,7 +1037,7 @@ export async function collectTestSetDetails(page, opts = {}) {
     .slice(0, maxSets)
     .map(
       (s) =>
-        `【${s.title || '测试集'}】\n预期输出：\n${dropDashLines(s.expected.slice(0, perSetCap))}\n实际输出：\n${dropDashLines(s.actual.slice(0, perSetCap))}`,
+        `【${s.title || '测试集'}】${s.input ? `\n测试输入：\n${dropDashLines(s.input)}` : ''}\n预期输出：\n${dropDashLines(s.expected.slice(0, perSetCap))}\n实际输出：\n${dropDashLines(s.actual.slice(0, perSetCap))}`,
     )
     .join('\n\n');
   log(`已展开 ${clicked} 个折叠块，抓取 ${sets.length} 组预期/实际输出明细（${text.length} 字符）`);
