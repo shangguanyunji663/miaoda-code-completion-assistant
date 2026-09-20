@@ -15,6 +15,10 @@
   .kv { color:var(--dim); font-size:13px; } .kv b { color:var(--fg); font-weight:600; }
   button { background:var(--acc); border:0; color:#0b0e14; font-weight:600; padding:8px 16px; border-radius:8px; cursor:pointer; font-size:13px; }
   button.ghost { background:transparent; color:var(--acc); border:1px solid var(--acc); }
+  /* 停止按钮：危险动作语义（描边红字，非实心），禁用态明显区别于可点态 */
+  button.danger { background:transparent; color:var(--bad); border:1px solid var(--bad); font-weight:600; }
+  button.danger:not(:disabled):hover { background:rgba(248,113,113,.14); }
+  button.danger:disabled { opacity:.35; cursor:not-allowed; }
   button:disabled { opacity:.45; cursor:wait; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--dim); margin-right:5px; }
   .dot.on { background:var(--ok); } .dot.off { background:var(--bad); }
@@ -47,11 +51,13 @@
     <div class="row">
       <button id="btnProbe">探测页面（只读）</button>
       <button id="btnSolve">▶ 解当前题（会真实提交评测）</button>
+      <button class="danger" id="btnStop" disabled>■ 停止做题</button>
       <span style="flex:1"></span>
       <span class="kv" id="busy"></span>
     </div>
     <pre id="result">结果将显示在这里。请先在带调试端口的浏览器中打开题目页。</pre>
-    <div class="hint">「解当前题」= 感知 → AI 生成/作答 → 提交评测 → 失败自动反思重试；编排过程看下方日志。</div>
+    <div class="hint">「解当前题」= 感知 → AI 生成/作答 → 提交评测 → 失败自动反思重试（最多 MAX_RETRY 轮，默认 10）；编排过程看下方日志。<br>
+      <b>评测一直不通过时点「停止做题」</b>：立即停止后续动作——不再提交下一次评测、不再发起下一次 AI 调用；中断发生在当前步骤结束时（评测等待最长约 25 秒），已在途的 AI 请求会被直接断流。</div>
   </div>
 
   <div class="card">
@@ -74,9 +80,19 @@
 <script>
   let lastSeq = 0;
   let confirmOnOk = null;
+  let busyText = ''; // 非运行态下 busy 区应显示的文本（状态轮询时回填，避免被清空）
 
   const $ = (id) => document.getElementById(id);
-  const setBusy = (t) => { $('busy').textContent = t || ''; $('btnProbe').disabled = !!t; $('btnSolve').disabled = !!t; };
+  const resetStopBtn = () => { const b = $('btnStop'); b.textContent = '■ 停止做题'; b.disabled = true; };
+  // stoppable：只有真实解题才开放「停止做题」（探测是只读快操作，没有循环可停）
+  const setBusy = (t, stoppable = false) => {
+    busyText = t || '';
+    $('busy').textContent = busyText;
+    $('btnProbe').disabled = !!t;
+    $('btnSolve').disabled = !!t;
+    if (t && stoppable) $('btnStop').disabled = false;
+    else resetStopBtn();
+  };
 
   function showConfirm(text, onOk) {
     $('confirmText').textContent = text;
@@ -95,6 +111,17 @@
       if (document.activeElement !== $('modelInput')) $('modelInput').value = s.model || '';
       $('browser').textContent = s.browser.connected ? '已连接' : '未连接';
       $('browserDot').className = 'dot ' + (s.browser.connected ? 'on' : 'off');
+      // 运行态以服务端为准（每 5s 校正一次按钮即时状态）：
+      // 运行中显示"跑到哪一步"；已请求停止则按钮变灰并提示等待
+      const run = s.run || {};
+      if (run.running) {
+        $('btnStop').disabled = !!run.stopping;
+        $('btnStop').textContent = run.stopping ? '正在停止…' : '■ 停止做题';
+        $('busy').textContent = run.stopping ? '正在停止…（当前步骤结束即中断）' : `运行中：${run.phase || '…'}`;
+      } else {
+        resetStopBtn();
+        $('busy').textContent = busyText;
+      }
     } catch (e) { $('aiReady').textContent = '状态获取失败'; }
   }
 
@@ -120,13 +147,15 @@
     }
   }
 
-  async function callApi(path) {
-    setBusy('执行中…（可能需要数十秒到数分钟，看下方日志）');
+  async function callApi(path, opts = {}) {
+    setBusy(opts.busyText || '执行中…（可能需要数十秒到数分钟，看下方日志）', !!opts.stoppable);
     $('result').textContent = '执行中…';
     try {
       const r = await fetch(path, { method: 'POST' });
       const data = await r.json();
-      $('result').textContent = JSON.stringify(data, null, 2);
+      // 手动停止不是错误：HTTP 200 + stopped:true，单独给一行人类可读结论
+      const head = data.stopped ? '已手动停止（未提交下一次评测、未发起下一次 AI 调用）。\n\n' : '';
+      $('result').textContent = head + JSON.stringify(data, null, 2);
       if (data.error) $('result').className = 'err';
       else $('result').className = '';
     } catch (e) {
@@ -135,6 +164,23 @@
     } finally {
       setBusy('');
       refreshStatus();
+    }
+  }
+
+  /** 请求停止在途解题：置位服务端中断标志，由 agent 各检查点接管 */
+  async function stopSolve() {
+    const btn = $('btnStop');
+    btn.disabled = true;
+    btn.textContent = '正在停止…';
+    $('busy').textContent = '正在停止…';
+    try {
+      const r = await (await fetch('/api/stop', { method: 'POST' })).json();
+      $('busy').textContent = r.message || (r.stopped ? '已请求停止' : '无需停止');
+    } catch (e) {
+      // 请求失败说明标志未置位：把按钮还回去，让用户可以重试
+      $('busy').textContent = '停止请求失败：' + e.message;
+      btn.disabled = false;
+      btn.textContent = '■ 停止做题';
     }
   }
 
@@ -153,8 +199,10 @@
   $('btnStatus').onclick = refreshStatus;
   $('btnSaveModel').onclick = saveModel;
   $('modelInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveModel(); });
-  $('btnProbe').onclick = () => callApi('/api/probe');
-  $('btnSolve').onclick = () => showConfirm('将真实点击「评测」按钮提交本题，确认继续？', () => callApi('/api/solve'));
+  $('btnProbe').onclick = () => callApi('/api/probe', { busyText: '探测页面中…' });
+  $('btnSolve').onclick = () =>
+    showConfirm('将真实点击「评测」按钮提交本题，确认继续？', () => callApi('/api/solve', { stoppable: true }));
+  $('btnStop').onclick = stopSolve;
   $('confirmOk').onclick = () => { const f = confirmOnOk; hideConfirm(); if (f) f(); };
   $('confirmCancel').onclick = hideConfirm;
   $('confirmMask').onclick = (e) => { if (e.target === $('confirmMask')) hideConfirm(); };

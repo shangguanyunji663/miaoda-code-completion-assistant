@@ -17,11 +17,12 @@
 - `browser.mjs` — `connectOverCDP` + 四级挑页链选目标标签页（`pickTargetPageWithMeta`：TARGET_URL_HINT → TASK_URL_PATTERN 形状 → 内容级特征 → 首个非空白；URL 层多命中报错防解错页；CDP 下 visibilityState 不可用，见 TROUBLESHOOTING C-4/C-11）+ 连接前临时摘除代理环境变量
 - `task-url.mjs` — 题目页 URL 识别共享小模块（`taskKey`/`isTaskUrl`，正则编译带缓存；watch/lite 与挑页链共用 `TASK_URL_PATTERN` 单旋钮）
 - `browser-session.mjs` — 常驻进程的浏览器会话管理（懒连接 + 互斥串行 + 断线重连），供 web-server 复用
-- `web-server.mjs` — 网页工作台（零新增依赖 node:http + 单文件原生前端，仅绑 127.0.0.1）：`GET /`、`GET /api/status`（每次请求比对 `.env.local` 模型差异热生效）、`POST /api/probe`（只读）、`POST /api/solve`（真实提交）、`GET /api/logs`（环形缓冲增量轮询）、`/api/config`（页面写回模型名到 `.env.local`）
+- `control.mjs` — 运行控制层：`StopRequested` + `beginRun`/`endRun` + `requestStop`/`checkStop`/`isStopping` + `onStop` 订阅（在途 AI 请求 abort）+ `stopState`（供 `/api/status` 展示运行阶段）。停止请求有**轮次隔离**（记住"发出时跑的是第几轮"，只对该轮生效），中断是**协作式**的——靠各层检查点抛异常，不取消 playwright 调用
+- `web-server.mjs` — 网页工作台（零新增依赖 node:http + 单文件原生前端，仅绑 127.0.0.1）：`GET /`、`GET /api/status`（每次请求比对 `.env.local` 模型差异热生效；含运行态 `run`）、`POST /api/probe`（只读）、`POST /api/solve`（真实提交；被停止时返回 HTTP 200 + `stopped:true`）、`POST /api/stop`（手动打断在途解题，**刻意不走浏览器互斥队列**）、`GET /api/logs`（环形缓冲增量轮询）、`/api/config`（页面写回模型名到 `.env.local`）
 - `launch-browser.mjs` — 启动带调试端口的浏览器，含 Windows 保留端口区间自动顺延
 - `perceive.mjs` — 页面感知：编辑器探测、题干提取、题型分类（选择/填空按结构信号；代码/命令行/混合由 AI 按题干意图判定）、按钮枚举、课程列表卡片/板块收集、终端环境识别（`detectTerminalEnv`：bash/mongosh/mysql/redis/psql/neo4j）、内容级判题（`looksLikeTaskPage`：强代码编辑器/评测面板标记/评测按钮，挑页链兜底用）
 - `act.mjs` — 执行层：写入代码、勾选选项、点击评测、等待结果、翻页、课程导航（退出/返回/开始学习/跳转检测）、切换「命令行/代码文件」工作区标签、向 xterm 终端逐条键入命令、客户端可用性实测（`probeTerminalClients`）、shell 护栏清洗（`sanitizeShellSubmission`）
-- `loop.mjs` — 编排：生成 → 评测 → 反思循环；`watchLoop` 常驻监听；`liteLoop` 刷新触发监听；`courseLoop` 课程自动驾驶；混合题先在命令行做数据准备（输入期报错反思自愈）再落代码分支；代码反思教训链（`lessons` 逐轮注入防横跳）与连续同类报错重载兜底（同一异常 ≥3 轮自动重载题目页重取原始模板，上限 2 次）
+- `loop.mjs` — 编排：生成 → 评测 → 反思循环；`solveOnce` 整体包 `beginRun`/`endRun`（`endRun` 在 `finally`，成功/失败/被停止三态运行态都不悬空）并在各阶段埋 `checkStop` 检查点（意图判定、切工作区、每轮重试开头、**提交评测前**、反思调用前、重载题目页前）；`watchLoop` 常驻监听；`liteLoop` 刷新触发监听；`courseLoop` 课程自动驾驶；混合题先在命令行做数据准备（输入期报错反思自愈）再落代码分支；代码反思教训链（`lessons` 逐轮注入防横跳）与连续同类报错重载兜底（同一异常 ≥3 轮自动重载题目页重取原始模板，上限 2 次）
 - `cli.mjs` — CLI 入口：`browser | my-edge | probe | dump | caps-check | once | run | watch | lite | course | course-probe | models`
 - `inspect-dom.mjs` — 只读 DOM 诊断脚本（关键字命中上下文扫描 + 评测面板结构核对，精调判定规则用）
 
@@ -46,5 +47,6 @@
 - **写入优先编辑器 API，键盘为回退**：Monaco/CodeMirror5 先 `model.setValue`/`cm.setValue`（触发内容变化事件、平台自动保存不受影响，且字节级精确——实测 Monaco 的 formatOnPaste/autoIndent 会把 insertText 进来的预缩进 Python 逐行重排致评测不匹配）；API 不可用再走 `点击 → Ctrl+A → Delete → insertText`；写入后回读验证；写完点编辑器外部并静置。
 - **模板拼接以原始模板为权威 + 兜底直通**：代码题写入 = `spliceIntoTemplate(原始模板, AI 输出)`——仅替换 Begin/End 标记间代码体（按序逐对）、保留行首缩进；**标记不成对或 AI 输出为完整代码（≥2 个模块级语句）时整体直通**（平台只按执行结果评测，宁可整体写入 AI 完整实现，绝不按不可信标记丢函数）；模板存档在函数作用域，连续同类报错 ≥3 轮自动重载题目页重取平台原始模板（1.3.0，购物车/令牌题 IndentationError 死循环根治）。
 - **浏览器连接**：连不上调试端口时自动拉起独立 profile 浏览器（`AUTO_LAUNCH=0` 关闭）；要接管"用户自己的 Edge"须用 `my-edge`（junction 绕过 136+ 默认目录禁令，且必须先关闭运行中的实例——同 profile 旧实例会合并新命令）。沙箱/受限执行环境里脚本拉起的浏览器活不过命令边界，需由资源管理器（双击 bat）启动。
+- **手动停止是「协作式中断」，不是 Promise 取消**：中断只能靠 `control.mjs` 的 `checkStop` 在检查点抛 `StopRequested`（playwright 调用无法安全取消，硬断会留下半写入的编辑器/半条命令）。因此**新增长时间等待或新循环时必须补检查点**，否则工作台的「停止做题」会卡到该步骤自然结束；`/api/stop` 不得改走 `withBrowserSession`（队列被在途解题占着，排队等于"点了没反应"）；`beginRun`/`endRun` 必须成对出现（`endRun` 放 `finally`），否则运行态悬空会让按钮永远停在"运行中"。
 - **安全**：端点 / 密钥 / 模型名等个人配置只允许存在于 `agent/.env.local`（已被 .gitignore 排除），源码与 `.env.example` 中不得出现真实值；`agent/.browser-profile*/`（登录态）、`agent/dumps/`（含个人信息的页面快照）、`agent/logs/` 同样严禁提交。
 - **如实标注验证边界**：未验证的能力不得在文档中声称可用。

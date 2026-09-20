@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { cfg, assertAiReady } from './config.mjs';
 import { createLogger } from './logger.mjs';
+import { checkStop, isStopping, onStop, StopRequested } from './control.mjs';
 import { assertCapabilitiesValid } from './capability-schema.mjs';
 
 const CAP_DIR = cfg.paths.capabilitiesDir;
@@ -69,6 +70,8 @@ export async function chat(messages, opts = {}) {
   const maxAttempts = opts.maxAttempts ?? 2;
   let lastErr;
   for (let i = 0; i < maxAttempts; i++) {
+    // 手动停止检查点：已请求停止时不再发起新的请求（也不做退避重试）
+    checkStop('调用 AI');
     // 思考开关按轮次计算：调用级/全局关闭，或上一轮思考超限时强制关闭。
     // 关思考双通道同发：chat_template_kwargs（vLLM/SGLang 系）+ 顶层
     // enable_thinking（DashScope/硅基流动系），端点认哪个用哪个，
@@ -105,6 +108,9 @@ export async function chat(messages, opts = {}) {
         `AI 流式响应中（第 ${i + 1}/${maxAttempts} 轮，已 ${Math.round((Date.now() - t0) / 1000)}s）｜思考 ${reasoning.length} 字、正文 ${content.length} 字${reasoning ? '｜…' + reasoning.slice(-60).replace(/\s+/g, ' ') : ''}`,
       );
     }, 30000);
+    // 手动停止联动（1.4.0）：工作台点「停止做题」即 abort 在途流——
+    // 推理模型的思考常达 60~120s，等它自然结束再停等于没停
+    const offStop = onStop(() => ac.abort());
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -208,6 +214,11 @@ export async function chat(messages, opts = {}) {
         raw: { finish_reason: finish, reasoning_length: reasoning.length },
       };
     } catch (err) {
+      // 手动停止优先级最高：abort 抛出的同样是 AbortError，若不先判会
+      // 被下面的"空闲超时"分支误描述成端点挂起，并进入 800ms 退避后重试
+      if (isStopping()) {
+        throw new StopRequested(`AI 调用已中断（手动停止，已累计思考 ${reasoning.length} 字）`);
+      }
       if (thinkExceeded) {
         forceThinkingOff = true;
         err = new Error(
@@ -236,6 +247,7 @@ export async function chat(messages, opts = {}) {
         await new Promise((r) => setTimeout(r, 800 * 2 ** i));
       }
     } finally {
+      offStop();
       clearTimeout(idle);
       clearInterval(hb);
     }

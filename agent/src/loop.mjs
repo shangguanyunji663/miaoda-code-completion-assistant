@@ -12,6 +12,7 @@
 
 import { cfg } from './config.mjs';
 import { createLogger } from './logger.mjs';
+import { beginRun, endRun, checkStop, StopRequested } from './control.mjs';
 import { connectBrowser, pickTargetPage } from './browser.mjs';
 import { taskKey } from './task-url.mjs';
 import {
@@ -180,10 +181,26 @@ function slimForReflection(p) {
  * 选择/填空题按结构信号直接作答；代码题与命令行题先按题干内容做 AI 意图判定
  * （classifyProblemIntent），再自动切到对应工作区（代码文件 / 命令行）执行，
  * 两条分支均含反思修正循环（最多 cfg.loop.maxRetry 轮）。
+ *
+ * 运行控制（1.4.0）：整体包在 beginRun / endRun 之间，使「手动停止」只对
+ * 本轮生效（轮次隔离见 control.mjs）；中断以 StopRequested 异常冒泡到调用方，
+ * 由入口（网页工作台 / CLI 循环）决定如何呈现。endRun 放 finally，保证
+ * 成功、失败、被中断三种收场上运行态都不会悬空。
  * @param {import('playwright-core').Page} page
  * @param {object} probe probePage 的结果
  */
 export async function solveOnce(page, probe) {
+  beginRun('开始解题');
+  try {
+    return await solveOnceInner(page, probe);
+  } finally {
+    endRun();
+  }
+}
+
+/** solveOnce 的实际实现（调用方请走 solveOnce，以带运行轮次语义） */
+async function solveOnceInner(page, probe) {
+  checkStop('感知题目');
   const problem = (probe.problem ?? '').trim();
   if (!problem) {
     log('未提取到题目文本，跳过（可先执行 npm run dump 检查页面结构）');
@@ -198,6 +215,7 @@ export async function solveOnce(page, probe) {
     if (qs.length > 0) {
       // 结构化多小题：一次性交给 AI 批量作答，再逐项勾选
       log(`识别到 ${qs.length} 道小题（其中多选 ${qs.filter((q) => q.multi).length} 道）`);
+      checkStop('AI 批量作答');
       const { map, raw } = await answerBatch({ questions: qs, reference: problem });
       log(`AI 批量答案：${raw.replace(/\s+/g, ' ').slice(0, 150)}`);
       const applied = await applyAnswers(page, qs, map);
@@ -209,12 +227,14 @@ export async function solveOnce(page, probe) {
     } else {
       // 回退：页面非结构化容器，退化成单题作答
       const options = (probe.inputs?.choiceLabels ?? []).join('\n');
+      checkStop('AI 作答');
       const ans = await answerQuestion({ question: problem, options, questionType: kind });
       log(`AI 答案：${String(ans).slice(0, 60)}`);
       if (kind === 'choice') await answerChoice(page, ans);
       else await fillBlank(page, ans);
     }
 
+    checkStop('提交评测');
     await settle(page);
     await clickEval(page);
     const ev = await waitEvalResult(page);
@@ -230,6 +250,7 @@ export async function solveOnce(page, probe) {
   // ---- 代码题 / 命令行题：先读题干判意图，再分流到对应工作区 ----
   // 判定依据是题干要求本身（AI 意图路由），而非当前激活的 tab；
   // 判定后若工作区 tab 不符则自动切换（命令行 / 代码文件）。
+  checkStop('题干意图判定');
   const intent = await classifyProblemIntent({ problem, codeTemplate: probe.code ?? '' });
   log(
     `题干意图判定：${intent === 'cmdline' ? '命令行操作（cmdline）' : intent === 'mixed' ? '命令行准备 + 代码栏作答（mixed）' : '代码编写（code）'}`,
@@ -252,6 +273,7 @@ export async function solveOnce(page, probe) {
   // 评测只认代码栏。处置：先在命令行完成数据准备（至多两轮、含输入期
   // 报错反思自愈），再落入代码分支常规作答；终端不可用则警告跳过。
   if (intent === 'mixed') {
+    checkStop('切换到命令行工作区');
     const tab = await switchTaskTab(page, '命令行');
     if (tab.found && tab.clicked) await settle(page);
     if (await waitForTerminal(page)) {
@@ -275,6 +297,7 @@ export async function solveOnce(page, probe) {
         // 数据准备最多两轮：第一轮若输入期报错（入口命令不存在、子命令被敲进
         // bash 等），反思一轮自愈后重做，避免"插入失败 → 代码查询空结果"连锁失败
         for (let p = 1; p <= 2 && prep.length; p++) {
+          checkStop(`混合题数据准备（第 ${p} 轮）`);
           const guarded = applyCommandGuards(prep, bannedCmds);
           log(`混合题前置：向终端键入 ${guarded.cmds.length} 条数据准备命令（第 ${p} 轮）`);
           const r = await runTerminalCommands(page, guarded.cmds);
@@ -311,6 +334,7 @@ export async function solveOnce(page, probe) {
   }
 
   if (intent === 'cmdline') {
+    checkStop('切换到命令行工作区');
     const tab = await switchTaskTab(page, '命令行');
     if (tab.found && tab.clicked) await settle(page);
     if (!(await waitForTerminal(page))) {
@@ -325,6 +349,7 @@ export async function solveOnce(page, probe) {
     const lessons = []; // 各轮反思的诊断结论（Reflexion 式教训链，跨轮注入）
     let roundsCleanRun = 0; // 命令全部跑通（无输入期报错）的轮数——逃生舱判据
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
+      checkStop(`命令行第 ${attempt}/${cfg.loop.maxRetry} 轮`);
       if (cmds === null) {
         // 生成期间无中间日志可打，必须提前预告静默期，否则推理模型
         // 的思考+生成会被用户当成"卡死/不作答"。日志格式四处 AI 调用统一。
@@ -423,6 +448,7 @@ export async function solveOnce(page, probe) {
       }
       if (attempt === cfg.loop.maxRetry) break;
 
+      checkStop('命令反思');
       log(
         `正在调用 AI 命令反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
       );
@@ -467,6 +493,7 @@ export async function solveOnce(page, probe) {
   }
 
   // ---- 代码题：确保「代码文件」工作区激活后，生成 → 评测 → 反思循环 ----
+  checkStop('切换到代码文件工作区');
   const tab = await switchTaskTab(page, '代码文件');
   if (tab.found && tab.clicked) await settle(page);
   if (!(await waitForEditor(page))) {
@@ -496,6 +523,7 @@ export async function solveOnce(page, probe) {
   const lessons = [];
 
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
+    checkStop(`代码第 ${attempt}/${cfg.loop.maxRetry} 轮`);
     if (code === null) {
       // 同命令行分支：预告静默期 + 统计耗时，消除"切完 tab 就没动静"的观感
       log(
@@ -552,9 +580,11 @@ export async function solveOnce(page, probe) {
       submitted = wrap.code;
       log('数据库命令题 echo 双引号包裹兜底（bash 环节零噪音，平台提取引号内命令 eval）');
     }
+    checkStop('写入编辑器');
     await writeEditorCode(page, submitted);
     await settle(page);
 
+    checkStop('提交评测');
     const clicked = await clickEval(page);
     if (!clicked.clicked) {
       log('未找到评测按钮，终止本题');
@@ -594,6 +624,7 @@ export async function solveOnce(page, probe) {
       if (sameErrStreak >= 3 && reloadCount < 2) {
         reloadCount++;
         log(`连续 ${sameErrStreak} 轮同类错误「${sig}」——重载题目页重取平台原始模板（第 ${reloadCount}/2 次）…`);
+        checkStop('重载题目页');
         try {
           await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
           await page.waitForTimeout(cfg.loop.cooldownMs);
@@ -627,6 +658,7 @@ export async function solveOnce(page, probe) {
 
     if (attempt === cfg.loop.maxRetry) break;
 
+    checkStop('代码反思');
     log(
       `正在调用 AI 代码反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
     );
@@ -721,6 +753,11 @@ export async function runLoop(opts = {}) {
       await page.waitForTimeout(cfg.loop.cooldownMs);
       await page.waitForLoadState('domcontentloaded').catch(() => {});
     }
+  } catch (e) {
+    // 停止请求只可能在 solveOnce 运行期内被置位（/api/stop 在无运行任务时直接拒绝），
+    // 故中断总是从 solveOnce 内部抛出；这里只负责优雅收场并保留已完成进度
+    if (!(e instanceof StopRequested)) throw e;
+    log(`已手动停止连续解题：${e.message}（已完成 ${summary.length} 题，通过 ${solved} 题）`);
   } finally {
     await browser.close().catch(() => {});
   }
@@ -917,7 +954,8 @@ export async function liteLoop() {
             if (!r?.ok) log('提示：反思重试已用尽仍未通过，刷新本页可让 agent 重新完整作答');
           }
         } catch (e) {
-          log(`处理异常：${e.message}`);
+          if (e instanceof StopRequested) log(`本轮已手动停止：${e.message}`);
+          else log(`处理异常：${e.message}`);
         } finally {
           busy = false;
         }
@@ -1111,6 +1149,11 @@ export async function courseLoop() {
 
     log(
       `课程模式完成：处理 ${summary.boards} 个小板块，通过 ${summary.passed}/${summary.attempts} 关`,
+    );
+  } catch (e) {
+    if (!(e instanceof StopRequested)) throw e;
+    log(
+      `已手动停止课程自动驾驶：${e.message}（已完成 ${summary.boards} 个小板块，通过 ${summary.passed}/${summary.attempts} 关）`,
     );
   } finally {
     await browser.close().catch(() => {});
