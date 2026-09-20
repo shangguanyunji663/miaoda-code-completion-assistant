@@ -14,6 +14,7 @@ import {
   detectVerdict,
   sanitizeShellSubmission,
   spliceIntoTemplate,
+  emptyMarkerBlocks,
   renderTemplate,
   parseAnswers,
 } from '../src/ai.mjs';
@@ -120,6 +121,167 @@ test('spliceIntoTemplate：不会把 Redis 事务的 BEGIN 当平台标记', () 
   const tpl = ['MULTI', 'BEGIN', 'SET k v', 'END', 'EXEC'].join('\n');
   const out = spliceIntoTemplate(tpl, 'SET a b');
   assert.equal(out, 'SET a b');
+});
+
+test('spliceIntoTemplate：多对 Begin/End 标记逐对替换，不丢后面的实现', () => {
+  // 2026-09-15 事故：Redis 令牌管理题模板三个函数各一对标记，旧实现只替换
+  // 第一对，导致 update_token/clean_tokens 恒为空 → IndentationError + 反思死循环
+  const tpl = [
+    'import time',
+    'def check_token(token):',
+    '#******** Begin ********#',
+    '    return None',
+    '#******** End ********#',
+    '',
+    'def update_token(token, user_id):',
+    '#******** Begin ********#',
+    '    pass',
+    '#******** End ********#',
+    '',
+    'def clean_tokens():',
+    '#******** Begin ********#',
+    '    pass',
+    '#******** End ********#',
+  ].join('\n');
+  const ai = [
+    'import time',
+    'def check_token(token):',
+    '#******** Begin ********#',
+    "    return conn.hget('login', token)",
+    '#******** End ********#',
+    '',
+    'def update_token(token, user_id):',
+    '#******** Begin ********#',
+    "    conn.hset('login', token, user_id)",
+    '#******** End ********#',
+    '',
+    'def clean_tokens():',
+    '#******** Begin ********#',
+    "    conn.hdel('login', 'expired')",
+    '#******** End ********#',
+  ].join('\n');
+  const out = spliceIntoTemplate(tpl, ai);
+  assert.match(out, /conn\.hget/); // 第一个块
+  assert.match(out, /conn\.hset/); // 第二个块不再被丢弃
+  assert.match(out, /conn\.hdel/); // 第三个块不再被丢弃
+  assert.doesNotMatch(out, /return None/);
+  assert.doesNotMatch(out, /def update_token[\s\S]*?\n\s*pass/);
+});
+
+test('emptyMarkerBlocks：缺实现的区域=块内无实质代码（仅注释/空行判空）', () => {
+  const tpl = [
+    '#******** Begin ********#',
+    '    return 1',
+    '#******** End ********#',
+    '',
+    '#******** Begin ********#',
+    '    # 仅注释，不算实现',
+    '#******** End ********#',
+    '',
+    '#******** Begin ********#',
+    '#******** End ********#',
+  ].join('\n');
+  // 块 2（仅注释）与块 3（空白）都缺实质代码，判空；块 1 已实现
+  assert.deepEqual(emptyMarkerBlocks(tpl), [2, 3]);
+  assert.deepEqual(emptyMarkerBlocks('return 1'), []);
+  assert.deepEqual(emptyMarkerBlocks(['#******** Begin ********#', 'x', '#******** End ********#'].join('\n')), []);
+});
+
+test('spliceIntoTemplate：函数体内的代码缩进必须保留（2026-09-15 真正根因）', () => {
+  // 模板 Begin/End 行在函数体内（4 空格缩进），AI 输出相对 Begin 行同级的
+  // 4 空格实现。旧实现 body.trim() 把首行缩进剥掉，拼完顶格 → IndentationError，
+  // 与评测平台报错逐字一致（实测复现）
+  const tpl = ['def check_token(token):', '    #*** Begin ***#', '    #*** End ***#'].join('\n');
+  const ai = [
+    'def check_token(token):',
+    '    #*** Begin ***#',
+    "    return conn.hget('login', token)",
+    '    #*** End ***#',
+  ].join('\n');
+  const out = spliceIntoTemplate(tpl, ai);
+  assert.match(out, /\n    return conn\.hget\('login', token\)\n/); // 保留 4 空格
+  assert.doesNotMatch(out, /\nreturn conn\.hget/); // 禁止顶格
+});
+
+test('spliceIntoTemplate：AI 输出无标记但为完整代码时整体直通，不再塞进第一个块', () => {
+  // 2026-09-15 事故：反思轮 AI 直接给出"干净版完整代码"（无 Begin/End 标记，
+  // 含多个顶层 def/import）。旧逻辑整段塞进第一个 Begin/End 块 → 函数嵌套、
+  // import 错位 → 评测 unexpected indent 且反思死循环
+  const tpl = ['def check_token(token):', '    #*** Begin ***#', '    #*** End ***#', ''].join('\n');
+  const ai = [
+    'import time',
+    'import redis',
+    'def check_token(token):',
+    "    return conn.hget('login', token)",
+    'def update_token(token, user_id):',
+    "    conn.hset('login', token, user_id)",
+  ].join('\n');
+  assert.equal(spliceIntoTemplate(tpl, ai).trim(), ai);
+});
+
+test('spliceIntoTemplate：AI 未标记且是单语句片段仍整段填第一个块（旧行为兼容）', () => {
+  const tpl = ['#*** Begin ***#', '#*** End ***#'].join('\n');
+  assert.equal(spliceIntoTemplate(tpl, 'return 1'), '#*** Begin ***#\nreturn 1\n#*** End ***#');
+});
+
+test('spliceIntoTemplate：模板标记不成对时 AI 完整代码直通，不丢函数实现', () => {
+  // 2026-09-15 真机实证（step2 购物车题）：模板的 get_cart_info 只有 Begin 无 End
+  //（平台保存截断/无标记），旧按标记归位把 AI 输出中无法映射的实现整体丢掉 →
+  // get_cart_info 恒空 → IndentationError 死循环。AI 输出为完整代码时必须整体直通
+  const tpl = [
+    'import redis',
+    'conn = redis.Redis()',
+    'def add_item(name, price):',
+    '    #*** Begin ***#',
+    '    return 1',
+    '    #*** End ***#',
+    'def get_cart_info(user_id):',
+    '    #*** Begin ***#', // Begin 后无 End（模板不完整）
+  ].join('\n');
+  const ai = [
+    'import redis',
+    'conn = redis.Redis()',
+    'def add_item(name, price):',
+    '    #*** Begin ***#',
+    '    return 1',
+    '    #*** End ***#',
+    'def get_cart_info(user_id):',
+    '    #*** Begin ***#',
+    "    return conn.hgetall('cart:' + str(user_id))",
+    '    #*** End ***#',
+  ].join('\n');
+  const out = spliceIntoTemplate(tpl, ai);
+  assert.equal(out.trim(), ai);
+  assert.match(out, /hgetall/); // get_cart_info 实现不再丢失
+});
+
+test('spliceIntoTemplate：模板标记 Begin≠End 时即使 AI 只有一个函数也整体直通', () => {
+  // 2026-09-15 兜底方案：模板本身标记不成对 = 模板不可信，不能再按标记归位
+  //（归位必把无法映射的块丢弃）。此时连「AI 仅 1 个模块级语句」也直通——
+  // 标记归位的前提已不存在，保 AI 全部实现优先于保模板结构
+  const tpl = [
+    'def add_item(name, price):',
+    '    #*** Begin ***#',
+    '    return 1',
+    '    #*** End ***#',
+    'def get_cart_info(user_id):',
+    '    #*** Begin ***#', // Begin 后无 End
+  ].join('\n');
+  const ai = [
+    'import redis',
+    "conn = redis.Redis()",
+    'def add_item(name, price):',
+    '    #*** Begin ***#',
+    "    return conn.hset('item:' + str(name), 'price', price)",
+    '    #*** End ***#',
+    'def get_cart_info(user_id):',
+    '    #*** Begin ***#',
+    "    return conn.hgetall('cart:' + str(user_id))",
+    '    #*** End ***#',
+  ].join('\n');
+  const out = spliceIntoTemplate(tpl, ai);
+  assert.equal(out.trim(), ai); // 直接整体直通
+  assert.match(out, /hgetall/);
 });
 
 test('sanitizeShellSubmission：普通编程题零触发', () => {

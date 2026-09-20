@@ -1,4 +1,4 @@
-// EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop
+// EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop, slimForReflection, looksLikeOwnDraft
 // 主编排：感知 → 意图判定 → 生成/作答 → 提交评测 → 读结果 → 失败反思 → 成功翻页。
 //
 // 单题流程（代码题 / 命令行题 / 混合题，按题干意图分流）：
@@ -54,6 +54,7 @@ import {
   answerBatch,
   detectVerdict,
   spliceIntoTemplate,
+  emptyMarkerBlocks,
   sanitizeShellSubmission,
   wrapDbCommandsInEcho,
   classifyProblemIntent,
@@ -153,25 +154,81 @@ function formatInputErrors(termErrors) {
 }
 
 /**
- * 反思用瘦身题干（0.9.1 双锚点扩窗）：以「编程要求」与「测试说明」两段为锚，
- * 覆盖要求明细 + 评测机制说明（约 2600 字窗口）。
+ * 反思用瘦身题干（0.9.1 双锚点扩窗 + 1.4.1 正文锚点修正）：
+ * 以「编程要求」与「测试说明」两段为锚，覆盖要求明细 + 评测机制说明。
+ *
+ * ★ 锚点必须取【最后一次】出现（1.4.1 修，2026-09-20 真机事故）：评测页题干
+ * 顶部常有一份**目录**（"任务描述 相关知识 … 编程要求 测试说明"），取首次出现
+ * 时两个锚点会同时落在目录里，窗口退化成题干开头约 1600 字——恰好把「编程要求」
+ * 的正文细则整体切掉。本题（Redis IP 地址库）因此丢失了三条硬要求
+ * （"城市ID + _ + 行索引作为成员"、"分值小于等于…分值最大的成员"、"去除 _ 及其之后"），
+ * 反思 AI 看不到要求，便把**正确的** `city_id + "_" + str(count)` 判定为
+ * "引入了不必要的行号、破坏了城市 ID 的直接存储语义"而主动改错——10 轮反思
+ * 越改越错、全部失败。正文锚点 + 更长的尾窗可根治。
+ *
  * 教训（2026-09-10 真机）：旧版单锚 ±窗口只有 ~1500 字，本题的「测试说明」
  * （"平台会把你在代码行编写的命令传到数据库执行"）落在窗口外——反思 AI
  * 不懂评测机制，把预期输出面板的中文标签当成了输出要求，酿成灾难性修正。
+ * @param {string} p 完整题干
+ * @returns {string} 反思用题干片段
  */
-function slimForReflection(p) {
+export function slimForReflection(p) {
   const anchors = ['编程要求', '测试说明'];
   let start = Number.POSITIVE_INFINITY;
   let end = -1;
   for (const a of anchors) {
-    const i = p.indexOf(a);
+    const i = p.lastIndexOf(a); // 取正文锚点，避开页首目录（见头注）
     if (i !== -1) {
       start = Math.min(start, i);
       end = Math.max(end, i);
     }
   }
   if (start === Number.POSITIVE_INFINITY) return p.slice(0, 3000);
-  return p.slice(Math.max(0, start - 400), Math.min(p.length, end + 1600));
+  return p.slice(Math.max(0, start - 400), Math.min(p.length, end + 2400));
+}
+
+/** 连续同类报错重载兜底的最大重载次数（防"重载-同类报错"死循环） */
+const RELOAD_MAX = 2;
+
+/**
+ * 判据（1.4.3）：重载题目页后拿回的编辑器内容，是不是「我们自己上一轮提交的那份草稿」。
+ *
+ * 背景（2026-09-20 真机）：本平台**持久化编辑器草稿且无「恢复初始代码」按钮**，
+ * 于是 `page.reload()` / 重新 goto 都拿不回平台原始模板。而旧实现的重载兜底判据是
+ * 「`fresh.code` 非空即视为重取成功」——草稿恰好非空，于是走进 `codeProbe = fresh`，
+ * **把函数作用域里那份干净的原始模板存档覆盖成污染草稿**，再强制基于污染模板重新生成。
+ * 即该兜底在本平台不是"无效"，而是"主动把基准从干净降级为污染"，比不触发更糟。
+ *
+ * 设计取舍：**判实际拿回的内容，而不是读 `platform-facts.json` 里的
+ * `editor.draft_persisted_by_platform`**——① 该行为随平台/题目容器可能变化，实测内容
+ * 永远比配置更可信；② 事实档案是给 AI 的提示材料，不应同时充当代码分支的开关
+ * （否则改一处风险面翻倍）。
+ *
+ * 判据分两级：先按"去空行 + 逐行 trim"归一化后**精确相等**（平台通常是原样保存草稿）；
+ * 不等时再看行集重合度与长度比（防御平台对草稿做了轻量规整，如缩进/末尾换行）。
+ * @param {string} fresh 重载后探测到的编辑器内容
+ * @param {string} lastSubmitted 上一轮实际提交（写入编辑器）的完整文本
+ * @returns {boolean} true = 拿回的是自己的草稿，重载无效，必须保留原模板存档
+ */
+export function looksLikeOwnDraft(fresh, lastSubmitted) {
+  const norm = (s) =>
+    String(s ?? '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join('\n');
+  const a = norm(fresh);
+  const b = norm(lastSubmitted);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  // 近似判据：行集重合度高且长度接近（两侧都不低于 0.85，避免把"同模板不同实现"误判成草稿）
+  const setB = new Set(b.split('\n'));
+  const setA = new Set(a.split('\n'));
+  const hit = [...setA].filter((l) => setB.has(l)).length;
+  const lineRatio = hit / Math.max(setA.size, setB.size);
+  const lenRatio = Math.min(a.length, b.length) / Math.max(a.length, b.length);
+  return lineRatio >= 0.85 && lenRatio >= 0.85;
 }
 
 /**
@@ -179,10 +236,17 @@ function slimForReflection(p) {
  * 选择/填空题按结构信号直接作答；代码题与命令行题先按题干内容做 AI 意图判定
  * （classifyProblemIntent），再自动切到对应工作区（代码文件 / 命令行）执行，
  * 两条分支均含反思修正循环（最多 cfg.loop.maxRetry 轮）。
+ *
+ * 本分支未下沉 control.mjs（无手动停止能力）：不做运行控制包装，直接执行。
  * @param {import('playwright-core').Page} page
  * @param {object} probe probePage 的结果
  */
 export async function solveOnce(page, probe) {
+  return await solveOnceInner(page, probe);
+}
+
+/** solveOnce 的实际实现（调用方请走 solveOnce，以带运行轮次语义） */
+async function solveOnceInner(page, probe) {
   const problem = (probe.problem ?? '').trim();
   if (!problem) {
     log('未提取到题目文本，跳过（可先执行 npm run dump 检查页面结构）');
@@ -472,7 +536,8 @@ export async function solveOnce(page, probe) {
     log('代码编辑器未在超时内出现，终止本题');
     return { ok: false, kind: 'code', reason: 'no-editor' };
   }
-  const codeProbe = await probePage(page); // 切 tab 后重新探测，拿最新模板
+  const codeProbe0 = await probePage(page); // 切 tab 后重新探测，拿最新模板
+  let codeProbe = codeProbe0;
 
   // 逃生舱防呆：转代码分支后发现编辑器模板为空 → 该题本来就没有代码文件可写，
   // 转过去只会凭空生成，按命令行题失败收场（模板非空才继续）
@@ -484,7 +549,15 @@ export async function solveOnce(page, probe) {
   let code = null;
   let lastEval = '';
   let sanitizeNote = ''; // shell 护栏清洗记录（喂给反思，供其理解上一轮实际提交内容）
-  // 代码反思教训链（与 cmdline 分支同构，2026-09-20 回灌）：每轮反思诊断沉淀，
+  // 连续同类报错重载兜底状态（2026-09-15）：同一错误签名连续 ≥3 轮时，拼接
+  // 基准（编辑器现存模板）可能已被污染，重载题目页重取平台原始模板并更新存档
+  let lastErrSig = '';
+  let sameErrStreak = 0;
+  let reloadCount = 0;
+  // 上一轮实际提交的完整文本（重载兜底的草稿判据，见 looksLikeOwnDraft）：平台持久化
+  // 草稿时，重载只能拿回它——据此识别「重载无效」，避免覆盖干净的模板存档
+  let lastSubmitted = '';
+  // 代码反思教训链（与 cmdline 分支同构，2026-09-15）：每轮反思诊断沉淀，
   // 下一轮注入，防止"这轮改对了、下轮又退回"的横跳（zincrby 3 轮横跳即无记忆）
   const lessons = [];
 
@@ -517,6 +590,20 @@ export async function solveOnce(page, probe) {
     // 实际提交评测的是"模板拼接后"的版本；反思必须带上它而不是 AI 原始
     // 输出，否则 AI 审的是一份没提交过的文本（2026-09-09 用户指出）
     let submitted = spliceIntoTemplate(codeProbe.code, code);
+    // 拼接方式留痕（2026-09-15 定位用）：AI 输出是否带标记、模式块数 → 判断
+    // 走的是逐块归位还是无标记直通，失败时可快速归因
+    log(
+      `拼接方式：模板 ${(codeProbe.code.match(/\bbegin\b/gi) || []).length} 对标记 / AI 输出 ${(code.match(/\bbegin\b/gi) || []).length} 对标记 / 拼后 ${submitted.length} 字符`,
+    );
+    // 多标记模板校验（2026-09-15）：模板含多处 Begin/End 区域时，AI 漏补全的
+    // 空区域会让评测直接 IndentationError——拼完立即打点，让反思轮感知
+    const emptyBlocks = emptyMarkerBlocks(submitted);
+    if (emptyBlocks.length) {
+      log(
+        `⚠ 拼接后仍有 ${emptyBlocks.length} 处 Begin/End 区域为空（#${emptyBlocks.join('、#')}），AI 未补全全部区域`,
+      );
+    }
+
     // shell 书写护栏（0.9.1）：数据库脚本题（模板含 db. 调用）中，AI 偶发把
     // 中文标签拼在命令前（"输出集合前3条文档: db.educoder…"）——送进 shell
     // eval 必报 SyntaxError: illegal character。写入前确定性清洗：
@@ -535,6 +622,7 @@ export async function solveOnce(page, probe) {
       submitted = wrap.code;
       log('数据库命令题 echo 双引号包裹兜底（bash 环节零噪音，平台提取引号内命令 eval）');
     }
+    lastSubmitted = submitted; // 重载兜底的草稿判据（写入什么，草稿就长什么样）
     await writeEditorCode(page, submitted);
     await settle(page);
 
@@ -560,6 +648,66 @@ export async function solveOnce(page, probe) {
       if (detail) {
         lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
       }
+
+      // 连续同类报错重载兜底（2026-09-15 方案，仅代码题）：同一 Python 异常
+      //（如 IndentationError）连续出现 ≥3 轮，说明拼接基准可能已被污染——题目页
+      // 重载后编辑器回到平台原始模板，重新探测并更新存档、从干净模板重新生成。
+      // 重载至多 RELOAD_MAX 次，防重载-同类报错死循环。
+      // 1.4.3 修正：本平台**持久化草稿、无「恢复初始代码」**，重载拿回的是上一轮
+      // 提交的草稿而非原始模板 ⇒ 该兜底在此平台不可用；若照旧覆盖存档，会把干净的
+      // 模板基准换成污染草稿（比不重载更糟）。故重载后先用 looksLikeOwnDraft 判据
+      // 识别"拿回的是自己的草稿"，命中即保留原存档并停用兜底。
+      const sigMatch = String(lastEval).match(/\b[A-Z][A-Za-z]*(?:Error|Exception)[^\n]{0,80}/);
+      const sig = sigMatch ? sigMatch[0].trim() : '';
+      if (sig) {
+        if (sig === lastErrSig) sameErrStreak++;
+        else {
+          lastErrSig = sig;
+          sameErrStreak = 1;
+        }
+      }
+      if (sameErrStreak >= 3 && reloadCount < RELOAD_MAX) {
+        reloadCount++;
+        log(
+          `连续 ${sameErrStreak} 轮同类错误「${sig}」——重载题目页重取平台原始模板（第 ${reloadCount}/${RELOAD_MAX} 次）…`,
+        );
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          await page.waitForTimeout(cfg.loop.cooldownMs);
+          const tab = await switchTaskTab(page, '代码文件');
+          if (tab.found && tab.clicked) await settle(page);
+          if (await waitForEditor(page)) {
+            const fresh = await probePage(page);
+            if ((fresh.code ?? '').trim()) {
+              // 关键：先判"这是不是我们自己上一轮提交的草稿"。本平台持久化草稿且无
+              // 「恢复初始代码」，重载拿回的就是草稿——此时覆盖存档会把干净模板换成
+              // 污染草稿，比不重载更糟（见 looksLikeOwnDraft 头注）
+              if (lastSubmitted && looksLikeOwnDraft(fresh.code, lastSubmitted)) {
+                reloadCount = RELOAD_MAX; // 本平台该兜底不可用：停用，不再反复重载
+                sameErrStreak = 0;
+                lastErrSig = '';
+                log(
+                  '重载后编辑器仍是上一轮提交的草稿（平台持久化草稿、无「恢复初始代码」）' +
+                    '——重载兜底在本平台不可用，保留现有模板存档，按反思继续',
+                );
+              } else {
+                codeProbe = fresh; // 存档更新为平台原始模板
+                code = null; // 强制重新生成
+                sameErrStreak = 0;
+                lastErrSig = '';
+                log(`已重取新模板（${codeProbe.code.length} 字符），从干净模板重新生成…`);
+                continue;
+              }
+            } else {
+              log('重载后模板仍为空，放弃重载按反思继续');
+            }
+          } else {
+            log('重载后编辑器未在超时内出现，放弃重载按反思继续');
+          }
+        } catch (e) {
+          log(`重载失败（${e.message}），按反思继续`);
+        }
+      }
     }
 
     if (v.passed) {
@@ -574,14 +722,14 @@ export async function solveOnce(page, probe) {
       `正在调用 AI 代码反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
     );
     const rt0 = Date.now();
-    const fixed = await reflectAndFix({
+    let fixed = await reflectAndFix({
       problem: slimForReflection(problem),
       // 反思看的是实际提交评测的代码（模板拼接后、经护栏清洗、写入验证的版本）
       previousCode: submitted,
       evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
       // 注入客户端实测事实：反思守则第 4 条按它选 heredoc 的客户端名
       terminalState: clientFact,
-      // 教训链：此前各轮已确诊的原因（防横跳）
+      // 教训链：此前各轮已确诊的原因（2026-09-15 新增强化，防横跳）
       lessons: lessons.slice(-6),
     });
     log(`AI 代码反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
@@ -596,6 +744,36 @@ export async function solveOnce(page, probe) {
     if (!fixed.code) {
       log('反思未产出代码，终止本题');
       break;
+    }
+    // 残缺产物检测（2026-09-15 放开轮数实验沉淀）：思考超限断流→强制关思考的
+    // 重试轮偶发输出 45~207 字符碎片（无顶层语句）。直接提交只会制造新的语法
+    // 错误把下一轮带偏、白费一次评测——检测到即不提交、重试一次。
+    const isFragment = (cc) => {
+      const t = String(cc ?? '').trim();
+      return (
+        t.length > 0 && t.length < 300 && !/(?:^|\n)(?:def |class |import |from |@)\S/m.test(t)
+      );
+    };
+    if (isFragment(fixed.code)) {
+      log(`反思产物疑似残缺（${fixed.code.length} 字符且无顶层语句），不提交评测，重试一次…`);
+      const retry = await reflectAndFix({
+        problem: slimForReflection(problem),
+        previousCode: submitted,
+        evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
+        terminalState: clientFact,
+        lessons: lessons.slice(-6),
+      });
+      if (retry.code && !isFragment(retry.code)) {
+        fixed = retry;
+        if (retry.analysis) log(`重试反思分析：${String(retry.analysis).replace(/\s+/g, ' ')}`);
+        log(`重试反思完成（${retry.code.length} 字符），提交评测`);
+      } else {
+        // 2026-09-15：残缺碎片不再"按现状提交"——碎片无顶层语句，写进编辑器
+        // 只会制造新语法错误、把下一轮带偏（真机事故：碎片把报错文本混进代码）。
+        // 退回上一版完整代码，让下一轮反思仍从完整代码出发。
+        log('重试仍残缺——丢弃残缺产物，退回上一版完整代码提交（以评测反馈兜底）');
+        fixed.code = submitted;
+      }
     }
     code = fixed.code;
   }
@@ -636,6 +814,11 @@ export async function runLoop(opts = {}) {
       await page.waitForTimeout(cfg.loop.cooldownMs);
       await page.waitForLoadState('domcontentloaded').catch(() => {});
     }
+  } catch (e) {
+    // 停止请求只可能在 solveOnce 运行期内被置位（/api/stop 在无运行任务时直接拒绝），
+    // 故中断总是从 solveOnce 内部抛出；这里只负责优雅收场并保留已完成进度
+    throw e;
+    log(`已手动停止连续解题：${e.message}（已完成 ${summary.length} 题，通过 ${solved} 题）`);
   } finally {
     await browser.close().catch(() => {});
   }
@@ -1026,6 +1209,11 @@ export async function courseLoop() {
 
     log(
       `课程模式完成：处理 ${summary.boards} 个小板块，通过 ${summary.passed}/${summary.attempts} 关`,
+    );
+  } catch (e) {
+    throw e;
+    log(
+      `已手动停止课程自动驾驶：${e.message}（已完成 ${summary.boards} 个小板块，通过 ${summary.passed}/${summary.attempts} 关）`,
     );
   } finally {
     await browser.close().catch(() => {});

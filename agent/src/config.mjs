@@ -52,7 +52,7 @@ export const AI_DEFAULTS = {
   // deepseek-v4-flash-0731-free-2 当时 502 不可用。模型可用性随时变化，用 npm run models 实测。
   model: '',
   temperature: 0.3,
-  maxTokens: 8192,
+  maxTokens: 32768,
   // 单次 AI 请求超时（毫秒）。推理模型思考+生成可达数分钟，默认 5 分钟兜底：
   // 端点挂起时请求按失败处理并重试，而不是整个 loop 永久停摆
   //（实测表现即"切完 tab 后毫无动作、再无任何日志"）。
@@ -82,11 +82,29 @@ export const cfg = {
     // 思考全关开关（极简任务用，默认开思考走分级）
     enableThinking: pick('AI_ENABLE_THINKING', '1') === '1',
     timeoutMs: pickNum('AI_TIMEOUT_MS', AI_DEFAULTS.timeoutMs),
+    // 思考停滞检测（毫秒）：流式响应中"正文仍 0 字、思考长度连续这么久无
+    // 新增"即视为空转/卡死，提前断流重试（0 = 禁用）。对应 2026-09-15 实测
+    // 事故：AI 对题干信号矛盾反复"重新审视"，思考 2362 字后 60s~120s 完全
+    // 停滞，纯时间硬闸只能傻等满 120s。停滞检测只掐"无进展"，不误伤正常
+    // 深思考（正常思考会持续增长）。
+    thinkingStallMs: pickNum('AI_THINKING_STALL_MS', 45000),
+    // 思考字数配额（字）：流式响应中"正文仍 0 字、思考累计达到该字数"即强制
+    // 断流重试（0 = 禁用）。端点兼容模型的 max_tokens 是思考+正文共享预算，
+    // 弱推理模型会无限思考直到烧光预算（2026-09-15 实测思考 40986 字正文 0、
+    // finish_reason=length），喂多少都不收敛——这是"产品层强制思考有界"，
+    // 与商用 Agent 的思考预算分账对齐：思考到线即收，正文留足预算。
+    thinkingMaxChars: pickNum('AI_THINKING_MAX_CHARS', 24000),
+    // 首轮（首次生成）是否开思考：AI_FIRST_PASS_THINKING=1 开（默认关）。
+    // 时间优先策略（2026-09-15）：大多数题首轮无需思考，关思考 5~10s 出初稿
+    // 最快；只有失败后的反思轮才动用 high 思考档一次修对。
+    firstPassThinking: pick('AI_FIRST_PASS_THINKING', '0') === '1',
     // 思考硬闸（毫秒）：流式响应中"仍在思考、正文 0 字"持续超过该时长即
     // 主动断流，重试强制关思考（双通道 enable_thinking）。0 = 不设限。
     // 兜底场景：端点忽略思考开关、推理模型对简单反思题穷举假设拖到数分钟。
-    // 默认 20s（2026-09-10 用户指定上限）：正常思考 30s 内应见正文，超时多为空转
-    thinkingCapMs: pickNum('AI_THINKING_CAP_MS', 20000),
+    // 默认 120s（2026-09-15 时间优先调优）：目标是最短时间通过而非省 token，
+    // high 档正常思考常达 60~120s，120s 内放行，真马拉松仍被拦（5 分钟请求
+    // 超时兜底终局）。
+    thinkingCapMs: pickNum('AI_THINKING_CAP_MS', 120000),
   },
   browser: {
     // 连接用户已登录的浏览器（Edge / Chrome），需以 --remote-debugging-port 启动
@@ -148,8 +166,8 @@ export const cfg = {
     agentRoot: AGENT_ROOT,
     // prompt 单一数据源：复用仓库根 shared/capabilities 下的配置
     capabilitiesDir: path.resolve(AGENT_ROOT, '..', 'shared', 'capabilities'),
-    // 平台事实单一数据源：由 ai.mjs 的 buildPlatformFactsBlock 统一注入所有能力 prompt
-    // 路径收敛到此处，避免 ai.mjs / cli.mjs 各自 resolve 出两份真相
+    // 平台事实单一数据源（1.4.2）：由 ai.mjs 注入所有能力 prompt，由 cli caps-check 校验结构。
+    // 路径也收敛到此处，避免 ai.mjs / cli.mjs 各自 resolve 出两份真相
     platformFactsFile: path.resolve(AGENT_ROOT, '..', 'shared', 'platform-facts.json'),
     dumpDir: path.join(AGENT_ROOT, 'dumps'),
   },

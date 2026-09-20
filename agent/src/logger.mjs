@@ -64,6 +64,19 @@ function ensureStream(day) {
   }
 }
 
+// 日志汇点：常驻 UI 进程（web-server）订阅内存环形缓冲用。
+// 汇点异常只吞掉不外抛——日志系统绝不能拖垮主流程。
+const sinks = new Set();
+
+/**
+ * 注册一个日志汇点，返回取消注册函数。
+ * @param {(entry: {ts: string, level: string, scope: string, text: string}) => void} fn
+ */
+export function addLogSink(fn) {
+  sinks.add(fn);
+  return () => sinks.delete(fn);
+}
+
 /**
  * 创建一个带作用域的 logger。
  * 返回的函数可直接调用（INFO 级），也挂了 .warn / .error。
@@ -75,6 +88,13 @@ export function createLogger(scope) {
     const text = String(msg ?? '');
     const prefix = level === 'INFO' ? `[${scope}]` : `[${scope}] [${level}]`;
     console.log(`${prefix} ${text}`);
+    for (const s of sinks) {
+      try {
+        s({ ts: fullStamp(d), level, scope, text });
+      } catch {
+        /* 汇点异常不影响主流程 */
+      }
+    }
     if (!TO_FILE) return;
     const s = ensureStream(dayKey(d));
     if (s) s.write(`${fullStamp(d)} ${level} [${scope}] ${text}\n`);

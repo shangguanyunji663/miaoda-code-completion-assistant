@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.2.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -26,6 +26,7 @@
 >
 > **版本演进说明**：四级挑页链（多标签页下自动识别题目页、多命中报错防解错页，详见《[同学使用指南](同学使用指南.md)》第八节）已同步回灌到**全部四个版本**，此能力各分支一致。其余差异如上表；所有分支的原有 CLI 用法（watch / lite / course）完全一致。各分支根目录均有同名指南，其第七节写明该分支的差异与用法。
 > **平台知识回灌（1.2.0）**：`shared/platform-facts.json`（平台实测事实单一数据源）+ 生成/反思 prompt 规则升级已回灌到**全部四个版本**，故各分支 AI 行为一致。master 作为基线只带「统一注入 + `npm run facts-check` 结构校验」，不含能力配置校验（feat/1、feat/3）与网页工作台（feat/2）。
+> **平台适配逻辑通用化（1.3.0，回灌自 `feat/2-c-web-service`）**：四级挑页链、编辑器写入策略（Monaco/Ace/CM5/CM6 分版本 API 形态）、模板拼接与重载草稿判据、按钮文案点击兜底、思考预算控制旋钮等**与被评测平台/模型端点交互的适配逻辑**已回灌，故各分支的解题行为一致。本分支**不含** `control.mjs`（「停止做题」能力，属网页工作台特性），相关检查点已在移植时剥离；`web-server.mjs`、`mcp-server.mjs` 各自保留。
 
 ---
 
