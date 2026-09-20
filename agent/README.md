@@ -98,7 +98,7 @@ npm run probe
 | `AI_API_KEY` | 密钥，必填 | 无默认 |
 | `AI_MODEL` | 模型名，`npm run models` 查看全部，必填 | 无默认 |
 | `AI_TEMPERATURE` | 采样温度 | `0.3` |
-| `AI_MAX_TOKENS` | 单次生成的最大 token 数 | `8192` |
+| `AI_MAX_TOKENS` | 单次生成的最大 token 数（代码默认 `32768`；`.env.example` 模板给 `8192`） | `32768` |
 | `AI_REASONING_EFFORT` | 推理分级：`low` / `medium` / `high`（medium 实测思考有界且多步命令完整；off 会漏多步要求） | `medium` |
 | `AI_ENABLE_THINKING` | `1` = 开启思考走分级；`0` = 思考全关（极简任务） | `1` |
 | `AI_THINKING_CAP_MS` | 思考硬闸：流式响应"仍在思考、正文 0 字"持续超时即断流并重试关思考；`0` = 不设限 | `120000` |
@@ -126,6 +126,7 @@ npm run probe
 | `LIST_TIMEOUT_MS` | course：退出/返回后等列表页重现上限 | `15000` |
 | `MAX_BOARDS_PER_SECTION` | course：单板块处理卡片数防呆上限 | `50` |
 | `WEB_PORT` | 网页工作台端口（**仅绑定 127.0.0.1**，不对局域网暴露） | `8787` |
+| `LOG_TO_FILE` | 日志落盘开关：`0` = 只输出控制台，不写 `logs/agent-<日期>.log` | `1` |
 
 ## 工作流程
 
