@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.4.4] - 2026-09-20（分支 feat/2-c-web-service）
+
+**文档与格式收口**（无行为改动）：① 补齐 `shared/capabilities/README.md` 缺失的「加载前校验（fail-fast）」条目——该机制自 1.1.x 就在 `readCapability` 里跑，但本分支的 README 一直没写，属文档落后于代码；② `src/ai.mjs` / `src/loop.mjs` / `test/ai.test.mjs` 三文件不符合仓库自身的 `.prettierrc`（`printWidth: 100` 超宽未换行、多余括号、缺 `trailingComma`、个别引号风格），跑了 `npm run format` 归一；③ 修正 README 版本徽章滞后（写 1.3.0，实际 1.4.3）。
+
+三处均经字符级核对确认**语义完全不变**（非空白差异仅 6 个新增尾逗号与 2 处引号风格），并通过全量单测。
+
 ## [1.4.3] - 2026-09-20（分支 feat/2-c-web-service）
 
 **两处"静默失效"收口**：① 重载兜底在本平台不是"无效"而是"主动把干净模板换成污染草稿"；② 平台事实档案此前不在 caps-check 覆盖范围内，坏 JSON 只在运行时降级为空串。两者同属一类问题——**失效不产生错误、只产生更差的结果**。均为离线改动，无真机步骤。

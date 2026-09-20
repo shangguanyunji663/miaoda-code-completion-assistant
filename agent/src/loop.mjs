@@ -613,12 +613,16 @@ async function solveOnceInner(page, probe) {
     let submitted = spliceIntoTemplate(codeProbe.code, code);
     // 拼接方式留痕（2026-09-15 定位用）：AI 输出是否带标记、模式块数 → 判断
     // 走的是逐块归位还是无标记直通，失败时可快速归因
-    log(`拼接方式：模板 ${(codeProbe.code.match(/\bbegin\b/gi) || []).length} 对标记 / AI 输出 ${(code.match(/\bbegin\b/gi) || []).length} 对标记 / 拼后 ${submitted.length} 字符`);
+    log(
+      `拼接方式：模板 ${(codeProbe.code.match(/\bbegin\b/gi) || []).length} 对标记 / AI 输出 ${(code.match(/\bbegin\b/gi) || []).length} 对标记 / 拼后 ${submitted.length} 字符`,
+    );
     // 多标记模板校验（2026-09-15）：模板含多处 Begin/End 区域时，AI 漏补全的
     // 空区域会让评测直接 IndentationError——拼完立即打点，让反思轮感知
     const emptyBlocks = emptyMarkerBlocks(submitted);
     if (emptyBlocks.length) {
-      log(`⚠ 拼接后仍有 ${emptyBlocks.length} 处 Begin/End 区域为空（#${emptyBlocks.join('、#')}），AI 未补全全部区域`);
+      log(
+        `⚠ 拼接后仍有 ${emptyBlocks.length} 处 Begin/End 区域为空（#${emptyBlocks.join('、#')}），AI 未补全全部区域`,
+      );
     }
 
     // shell 书写护栏（0.9.1）：数据库脚本题（模板含 db. 调用）中，AI 偶发把
@@ -771,7 +775,9 @@ async function solveOnceInner(page, probe) {
     // 错误把下一轮带偏、白费一次评测——检测到即不提交、重试一次。
     const isFragment = (cc) => {
       const t = String(cc ?? '').trim();
-      return t.length > 0 && t.length < 300 && !/(?:^|\n)(?:def |class |import |from |@)\S/m.test(t);
+      return (
+        t.length > 0 && t.length < 300 && !/(?:^|\n)(?:def |class |import |from |@)\S/m.test(t)
+      );
     };
     if (isFragment(fixed.code)) {
       log(`反思产物疑似残缺（${fixed.code.length} 字符且无顶层语句），不提交评测，重试一次…`);

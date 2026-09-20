@@ -184,7 +184,10 @@ test('emptyMarkerBlocks：缺实现的区域=块内无实质代码（仅注释/�
   // 块 2（仅注释）与块 3（空白）都缺实质代码，判空；块 1 已实现
   assert.deepEqual(emptyMarkerBlocks(tpl), [2, 3]);
   assert.deepEqual(emptyMarkerBlocks('return 1'), []);
-  assert.deepEqual(emptyMarkerBlocks(['#******** Begin ********#', 'x', '#******** End ********#'].join('\n')), []);
+  assert.deepEqual(
+    emptyMarkerBlocks(['#******** Begin ********#', 'x', '#******** End ********#'].join('\n')),
+    [],
+  );
 });
 
 test('spliceIntoTemplate：函数体内的代码缩进必须保留（2026-09-15 真正根因）', () => {
@@ -207,7 +210,9 @@ test('spliceIntoTemplate：AI 输出无标记但为完整代码时整体直通�
   // 2026-09-15 事故：反思轮 AI 直接给出"干净版完整代码"（无 Begin/End 标记，
   // 含多个顶层 def/import）。旧逻辑整段塞进第一个 Begin/End 块 → 函数嵌套、
   // import 错位 → 评测 unexpected indent 且反思死循环
-  const tpl = ['def check_token(token):', '    #*** Begin ***#', '    #*** End ***#', ''].join('\n');
+  const tpl = ['def check_token(token):', '    #*** Begin ***#', '    #*** End ***#', ''].join(
+    '\n',
+  );
   const ai = [
     'import time',
     'import redis',
@@ -269,7 +274,7 @@ test('spliceIntoTemplate：模板标记 Begin≠End 时即使 AI 只有一个函
   ].join('\n');
   const ai = [
     'import redis',
-    "conn = redis.Redis()",
+    'conn = redis.Redis()',
     'def add_item(name, price):',
     '    #*** Begin ***#',
     "    return conn.hset('item:' + str(name), 'price', price)",

@@ -45,7 +45,9 @@ export function buildPlatformFactsBlock() {
     const body = JSON.stringify(obj, null, 2);
     if (!factsLogged) {
       factsLogged = true;
-      log(`已加载平台事实档案 ${path.basename(file)}（${body.length} 字符），将注入所有能力 prompt`);
+      log(
+        `已加载平台事实档案 ${path.basename(file)}（${body.length} 字符），将注入所有能力 prompt`,
+      );
     }
     return (
       '### 平台事实（本平台**实测**结论，优先于任何官方文档与你的既有记忆；' +
@@ -272,7 +274,7 @@ export async function chat(messages, opts = {}) {
       } else if (stalled) {
         forceThinkingOff = true;
         err = new Error(
-          `思考停滞：正文 0 字且思考 ${(stallMs / 1000)}s 无增长（思考已 ${reasoning.length} 字），疑似空转循环，已主动断流；重试将强制关思考（AI_THINKING_STALL_MS 可调，0=关闭停滞检测）`,
+          `思考停滞：正文 0 字且思考 ${stallMs / 1000}s 无增长（思考已 ${reasoning.length} 字），疑似空转循环，已主动断流；重试将强制关思考（AI_THINKING_STALL_MS 可调，0=关闭停滞检测）`,
         );
       } else if (capped) {
         forceThinkingOff = true;
@@ -397,7 +399,13 @@ export async function answerBatch({ questions, reference = '' }) {
  * 反思修复：复用 code_reflection_fixer_1 的 prompt 与参数
  * @returns {Promise<{analysis: string, code: string}>}
  */
-export async function reflectAndFix({ problem, previousCode, evalResult, terminalState = '', lessons = [] }) {
+export async function reflectAndFix({
+  problem,
+  previousCode,
+  evalResult,
+  terminalState = '',
+  lessons = [],
+}) {
   const cap = readCapability('code_reflection_fixer_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
@@ -485,7 +493,9 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
     bodies = origPairs.map((pair, i) => (i === 0 ? keepIndent(aiLines) : origBody(pair)));
   } else {
     bodies = origPairs.map((pair, i) =>
-      i < aiPairs.length ? keepIndent(aiLines.slice(aiPairs[i][0] + 1, aiPairs[i][1])) : origBody(pair),
+      i < aiPairs.length
+        ? keepIndent(aiLines.slice(aiPairs[i][0] + 1, aiPairs[i][1]))
+        : origBody(pair),
     );
   }
 
