@@ -1,0 +1,56 @@
+{
+  "_readme": "本平台（教学评测平台，EduCoder 系：www.educoder.net / 校内部署）的**实测事实**单一数据源，由 agent/src/ai.mjs 统一注入到每个能力 prompt 末尾。填写规则：① 只写**实测过**的条目，必须带 evidence（报错/回显原文）与 date；② 推断、待验证的写进 unknowns，**不得混入事实**；③ 冲突裁决顺序：平台报错回显/实测 > 题面示例写法 > 模板已有代码形态 > 题面描述 > 「官方文档/最新版本」的模型记忆；④ 该优先级只覆盖「接口形态 / 语法 / 运行环境 / 输出格式 / 数据格式」——算法逻辑与题面明文要求仍须正确实现，不得以「更合理」为名偏离题面。",
+  "platform_id": "educoder-like",
+  "runtime": {
+    "python": "2.x",
+    "evidence": "SyntaxError: Non-ASCII character '\\xe5' in file ... but no encoding declared（源文件缺 #-*- coding:utf-8 -*- 时中文注释即炸）；评测输出打印 [u'what', u'when', ...] 为 Python 2 的 unicode repr；open() 不接受 encoding= 参数",
+    "date": "2026-09-20"
+  },
+  "redis_py": {
+    "zadd_dict_form_supported": false,
+    "zadd_positional_order": [
+      "member",
+      "score"
+    ],
+    "zadd_evidence": "zadd(key,{member:score}) → redis.exceptions.RedisError: ZADD requires an equal number of values and scores；zadd(key,member,score) 成功写入 80008 条（探针实测 zcard=80008、min=(member, 16777216.0)）；zadd(key,score,member)（Redis 官方顺序）→ ResponseError: value is not a valid float；另经「自动补全」题面示例独立确认：conn.zadd(\"testzset\",\"member2\",3) 即 member2 分值 3（与 Redis 官方 ZADD key score member 相反）",
+    "zrevrangebyscore_order": [
+      "max",
+      "min"
+    ],
+    "zrevrangebyscore_evidence": "题面示例：四个成员分值 10/70/50/100 调 zrevrangebyscore(key,100,50) 得 member4/member2/member3（按分值降序、含两端）",
+    "date": "2026-09-20",
+    "zrank_semantics": "zrank(key, member) 返回从 0 开始的排名（升序分值）；题面示例：分值 member3=1/member1=2/member2=3 时 zrank(\"testzset\",\"member2\")=2",
+    "zrange_semantics": "zrange(key, start, stop) 按排名区间返回成员，两端**闭区间**；返回 bytes（Python 2 下即 str），例如题面示例 zrange(\"testzset\",0,1) → [\"member3\",\"member1\"]",
+    "zrangebylex_on_equal_scores": "分值全相同时，Redis 按**成员字典序**排序——这是前缀补全类题目用「哨兵 + zrank/zrange」或 zrangebylex 的基础",
+    "zrange_signature": "只按题面示例的三参数位置形式用：zrange(key, start, stop)（闭区间、按排名）。**不支持 start=/num= 这类关键字参数**——实测（2026-09-20 自动补全题）写 zrange(key, start_rank, end_rank, start=0, num=10) 直接 TypeError: zrange() got multiple values for keyword argument 'start'。要\"取前 N 个\"就在 Python 层切片（items[:10]），不要指望客户端关键字参数"
+  },
+  "python_stdlib": {
+    "open_encoding_param": false,
+    "evidence": "TypeError: 'encoding' is an invalid keyword argument for this function",
+    "date": "2026-09-20"
+  },
+  "evaluation": {
+    "stdout_comparison": "line-by-line",
+    "multi_test_sets": true,
+    "prints_sorted_set_cardinality": true,
+    "cleanup_note": "面板末尾评测程序会执行 conn.delete(*to_del)；当有序集合为空时该调用报 wrong number of arguments for 'del' command",
+    "evidence": "面板「—— 预期输出 —— / —— 实际输出 ——」逐行比对；出现「测试集1 / 测试集2」多组；打印 Redis ip2city sorted set ranges: 80008",
+    "date": "2026-09-20",
+    "repr_form_matters": "Python 2 下 print 的列表/元组 repr 会因元素类型而不同：bytes(str) 打印 [\"what\"]，unicode 打印 [u\"what\"]；同理元组 (u\"wg{\",...) 会带 u 前缀。**因此返回值是 bytes 还是 unicode 会直接改变 stdout 文本，进而影响逐行比对**——必须按题面「预期输出」的形态决定是否 decode",
+    "return_shape_matters": "题面预期输出形如 (\"wg{\", \"wh{\")，说明该函数须返回 **tuple**（若返回 list 会打印成 [...]，与预期不符）",
+    "harness_owns_all_prints": "评测程序的 stdout 全部由评测程序（read.py 之类）自己打印——包括 \"Test autocomplete, prefix: 'wh'\"、\"The start/end range of 'wh' is:  ('wg{', 'wh{')\"（注意 is: 后有**两个空格**，是 print(a, b) 逗号形式）、\"Add keyword: who\" 等。**被测代码绝对不能自己 print 这些行**，否则输出重复 → 逐行比对必然不匹配。实测（2026-09-20 自动补全题）：函数里自加这两行 print 的版本反复失败；去掉全部 print 后**一次提交即通过**",
+    "return_bytes_not_unicode": "Python 2：zrange 等命令返回 bytes（即 str），直接返回/打印得到 ['what', ...]；若 decode 成 unicode 再打印会变成 [u'what', ...] —— **文本不同即判不匹配**。实测：\"不 decode、原样返回\" 通过；此前带 u 前缀的版本失败",
+    "no_selftest_block_needed": "无需在提交文件里写 if __name__ == \"__main__\" 自测块：评测程序会 import code.py 并直接调用函数（该块在 import 时不会执行），写了属无害噪声，但常见的两类副作用是\"自加 print\"与\"自加 conn.delete\""
+  },
+  "editor": {
+    "draft_persisted_by_platform": true,
+    "reset_button_available": false,
+    "evidence": "写入平台原始模板后重新 goto 同一题目页，编辑器仍是上一次的草稿（891 字符）；页面可点击元素只有 上一关/自测运行/评测 + 章节标签，无「恢复初始代码」",
+    "date": "2026-09-20"
+  },
+  "unknowns": [
+    "zrangebylex 是否可用（本题面未使用它；用的是 zrank + zrange 哨兵法）",
+    "zadd 的 score 是否接受 int（题面示例用 int 3/0，实测待单独确认；当前证据表明接受）",
+    "题面「预期输出」是否为字节级精确（本次已用实测判定 u 前缀问题，但其他空白差异未逐一验证）"
+  ]
+}

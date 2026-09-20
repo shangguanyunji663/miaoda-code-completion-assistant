@@ -8,6 +8,12 @@
 
 ### Added
 
+- **【平台知识回灌 1.2.0，源自 `feat/2-c-web-service`】平台事实档案 `shared/platform-facts.json`（新增）**：把「平台实测事实」（运行时版本、库 API 形态、评测比对方式、编辑器行为）收敛为**单一数据源**，由 `ai.mjs` 的 `buildPlatformFactsBlock()` 在 `readCapability` 统一注入**每个**能力 prompt 末尾——新增事实只改一处，不再散落成 prompt 规则（此前同一类根因连续两题复发：实测该平台是 Python 2 + 旧版 redis-py，`zadd(key, member, score)` 是「先成员后分值」与 Redis 官方文档相反、`open()` 不接受 `encoding=`、字典式 `zadd(key,{member:score})` 直接报错）。填写纪律：只写实测条目并带 `evidence` + `date`，推断/待验证项隔离在 `unknowns`。
+- **事实档案结构校验 `src/platform-facts-schema.mjs`（新增）** + 新增 `npm run facts-check`：事实段必须带 `evidence` + `date`、待验证字样不得混入事实段、`unknowns` 必须是字符串数组。该文件此前是校验盲区——坏 JSON 只在运行时降级为空串并告警一次，prompt 静默退回「无平台事实」而解题链路一路正常，属与「占位符拼错」同类的静默失效。
+- **生成端 / 反思端 prompt 规则升级（`shared/capabilities/`）**：生成器新增规则 11–24、反思器同步平台事实守则，覆盖「事实优先级」裁决链（平台报错回显/实测 > 题面示例写法 > 模板已有形态 > 题面描述 > 官方文档记忆）与一批真机实证规则——`zadd` 实参序、Python 2 无 f-string 且 `print` 输出形态（bytes 打印 `['x']`、unicode 打印 `[u'x']`）影响逐行比对、**评测程序自己打印的行不是你要输出的内容**（多一行 print 即判不匹配，曾连续多轮误改逻辑）、过滤条件严格照题面（拿 `isdigit()` 当放行条件会把 IP 格式整列滤掉）、平台入参常带尾随换行须先 `strip()`、模板多处 Begin/End 不得只补开头。`maxTokens` 8192 → 32768。
+- **修复「代码反思教训链」静默失效**：`loop.mjs` 早已把 `lessons` 传给 `reflectAndFix`，但该函数签名不接收 `lessons`、能力 JSON 也未声明 `{{input.lessons}}` 占位符——教训**被静默丢弃**，反思每轮无记忆、易「改对又退回」横跳。现补齐「声明 → 传递 → 注入 → 沉淀」全链（与既有 `reflectCommands` 的教训链同构）。
+- **单测 +13 项**：新增 `test/platform-facts.test.mjs`（事实档案可读且含关键事实 + **每个**能力 prompt 都必须被注入，防将来新增能力漏注入）与 `test/platform-facts-schema.test.mjs`（真实档案回归闸 + 缺证据 / 坏 `date` / 待验证字样混入 / 坏 JSON 与缺文件 fail-fast）。
+
 - **四级挑页链 `pickTargetPageWithMeta`（`src/browser.mjs`）**：① `TARGET_URL_HINT`（显式指定，最高优先；唯一命中即选，**多命中报错列出全部**防解错页，零命中告警后降级）；② 内置题目页 URL 形状正则（复用 `TASK_URL_PATTERN`，与 watch/lite 同旋钮同源不漂移）；③ **内容级兜底**：URL 全落空时逐标签页跑单次探测 `looksLikeTaskPage`（强代码编辑器 Monaco/Ace/CM5/CM6——纯 textarea 不算，防普通网页评论框误报；评测结果面板专属标记；可见的评测/自测按钮）；④ 最终兜底（历史行为：第一个非空白页）。每级命中都打日志（层级 + URL），消除"静默选错页"。修复背景：真机开着 5 个标签页（课程列表在前）时旧版两档挑页永远选错页
 - **共享识别模块 `src/task-url.mjs`**：`taskKey`/`isTaskUrl` 从 `loop.mjs` 下沉（browser→loop 会成环），正则编译带缓存；`loop.mjs` 保留 `taskKey` 再导出兼容
 - **`looksLikeTaskPage`（`src/perceive.mjs`）**：内容级轻量判题，每个 frame 一次 `evaluate`（逐页约百毫秒级），判据全部沿用既有通用启发式、不硬编码站点 selector

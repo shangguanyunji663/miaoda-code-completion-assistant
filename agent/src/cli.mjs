@@ -11,6 +11,7 @@
 //   course   课程自动驾驶：遍历「课堂实验→板块→开始学习」，逐关作答直至板块做完
 //   course-probe 只读诊断课程列表页识别结果（不点击），course 卡住时先跑这个
 //   models   列出可用文本模型
+//   facts-check 校验 shared/platform-facts.json 结构（事实段带 evidence+date、待验证项隔离在 unknowns）
 
 import { cfg, printConfig, assertAiReady } from './config.mjs';
 import { connectBrowser, pickTargetPage } from './browser.mjs';
@@ -24,6 +25,7 @@ import {
 } from './perceive.mjs';
 import { runLoop, watchLoop, liteLoop, courseLoop } from './loop.mjs';
 import { listChatModels } from './ai.mjs';
+import { assertPlatformFactsValid } from './platform-facts-schema.mjs';
 import { reportCdpPortStartupCheck } from './port-check.mjs';
 import { launchBrowser, resolveBrowserPath, launchMyEdge } from './launch-browser.mjs';
 
@@ -92,6 +94,17 @@ async function main() {
           `题型=${probe.taskType} 编辑器=${probe.editor?.type ?? '无'} 题干长度=${probe.problem?.length ?? 0}`,
         );
       });
+      return;
+    }
+
+    case 'facts-check': {
+      // 只读校验平台事实档案：不连浏览器、不调 AI。编辑 shared/platform-facts.json 后先跑这个。
+      // 该文件坏 JSON 时 ai.mjs 只在运行时降级为空串 + 告警一次，prompt 会静默退回
+      // 「无平台事实」而链路不报错——故在此显式 fail-fast（见 platform-facts-schema.mjs 头注）
+      assertPlatformFactsValid(cfg.paths.platformFactsFile);
+      console.log(
+        '平台事实档案校验通过：platform-facts.json（事实段均带 evidence + date，待验证项已隔离在 unknowns）',
+      );
       return;
     }
 
@@ -175,7 +188,7 @@ async function main() {
     default:
       console.log(`未知命令：${cmd}`);
       console.log(
-        '可用：browser | my-edge | probe | dump | once | run | watch | lite | course | course-probe | models',
+        '可用：browser | my-edge | probe | dump | facts-check | once | run | watch | lite | course | course-probe | models',
       );
       process.exitCode = 1;
   }

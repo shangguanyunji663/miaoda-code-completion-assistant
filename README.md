@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.1.1-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.2.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -25,6 +25,7 @@
 > | `feat/2-c-web-service` | 能力配置自动校验 + 网页工作台：`npm run web` 点按钮代替命令行（仅本机访问） | 无新增依赖 |
 >
 > **版本演进说明**：四级挑页链（多标签页下自动识别题目页、多命中报错防解错页，详见《[同学使用指南](同学使用指南.md)》第八节）已同步回灌到**全部四个版本**，此能力各分支一致。其余差异如上表；所有分支的原有 CLI 用法（watch / lite / course）完全一致。各分支根目录均有同名指南，其第七节写明该分支的差异与用法。
+> **平台知识回灌（1.2.0）**：`shared/platform-facts.json`（平台实测事实单一数据源）+ 生成/反思 prompt 规则升级已回灌到**全部四个版本**，故各分支 AI 行为一致。master 作为基线只带「统一注入 + `npm run facts-check` 结构校验」，不含能力配置校验（feat/1、feat/3）与网页工作台（feat/2）。
 
 ---
 

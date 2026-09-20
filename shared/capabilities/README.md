@@ -21,6 +21,7 @@
 
 ## 修改约定
 
+- **平台事实不写进本目录的 JSON，写在 `shared/platform-facts.json`**：该文件是「平台实测事实」（运行时版本、库 API 形态、评测比对方式、编辑器行为）的唯一数据源，由 `agent/src/ai.mjs` 的 `buildPlatformFactsBlock()` 统一注入每个能力 prompt 末尾（`readCapability` 为单一注入点，新增能力自动继承）。只写实测过的条目并带 `evidence` + `date`，推断/待验证项写进 `unknowns`；改完跑 `cd agent && npm run facts-check` 验证结构（不连浏览器、不调 AI）。
 - 改 AI 行为**只改本目录的 JSON**，不改 `agent/src/*.mjs`。
 - prompt 中的 `{{input.xxx}}` 由 `agent/src/ai.mjs` 的 `renderTemplate` 渲染，新增占位符需同步在 `paramsSchema.properties` 中声明并由调用方传入对应字段。
 - 历史上本目录同时服务一个手动工作台前端，该前端已于 2026-09-09 移除，当前消费方仅 agent。

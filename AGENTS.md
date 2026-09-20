@@ -35,6 +35,8 @@
 
 ## 约束
 
+- **平台事实单一数据源 = `shared/platform-facts.json`**：所有「平台实测事实」（运行时版本、库 API 形态、评测比对方式、编辑器行为）**只在这里维护**，由 `agent/src/ai.mjs` 的 `buildPlatformFactsBlock()` 统一注入到每个能力 prompt 末尾（`readCapability` 是唯一注入点，新增能力自动继承）。填写纪律：① 只写**实测过**的条目，必须带 `evidence` 与 `date`；② 推断/待验证的写进 `unknowns`，**不得混入事实**；③ 不缓存、每次读盘（改完即刻生效）；④ 缺文件/坏 JSON 只降级告警，不阻断主流程。**新增事实一律加在这里，不要再散落成 prompt 规则**。改完跑 `npm run caps-check`（master 为 `npm run facts-check`）验证结构。
+- **平台事实优先于模型记忆（含 Python 库 API 与运行环境）**：冲突裁决顺序 = 平台报错回显/实测 > 题面示例写法 > 模板已有代码形态 > 题面描述 > 「官方文档/最新版本」的模型记忆。教学平台运行环境常显著落后（**实测 2026-09-20**：Python 2 + 旧版 redis-py——`zadd(key, member, score)` 是「先成员后分值」与 Redis 官方文档相反、`open()` 不接受 `encoding=`、字典式 `zadd(key,{member:score})` 直接报错）。边界：该优先级只用于「接口形态/语法/运行环境/输出格式/数据格式」；**算法逻辑与题面明文要求仍须正确实现**。相关事实见 `shared/platform-facts.json`。
 - **prompt 单一数据源**：AI 行为的 prompt 只存在于 `shared/capabilities/*.json`，agent 直接读取并渲染 `{{input.xxx}}`。**不得在 agent 内复制 prompt 造成两份漂移**。改 AI 行为优先改 JSON，而非代码。
 - **不硬编码站点 selector**：识别全部走通用启发式（编辑器按 Monaco/Ace/CodeMirror/textarea 优先级探测；题干取排除编辑器后最长且偏左的文本块）。针对具体平台调整前先 `npm run dump` 拿真实结构，不要凭假设写规则。
 - **数据库/命令行题的环境事实靠实测，不靠模型记忆**：客户端存在性（mongosh/mongo/mysql/redis-cli/psql）与终端形态（bash/REPL）一律实测后进 prompt，缺失客户端做执行层别名替换；**混合题先命令行插入题面文档到指定库（评测环境共享终端数据库，未插入则查询结果为空），代码栏数据库命令题用 `echo "` 双引号包裹裸查询（分号 `;` 分隔、`$`→`\$`）**——平台对代码栏双重执行（bash 环节 + 提取 echo 引号内容做数据库 eval），heredoc/裸语句/`mongo` 前缀实测全失败（1.0.0 生成/反思守则）。
