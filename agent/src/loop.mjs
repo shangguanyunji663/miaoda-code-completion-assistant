@@ -481,6 +481,9 @@ export async function solveOnce(page, probe) {
   let code = null;
   let lastEval = '';
   let sanitizeNote = ''; // shell 护栏清洗记录（喂给反思，供其理解上一轮实际提交内容）
+  // 代码反思教训链（与 cmdline 分支同构，2026-09-20 回灌）：每轮反思诊断沉淀，
+  // 下一轮注入，防止"这轮改对了、下轮又退回"的横跳（zincrby 3 轮横跳即无记忆）
+  const lessons = [];
 
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     if (code === null) {
@@ -575,6 +578,8 @@ export async function solveOnce(page, probe) {
       evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
       // 注入客户端实测事实：反思守则第 4 条按它选 heredoc 的客户端名
       terminalState: clientFact,
+      // 教训链：此前各轮已确诊的原因（防横跳）
+      lessons: lessons.slice(-6),
     });
     log(`AI 代码反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
     if (fixed.analysis) {
@@ -582,6 +587,8 @@ export async function solveOnce(page, probe) {
       // "根据"SyntaxError: missing…"源" 戛然而止），用户无法判断是真截断
       // 还是 AI 没想全。分析被 prompt 约束 3 句话内，全量打印成本可忽略
       log(`反思分析：${String(fixed.analysis).replace(/\s+/g, ' ')}`);
+      // 诊断沉淀进教训链：下一轮必须吸收，防止"改对又退回"摇摆
+      lessons.push(String(fixed.analysis).replace(/\s+/g, ' '));
     }
     if (!fixed.code) {
       log('反思未产出代码，终止本题');

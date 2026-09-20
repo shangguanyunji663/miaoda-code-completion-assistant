@@ -5,6 +5,7 @@
 //   probe    检查配置、浏览器连接与页面识别情况
 //   dump     导出当前页面结构快照到 agent/dumps/（用于针对站点精调规则）
 //   caps-check 手动校验 shared/capabilities/*.json（占位符与 paramsSchema 声明一致性）
+//              以及 shared/platform-facts.json（事实段必须带 evidence+date、unknowns 已隔离）
 //   once     只解当前这一题
 //   run      连续解题，成功后自动翻页
 //   watch    常驻监听，切到新题目页即自动作答
@@ -26,6 +27,7 @@ import {
 import { runLoop, watchLoop, liteLoop, courseLoop } from './loop.mjs';
 import { listChatModels } from './ai.mjs';
 import { assertCapabilitiesValid } from './capability-schema.mjs';
+import { assertPlatformFactsValid } from './platform-facts-schema.mjs';
 import { reportCdpPortStartupCheck } from './port-check.mjs';
 import { launchBrowser, resolveBrowserPath, launchMyEdge } from './launch-browser.mjs';
 
@@ -98,9 +100,15 @@ async function main() {
     }
 
     case 'caps-check': {
-      // 只读校验能力配置：不连浏览器、不调 AI。编辑 shared/capabilities 后先跑这个
+      // 只读校验：不连浏览器、不调 AI。编辑 shared/capabilities 或 shared/platform-facts.json 后先跑这个
       const n = assertCapabilitiesValid(cfg.paths.capabilitiesDir);
+      // 事实档案此前是 caps-check 的盲区：坏 JSON 只在运行时降级为空串 + 告警，
+      // prompt 会静默退回「无平台事实」而链路不报错（见 platform-facts-schema.mjs 头注）
+      assertPlatformFactsValid(cfg.paths.platformFactsFile);
       console.log(`能力配置校验通过：${n} 个文件（prompt 占位符与 paramsSchema 声明一致）`);
+      console.log(
+        '平台事实档案校验通过：platform-facts.json（事实段均带 evidence + date，待验证项已隔离在 unknowns）',
+      );
       return;
     }
 

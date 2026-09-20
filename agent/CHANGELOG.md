@@ -8,6 +8,12 @@
 
 ### Added
 
+- **【平台知识回灌 1.2.0，源自 `feat/2-c-web-service`】平台事实档案 `shared/platform-facts.json`（新增）**：把「平台实测事实」（运行时版本、库 API 形态、评测比对方式、编辑器行为）收敛为**单一数据源**，由 `ai.mjs` 的 `buildPlatformFactsBlock()` 在 `readCapability` 统一注入**每个**能力 prompt 末尾——新增事实只改一处，不再散落成 prompt 规则（此前同一类根因连续两题复发：实测该平台是 Python 2 + 旧版 redis-py，`zadd(key, member, score)` 是「先成员后分值」与 Redis 官方文档相反、`open()` 不接受 `encoding=`、字典式 `zadd(key,{member:score})` 直接报错）。填写纪律：只写实测条目并带 `evidence` + `date`，推断/待验证项隔离在 `unknowns`。
+- **事实档案结构校验 `src/platform-facts-schema.mjs`（新增）**，并入既有 `npm run caps-check`：事实段必须带 `evidence` + `date`、待验证字样不得混入事实段、`unknowns` 必须是字符串数组。该文件此前是校验盲区——坏 JSON 只在运行时降级为空串并告警一次，prompt 静默退回「无平台事实」而解题链路一路正常，属与「占位符拼错」同类的静默失效。
+- **生成端 / 反思端 prompt 规则升级（`shared/capabilities/`）**：生成器新增规则 11–24、反思器同步平台事实守则，覆盖「事实优先级」裁决链（平台报错回显/实测 > 题面示例写法 > 模板已有形态 > 题面描述 > 官方文档记忆）与一批真机实证规则——`zadd` 实参序、Python 2 无 f-string 且 `print` 输出形态（bytes 打印 `['x']`、unicode 打印 `[u'x']`）影响逐行比对、**评测程序自己打印的行不是你要输出的内容**（多一行 print 即判不匹配，曾连续多轮误改逻辑）、过滤条件严格照题面（拿 `isdigit()` 当放行条件会把 IP 格式整列滤掉）、平台入参常带尾随换行须先 `strip()`、模板多处 Begin/End 不得只补开头。`maxTokens` 8192 → 32768。
+- **修复「代码反思教训链」静默失效**：`loop.mjs` 早已把 `lessons` 传给 `reflectAndFix`，但该函数签名不接收 `lessons`、能力 JSON 也未声明 `{{input.lessons}}` 占位符——教训**被静默丢弃**，反思每轮无记忆、易「改对又退回」横跳。现补齐「声明 → 传递 → 注入 → 沉淀」全链（与既有 `reflectCommands` 的教训链同构）。
+- **单测 +13 项**：新增 `test/platform-facts.test.mjs`（事实档案可读且含关键事实 + **每个**能力 prompt 都必须被注入，防将来新增能力漏注入）与 `test/platform-facts-schema.test.mjs`（真实档案回归闸 + 缺证据 / 坏 `date` / 待验证字样混入 / 坏 JSON 与缺文件 fail-fast）。
+
 - **能力 JSON 加载前校验 `src/capability-schema.mjs`**（零依赖，不引入 Ajv）：必填字段（`id` / `formValue.prompt` / `paramsSchema`）、prompt 占位符 ⊆ `paramsSchema.properties`（抓拼写错误）、`required` ⊆ `properties`（抓声明漂移）。`ai.mjs` 的 `readCapability` 首次读取时自动全量预检（fail-fast）；新增 CLI 命令 `npm run caps-check` 手动校验（不连浏览器、不调 AI）
 - **启动自检 CDP 调试端口 `src/port-check.mjs`**（node:net 零依赖）：watch / lite / course 启动时探测调试端口并给出人话状态——就绪打勾，无响应则指引（推荐先双击 start-my-edge.bat，或说明将自动拉起独立浏览器兜底）。真机反馈驱动：跳过受控浏览器直接运行时，故障要到连接时才暴露。冒烟实测就绪/无响应两条路径
 - **单测 22→29 项**（新增 `test/capability-schema.test.mjs`）：真实 7 能力文件全通过的回归闸 + 缺字段 / 占位符拼写 / required 漂移 / 坏文件聚合报错四类用例
