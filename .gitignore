@@ -79,5 +79,8 @@ agent/logs/
 # Mimosa 安全扫描插件本地运行状态（hook 状态缓存，纯运行时产物）
 .mimosa/
 
+# 本地临时诊断产物（prettier 格式化漂移预览等），非项目文件
+agent/fmt-drift-preview.txt
+
 # 上传的页面截图，可能含姓名学号
 uploaded_image.png
