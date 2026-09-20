@@ -47,6 +47,29 @@ const READ_CODE = (type) => {
       return el?.innerText ?? '';
     }
     case 'monaco': {
+      // 优先用 Monaco 模型 API 拿全文（1.4.1 修，2026-09-20 真机事故）：
+      // .view-lines 是虚拟渲染、只含"当前可见行"，代码一长回读就被截断——
+      // 实测同一份代码：模型真值 1508 字符 / 3 对标记，view-lines 只读到
+      // 861 字符 / 2 对标记。被截断的模板会一路污染：喂给 AI 的 code_template
+      // 残缺、模板标记计数错乱（拼接判据跟着错）、题干里混入半截代码。
+      // 与 writeEditorCode 的回读策略保持一致（那里早已优先模型 API）。
+      try {
+        if (!window.monaco && typeof window.require === 'function') {
+          try {
+            window.monaco = window.require('monaco-editor');
+          } catch {}
+        }
+        const ns = window.monaco?.editor
+          ? window.monaco
+          : window.Monaco?.editor
+            ? window.Monaco
+            : null;
+        const models = (ns?.editor?.getModels?.() ?? [])
+          .map((m) => m.getValue?.() ?? '')
+          .filter((v) => v.trim());
+        if (models.length) return models.sort((a, b) => b.length - a.length)[0];
+      } catch {}
+      // 模型 API 不可用（极少数平台）→ 退回可见区读取（近似值，调用方需容忍偏短）
       const el = q('.view-lines');
       return el?.innerText ?? '';
     }
@@ -578,11 +601,51 @@ export async function writeEditorCode(page, code) {
       log(`已通过编辑器 API 写入（方式=${label}，${code.length} 字符，回读逐字符一致）`);
       return { type: probe.editor.type, length: code.length, verified: true, via: `api:${method}` };
     }
-    log(
-      `API 写入（${label}）回读不一致（${strip(landed).length}/${want} 非空白字符），尝试下一方式`,
-    );
+    // 近似判定（1.4.1 修，2026-09-20 真机事故）：模型被平台异步重建/虚拟渲染时，
+    // 回读会比写入内容略短（实测 950/967 非空白字符，其实是同一份代码）。此时
+    // **必须视为写入成功**——若按失败降级到键盘路径，insertText 会被 Monaco
+    // autoIndent 逐行重排、给预缩进的 Python 多加一层缩进，制造 IndentationError
+    // 把好代码改坏（实测：降级键盘后下一轮评测报 `IndentationError: unexpected indent`）。
+    const gotApi = strip(landed).length;
+    if (gotApi >= want * 0.8) {
+      log(
+        `API 写入（${label}）回读 ${gotApi}/${want} 非空白字符，判为已写入（近似回读；不降级键盘，以免自动缩进改坏代码）`,
+      );
+      return {
+        type: probe.editor.type,
+        length: code.length,
+        verified: 'approx',
+        via: `api:${method}`,
+      };
+    }
+    log(`API 写入（${label}）回读不一致（${gotApi}/${want} 非空白字符），尝试下一方式`);
   }
-  log('API 写入均不可用或未通过验证，回退键盘写入');
+  // 键盘回退前先关闭编辑器自动缩进：insertText 会被 autoIndent/formatOnPaste 逐行
+  // 重排（预缩进的 Python 多一层缩进 → IndentationError）。尽量在源头消除。
+  const relaxedIndent = await target
+    .evaluate(() => {
+      try {
+        const ns = window.monaco?.editor
+          ? window.monaco
+          : window.Monaco?.editor
+            ? window.Monaco
+            : null;
+        if (!ns) return false;
+        for (const ed of ns.editor.getEditors?.() ?? []) {
+          ed.updateOptions?.({ autoIndent: 'none', formatOnType: false, formatOnPaste: false });
+        }
+        for (const m of ns.editor.getModels?.() ?? []) {
+          try {
+            m.updateOptions?.({ autoIndent: 'none' });
+          } catch {}
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .catch(() => false);
+  log(`API 写入均未通过验证，回退键盘写入${relaxedIndent ? '（已关闭编辑器自动缩进）' : ''}`);
 
   // ---- 回退：键盘写入（点击聚焦 → 全选 → 删除 → 插入）----
   // 写完回读验证是否真实落进编辑器；确证失败自动重试一次。

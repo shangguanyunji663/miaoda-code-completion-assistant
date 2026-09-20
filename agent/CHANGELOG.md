@@ -2,6 +2,57 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.4.2] - 2026-09-20（分支 feat/2-c-web-service）
+
+**平台事实档案（单一数据源 + 统一注入）**。同一类根因（平台是老版本、与官方文档冲突）在两天内**连续两题复发**（IP 地址库、自动补全），说明"把事实散落成 prompt 规则"这条路必然漏——本次就漏在生成端。故收敛为**一处维护、处处注入**。
+
+### Added
+
+- **`shared/platform-facts.json`（新增，平台事实单一数据源）**：结构化记录**已实测**的平台事实（每条带 evidence 原文与 date）——Python 2 运行时、旧版 redis-py 的 `zadd` 实参顺序「先成员后分值」与「不支持字典写法」、`zrevrangebyscore(max,min)`、`open()` 无 `encoding=`、`zrank` 从 0 起、`zrange` 闭区间且返回 bytes、**评测方独占 stdout**、**返回 bytes 与 unicode 的 repr 形态差异**、编辑器草稿会被平台持久化且无「恢复初始代码」按钮。另设 `unknowns` 数组承载**待验证项**，与事实严格分离（防止把推断写成事实）
+- **统一注入（`ai.mjs` `buildPlatformFactsBlock()` + `readCapability`）**：所有能力 prompt 在渲染后自动追加「### 平台事实（本平台实测结论，优先于任何官方文档与既有记忆）」段——**单一注入点，将来新增能力不会漏**。刻意**不缓存**（每次读盘），与既有"prompt 热生效"风格一致；文件缺失/损坏时降级为空串 + 告警一次，不阻断主流程
+- **单测 `test/platform-facts.test.mjs`（3 项）**：事实档案可读且含关键事实 / **每个**能力 prompt 都带事实块（防新增能力漏注入）/ 注入不破坏原有 prompt 规则
+
+### Notes
+
+- 验证：`npm test` **65/65**；`npm run caps-check` 通过
+- **真机实证（自动补全题，`/tasks/XBLSCWNL/4871/...`）**：按事实档案重写后**一次提交即通过**（`检测到「恭喜您通过本关」弹窗`）。同时判定三个此前只是"疑似"的结论：① `zadd(key, member, score)`（题面示例顺序）正确，字典写法与 Redis 官方顺序均失败；② **代码绝不能自己 print** 评测程序要打印的行（`The start/end range…` / `Add a few candidate word…`），函数内自加 print 会造成重复行 → 逐行比对失败；③ **返回 bytes 原样**（`['what', …]`），decode 成 unicode 会打印 `[u'what', …]` → 不匹配
+- 边界：`buildPlatformFactsBlock` 的注入是**全量**的（不做任务相关性筛选），prompt 会因此变长（当前约 +1.6k 字符）；若后续能力数量继续增长，可考虑按能力裁剪。`caps-check` 目前**未**覆盖 `platform-facts.json` 的结构校验（只有 JSON 解析失败会被 `buildPlatformFactsBlock` 警告），留作后续
+
+## [1.4.1] - 2026-09-20（分支 feat/2-c-web-service）
+
+**真机根因修复：反思题干被截断 + 写入降级改坏代码 + 生成守则缺口**。题目 `/tasks/XBLSCWNL/4872/...`「使用Redis实现IP地址库」连续两次会话、20+ 轮全部失败；用「导出真实评测面板 → 在提交版本里注入探针」的方式逐条定位到 5 条独立根因，修复后**第 1 次评测即通过**。
+
+### Fixed
+
+- **反思题干被截断，要求细则整体丢失（`loop.mjs` `slimForReflection`，主因）**：双锚点用 `indexOf` 取**首次**出现，而评测页题干顶部有目录（"任务描述 相关知识 … 编程要求 测试说明"），两个锚点同时命中目录 → 窗口退化成题干开头约 1600 字，恰好切掉「编程要求」正文。本题因此丢失三条硬要求（"城市ID 加 _ 加当前行索引值做为成员"、"分值小于等于…分值最大的成员"、"去除 _ 及其之后"），反思 AI 看不到要求，反把**正确的** `city_id + "_" + str(count)` 判为"多余的_行号、破坏了城市 ID 的直接存储语义"主动删掉，越改越错。改为 `lastIndexOf` 取正文锚点 + 尾窗 1600→2400（实测窗口 1685→2125 字，要求与预期输出全部覆盖）
+- **Monaco API 写入假阴性 → 降级键盘 → autoIndent 改坏缩进（`perceive.mjs`）**：回读用"去空白逐字符相等"强校验，平台异步重建模型时回读会略短（实测 950/967 非空白字符，其实是同一份代码）→ 判失败 → 降级 `keyboard.insertText` → Monaco autoIndent 逐行重排，给预缩进 Python 多加一层缩进 → 下轮评测 `IndentationError: unexpected indent`，反思还去追"不可见非法空白字符"这个幻影，白烧两轮。现：回读 ≥80% 即判为已写入（近似回读不再降级）；确实要降级时先 `updateOptions({autoIndent:'none',formatOnType:false,formatOnPaste:false})` 从源头消除
+- **`spliceIntoTemplate` 直通模式丢编码声明（`ai.mjs`）**：直通分支整体采用 AI 输出，文件头全靠 AI 自觉复述模板；平台是 **Python 2**，缺 `#-*- coding:utf-8 -*-` 时任何中文注释都报 `SyntaxError: Non-ASCII character '\xe5' ... no encoding declared`。新增 `withTemplateLeadingDecl`：直通且 AI 输出前两行无声明的，补回模板声明行（幂等）
+
+### Changed
+
+- **生成器 prompt 新增 11~23 条、第 7 条收紧（`code_completion_generator_1`）**：① API 形态以题面「相关知识/示例」为准、禁止替换版本签名（真题：题面示例 `conn.zadd("testzset","member2",3)` 三参数旧式，模型改用 redis-py 3.x+ 字典写法 → `ZADD requires an equal number of values and scores`）；② 过滤/取值条件按题面字面实现，禁止把 `isdigit()` 当唯一放行条件（会把 IP 格式数据整份滤掉 → 写入 0 条）；③ 成员/分值语义禁止"简化"；④ 返回值与边界值同题面；⑤ Python 2 禁 f-string、注释一律英文、禁加题面未要求的 print（评测按 stdout 逐行比对）；⑥ 多组测试集必须全格式成立；⑦ 逐列取值加 `len(row)` 守卫、先过滤后取列；⑧ 禁用裸 `except: pass`；⑨ 题干末尾混入的编辑器旧代码与评测面板不是题面要求；⑩ **入参可能带尾随换行（`'14.134.0.0\n'`），不得用 `isdigit()` 拒绝平台合法输入**；⑪ 不得添加题面未要求的严格校验；⑫ 题面规定的实现手法（如"迭代法"）照做，不要换成位运算等等价写法
+- **反思器 prompt 新增 6~10 条（`code_reflection_fixer_1`）**：改代码前先逐条核对题面硬性要求、禁止以"更简洁/多余"为由偏离；多组测试集逐组核对、某组为 0/空先怀疑过滤条件；禁用裸 except；stdout 逐行比对不得增输出；**查询类函数返回 None/空时先检查入参是否带换行**
+
+### Notes
+
+- 验证：`npm test` **59/59**（新增 `test/slim-for-reflection.test.mjs` 3 项，钉死"锚点必须落在正文章节"）；`npm run caps-check` 通过；`node --check` 全过
+- 真机留证（面板原始文本 + 注入探针）：修复前 20+ 轮全败，失败签名依次为 `SyntaxError: Non-ASCII character`（直通丢声明）→ `ZADD requires an equal number of values and scores`（字典写法）→ `IndentationError`（写入降级）→ `IndexError: list index out of range`（短行先读 row[2]）→ `Redis ip2city sorted set ranges: 80008` 但查询返回 `None`；探针最终定位 `in='14.134.0.0\n' ip_int=None`
+- 环境事实（首次留证）：该平台为 **Python 2 + 旧版 redis-py**（`zadd(key, member, score)` 三参数旧式写法、`zrevrangebyscore` 报 `min or max is not a float` 说明它按 float 解析）；评测含多组测试集，会打印有序集合基数逐项比对，面板末尾还有 `conn.delete(*to_del)` 清理（集合为空时会报 `wrong number of arguments for 'del' command`）
+- 平台特性（如实标注，未修）：`probePage` 抽到的「题干」会混入编辑器现存代码与上一次评测结果面板（本题题干 3011→4551 字随编辑器内容变化），已用 prompt 第 ⑨ 条缓解，但从源头剥离需改 `perceive.mjs` 的题干抽取规则，留作后续
+
+- **按钮点击加「有界重扫窗口」（`act.mjs` `clickByKeywords`，并顺手修掉一个误判）**：真机偶发「评测」按钮三次点击都被拦截（疑似被结果面板遮挡）→ 旧实现直接放弃 → `loop` 判 `未找到评测按钮` **终止整题**；但实测该按钮**存在且可见**（`评测 @1608,941 visible=true`），页面上也没有真实遮罩（唯一命中项是 Monaco 内部的 `margin-view-overlays`），属渲染/收起面板的瞬时态。现：`clickByKeywords` 增加有界重扫窗口（`settleMs`，每 `settleStepMs` 重扫一轮，到点即止，**绝不死循环**），`clickEval` 取 20s（本题成败关口，宁可等不可误判）、`clickNext` 取 4s（没有「下一题」是正常终止条件）；并把失败日志拆成「按钮不存在」与「按钮存在但始终未点中」两种——两者的排查方向完全不同（旧版统一报「未找到」，误导排查）。新增 `test/click-fallback.test.mjs` 3 项（首轮被拦截次轮点中 / 始终点不动时有界放弃 / 按钮不存在时不点击）。**边界（同轮真机实测，如实标注）**：该重扫窗口能覆盖"瞬时竞态"，但**对"持续遮挡态"无效**——实测同一页面状态连续重扫 20s 仍点不动（新日志正确报出「按钮存在但始终未点中」，而非旧版的「未找到」），**必须重载页面**才能恢复：重载后同一次运行「第 1 次评测即通过」。故本改动解决的是"误判 + 排查方向"，并为后续"点不动 → 重载并重试"的恢复策略铺好了判据（当前未实现，不声称已修）
+
+### 补充（同日续查：另有 3 条根因，均真机留证）
+
+- **题干/模板抽取有损（`perceive.mjs` `READ_CODE` 的 monaco 分支，最隐蔽）**：读的是 `.view-lines`——Monaco 虚拟渲染**只含当前可见行**。实测同一份代码：Monaco 模型真值 **1508 字符 / 3 对标记**，而 `probePage().code` 只读到 **861 字符 / 2 对标记**。被截断的模板一路污染：喂给 AI 的 `code_template` 残缺、模板标记计数错乱（拼接判据跟着错）、题干里混入半截代码。**已改为优先用 Monaco 模型 API 取全文，模型 API 不可用才退回可见区**（与 `writeEditorCode` 的回读策略一致——那里早已优先模型 API）；修复后复验提取与真值完全一致
+- **日志假信号修复（`loop.mjs`）**：`拼接方式：模板 N 对标记` 用 `match(/\bbegin\b/i)` **漏了 `g` 标志**，只返回首个匹配 → 恒打印"1 对标记"。曾被它误导去追"模板被截断"（实际是日志缺陷）。已改为带 `g` 的计数。教训：**日志里的计数/告警本身也是代码，必须验证其正确性**
+- **平台 `zadd` 实参顺序与 Redis 官方文档相反（prompt 已钉死）**：题面示例 `conn.zadd("testzset","member2",3)` 是「先成员后分值」；模型按官方 `ZADD key score member` 写成 `zadd(key, score, member)` → traceback 原文 `ResponseError: value is not a valid float`。生成器规则 11 已补"以题面示例的实参顺序为唯一依据，不得按官方文档顺序"
+
+### 平台事实（未修，如实标注）
+
+- **编辑器草稿被平台持久化**：`page.reload()` 与重新 `goto` 同一题目页**都拿不回平台原始模板**（实测：写入 482 字符原始模板后再次 goto，编辑器仍是上一次的 891 字符草稿）⇒ `loop.mjs` 的"连续同错 ≥3 轮重载题目页重取原始模板"兜底在本平台**无效**
+- **页面无"恢复初始代码"按钮**（可点击元素仅 上一关 / 自测运行 / 评测 + 章节标签）⇒ 模板一旦被污染无法经 UI 复原。后续建议：从题干代码块提取原始模板作为兜底基准，或新增"清空编辑器"动作
+
 ## [1.4.0] - 2026-09-20（分支 feat/2-c-web-service）
 
 **人工制动闸：网页工作台可手动停止解题**。评测反复不通过时，反思重试会一路烧到 `MAX_RETRY`（默认 10 轮；单轮含推理模型思考 + 25s 评测等待，最坏可挂十几分钟）。本版本给工作台加「■ 停止做题」按钮：置位中断标志后，解题链路在下一个检查点退出——**不再提交下一次评测、不再发起下一次 AI 调用**，在途的 AI 流式请求直接断流。

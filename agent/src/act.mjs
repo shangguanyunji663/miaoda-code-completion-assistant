@@ -1,4 +1,4 @@
-// EXPORTS: clickEval, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
+// EXPORTS: clickEval, clickByKeywords, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
 //          readTaskNo, waitTaskAdvance, clickExitTask, clickBackArrow,
 //          clickContinueChallenge, clickStartLearning, switchTaskTab, runTerminalCommands,
 //          collectTestSetDetails, dismissPassModal, ensureTaskPage
@@ -59,42 +59,64 @@ async function dismissResultPanel(page) {
 }
 
 /** 按关键词列表点击第一个可见按钮 */
-async function clickByKeywords(page, keywords, label) {
-  for (const kw of keywords) {
-    // 按角色优先级尝试。实测该评测平台上「评测」是 <button>，而「上一关/下一关」
-    // 是 <a>（class ghost-link），只查 button 会漏掉后者，因此必须覆盖 link。
-    // 最后退化为精确文本匹配，兜住非标准角色元素。
-    const candidates = [
-      page.getByRole('button', { name: kw, exact: false }),
-      page.getByRole('link', { name: kw, exact: false }),
-      page.getByText(kw, { exact: true }),
-    ];
-    for (const loc of candidates) {
-      const n = await loc.count().catch(() => 0);
-      for (let i = 0; i < n; i++) {
-        const el = loc.nth(i);
-        if (!(await el.isVisible().catch(() => false))) continue;
-        if (!guard(`点击「${label}」（匹配词：${kw}）`)) return { clicked: false, keyword: kw };
-        let clicked = false;
-        try {
-          await el.click({ timeout: 8000 });
-          clicked = true;
-        } catch {
-          // 被评测结果面板遮挡：收起面板后重试一次（1.1.0 通用处理）
-          log(`点击「${label}」被拦截（疑似被评测结果面板遮挡），收起后重试`);
-          await dismissResultPanel(page);
-          clicked = await el
-            .click({ timeout: 8000 })
-            .then(() => true)
-            .catch(() => false);
+export async function clickByKeywords(page, keywords, label, opts = {}) {
+  // 重扫窗口（毫秒）：短暂遮挡/渲染竞态时自愈；0 表示只试一轮（旧行为）
+  const settleMs = opts.settleMs ?? 6000;
+  const stepMs = opts.settleStepMs ?? 2000;
+  const deadline = Date.now() + settleMs;
+  let sawAny = false;
+  for (let round = 1; ; round++) {
+    for (const kw of keywords) {
+      // 按角色优先级尝试。实测该评测平台上「评测」是 <button>，而「上一关/下一关」
+      // 是 <a>（class ghost-link），只查 button 会漏掉后者，因此必须覆盖 link。
+      // 最后退化为精确文本匹配，兜住非标准角色元素。
+      const candidates = [
+        page.getByRole('button', { name: kw, exact: false }),
+        page.getByRole('link', { name: kw, exact: false }),
+        page.getByText(kw, { exact: true }),
+      ];
+      for (const loc of candidates) {
+        const n = await loc.count().catch(() => 0);
+        for (let i = 0; i < n; i++) {
+          const el = loc.nth(i);
+          if (!(await el.isVisible().catch(() => false))) continue;
+          sawAny = true;
+          if (!guard(`点击「${label}」（匹配词：${kw}）`)) return { clicked: false, keyword: kw };
+          let clicked = false;
+          try {
+            await el.click({ timeout: 8000 });
+            clicked = true;
+          } catch {
+            // 被评测结果面板遮挡：收起面板后重试一次（1.1.0 通用处理）
+            log(`点击「${label}」被拦截（疑似被评测结果面板遮挡），收起后重试`);
+            await dismissResultPanel(page);
+            clicked = await el
+              .click({ timeout: 8000 })
+              .then(() => true)
+              .catch(() => false);
+          }
+          if (!clicked) continue; // 重试仍失败，换下一个候选
+          log(`已点击「${label}」（匹配词：${kw}）`);
+          return { clicked: true, keyword: kw };
         }
-        if (!clicked) continue; // 重试仍失败，换下一个候选
-        log(`已点击「${label}」（匹配词：${kw}）`);
-        return { clicked: true, keyword: kw };
       }
     }
+    // 整轮都没点中：等一会儿再重扫（1.4.1 加，2026-09-20 真机事故）
+    // 现象：连续三次「点击被拦截」后即放弃 → loop 判「未找到评测按钮」终止整题；
+    // 但实测该按钮**存在且可见**（`评测 @1608,941 visible=true`），页面上也没有真实遮罩
+    //（唯一命中项是 Monaco 内部的 margin-view-overlays），属渲染/收起面板的瞬时态。
+    // 给一个有界重扫窗口，比误判"没有评测按钮"而整题作废划算。
+    if (Date.now() >= deadline) break;
+    await dismissResultPanel(page);
+    log(`「${label}」本轮未点中（第 ${round} 轮），${Math.round(stepMs / 1000)}s 后重扫`);
+    await page.waitForTimeout(stepMs);
   }
-  log(`未找到「${label}」按钮（尝试词：${keywords.join('/')}）`);
+  // 区分两种失败：按钮根本不存在 vs 存在但一直点不动——排查方向完全不同
+  log(
+    sawAny
+      ? `「${label}」按钮存在但始终未点中（疑似被遮挡/未就绪），放弃本次点击`
+      : `未找到「${label}」按钮（尝试词：${keywords.join('/')}）`,
+  );
   return { clicked: false, keyword: null };
 }
 
@@ -112,12 +134,12 @@ export async function settle(page) {
 
 /** 点击「评测」按钮 */
 export async function clickEval(page) {
-  return clickByKeywords(page, BTN_EVAL, '评测');
+  return clickByKeywords(page, BTN_EVAL, '评测', { settleMs: 20000, settleStepMs: 2000 });
 }
 
 /** 点击「下一题」按钮 */
 export async function clickNext(page) {
-  return clickByKeywords(page, BTN_NEXT, '下一题');
+  return clickByKeywords(page, BTN_NEXT, '下一题', { settleMs: 4000, settleStepMs: 2000 });
 }
 
 /**

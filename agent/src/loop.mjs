@@ -155,25 +155,37 @@ function formatInputErrors(termErrors) {
 }
 
 /**
- * 反思用瘦身题干（0.9.1 双锚点扩窗）：以「编程要求」与「测试说明」两段为锚，
- * 覆盖要求明细 + 评测机制说明（约 2600 字窗口）。
+ * 反思用瘦身题干（0.9.1 双锚点扩窗 + 1.4.1 正文锚点修正）：
+ * 以「编程要求」与「测试说明」两段为锚，覆盖要求明细 + 评测机制说明。
+ *
+ * ★ 锚点必须取【最后一次】出现（1.4.1 修，2026-09-20 真机事故）：评测页题干
+ * 顶部常有一份**目录**（"任务描述 相关知识 … 编程要求 测试说明"），取首次出现
+ * 时两个锚点会同时落在目录里，窗口退化成题干开头约 1600 字——恰好把「编程要求」
+ * 的正文细则整体切掉。本题（Redis IP 地址库）因此丢失了三条硬要求
+ * （"城市ID + _ + 行索引作为成员"、"分值小于等于…分值最大的成员"、"去除 _ 及其之后"），
+ * 反思 AI 看不到要求，便把**正确的** `city_id + "_" + str(count)` 判定为
+ * "引入了不必要的行号、破坏了城市 ID 的直接存储语义"而主动改错——10 轮反思
+ * 越改越错、全部失败。正文锚点 + 更长的尾窗可根治。
+ *
  * 教训（2026-09-10 真机）：旧版单锚 ±窗口只有 ~1500 字，本题的「测试说明」
  * （"平台会把你在代码行编写的命令传到数据库执行"）落在窗口外——反思 AI
  * 不懂评测机制，把预期输出面板的中文标签当成了输出要求，酿成灾难性修正。
+ * @param {string} p 完整题干
+ * @returns {string} 反思用题干片段
  */
-function slimForReflection(p) {
+export function slimForReflection(p) {
   const anchors = ['编程要求', '测试说明'];
   let start = Number.POSITIVE_INFINITY;
   let end = -1;
   for (const a of anchors) {
-    const i = p.indexOf(a);
+    const i = p.lastIndexOf(a); // 取正文锚点，避开页首目录（见头注）
     if (i !== -1) {
       start = Math.min(start, i);
       end = Math.max(end, i);
     }
   }
   if (start === Number.POSITIVE_INFINITY) return p.slice(0, 3000);
-  return p.slice(Math.max(0, start - 400), Math.min(p.length, end + 1600));
+  return p.slice(Math.max(0, start - 400), Math.min(p.length, end + 2400));
 }
 
 /**
@@ -554,7 +566,7 @@ async function solveOnceInner(page, probe) {
     let submitted = spliceIntoTemplate(codeProbe.code, code);
     // 拼接方式留痕（2026-09-15 定位用）：AI 输出是否带标记、模式块数 → 判断
     // 走的是逐块归位还是无标记直通，失败时可快速归因
-    log(`拼接方式：模板 ${(codeProbe.code.match(/\bbegin\b/i) || []).length} 对标记 / AI 输出 ${(code.match(/\bbegin\b/i) || []).length} 对标记 / 拼后 ${submitted.length} 字符`);
+    log(`拼接方式：模板 ${(codeProbe.code.match(/\bbegin\b/gi) || []).length} 对标记 / AI 输出 ${(code.match(/\bbegin\b/gi) || []).length} 对标记 / 拼后 ${submitted.length} 字符`);
     // 多标记模板校验（2026-09-15）：模板含多处 Begin/End 区域时，AI 漏补全的
     // 空区域会让评测直接 IndentationError——拼完立即打点，让反思轮感知
     const emptyBlocks = emptyMarkerBlocks(submitted);
