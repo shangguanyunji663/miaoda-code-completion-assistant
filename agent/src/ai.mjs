@@ -44,7 +44,9 @@ export function buildPlatformFactsBlock() {
     const body = JSON.stringify(obj, null, 2);
     if (!factsLogged) {
       factsLogged = true;
-      log(`已加载平台事实档案 ${path.basename(file)}（${body.length} 字符），将注入所有能力 prompt`);
+      log(
+        `已加载平台事实档案 ${path.basename(file)}（${body.length} 字符），将注入所有能力 prompt`,
+      );
     }
     return (
       '### 平台事实（本平台**实测**结论，优先于任何官方文档与你的既有记忆；' +
@@ -108,11 +110,13 @@ export async function chat(messages, opts = {}) {
   // 注意：整体 JSON 兜底路径（非流式端点）无法中途拦截，硬闸仅对流式生效。
   const effort = opts.reasoningEffort ?? cfg.ai.reasoningEffort;
   const capMs = cfg.ai.thinkingCapMs;
+  const thinkMaxChars = cfg.ai.thinkingMaxChars; // 思考字数配额（0=禁用）
   let forceThinkingOff = false; // 上一轮思考超限 → 重试强制关思考
 
   const maxAttempts = opts.maxAttempts ?? 2;
   let lastErr;
   for (let i = 0; i < maxAttempts; i++) {
+    // 手动停止检查点：已请求停止时不再发起新的请求（也不做退避重试）
     // 思考开关按轮次计算：调用级/全局关闭，或上一轮思考超限时强制关闭。
     // 关思考双通道同发：chat_template_kwargs（vLLM/SGLang 系）+ 顶层
     // enable_thinking（DashScope/硅基流动系），端点认哪个用哪个，
@@ -126,10 +130,15 @@ export async function chat(messages, opts = {}) {
       body.reasoning_effort = effort;
     }
     const t0 = Date.now();
+    const stallMs = cfg.ai.thinkingStallMs;
     let content = '';
     let reasoning = '';
     let finish = '';
-    let capped = false; // 本次轮次是否因思考超限被主动断流
+    let capped = false; // 本次轮次是否因思考超限（时间硬闸）被主动断流
+    let stalled = false; // 本次轮次是否因思考停滞（无进展空转）被主动断流
+    let thinkExceeded = false; // 本次轮次是否因思考超字数配额被主动断流
+    let prevReasoningLen = 0;
+    let lastGrowTs = Date.now(); // 思考长度最后一次增长的时刻（停滞检测用）
     // 空闲超时 + 心跳：每收到一块数据就重置空闲计时——"有输出就不断流"，
     // 端点挂起/断流才触发超时（AbortSignal.timeout 是绝对超时，会误杀长生成）；
     // 心跳每 30s 汇报已接收的思考/正文量与最新思考尾部，长思考全程可见
@@ -144,6 +153,9 @@ export async function chat(messages, opts = {}) {
         `AI 流式响应中（第 ${i + 1}/${maxAttempts} 轮，已 ${Math.round((Date.now() - t0) / 1000)}s）｜思考 ${reasoning.length} 字、正文 ${content.length} 字${reasoning ? '｜…' + reasoning.slice(-60).replace(/\s+/g, ' ') : ''}`,
       );
     }, 30000);
+    // 本分支未下沉 control.mjs（无手动停止能力）：订阅为空实现；
+    // 保留调用点以维持与 feat/2-c-web-service 的同构，便于后续回灌比对
+    const offStop = () => {};
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -157,14 +169,14 @@ export async function chat(messages, opts = {}) {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         // 防御：部分端点对超过模型单次输出上限的 max_tokens 会直接报 400
-        //（vLLM 系常见）。命中特征时把预算降到保守值 8192，让下一次重试
-        // 立即生效。
+        //（vLLM 系常见）。命中特征时把预算降到保守值 16384，让下一次重试
+        // 立即生效（16384 为实测端点接受的档位；不能降到更小否则思考又挤没正文）
         if (
           res.status === 400 &&
-          body.max_tokens > 8192 &&
+          body.max_tokens > 16384 &&
           /(max_tokens|max_output_tokens|max_model_len|context)/i.test(text)
         ) {
-          body.max_tokens = 8192;
+          body.max_tokens = 16384;
         }
         throw new Error(`HTTP ${res.status} ${text.slice(0, 300)}`);
       }
@@ -203,6 +215,25 @@ export async function chat(messages, opts = {}) {
             if (typeof d.content === 'string') content += d.content;
             if (j?.choices?.[0]?.finish_reason) finish = j.choices[0].finish_reason;
             bumpIdle();
+            // 思考停滞检测（2026-09-15）：思考长度有增长即视为有进展，持续重新计时；
+            // 正文 0 字且思考连续 stallMs 无增长 → 空转/卡死（如对题干信号矛盾反复
+            // "重新审视"），提前断流重试（强制关思考）。只掐"无进展"，正常深思考
+            // 的思考会持续增长，不受影响。
+            if (reasoning.length > prevReasoningLen) {
+              prevReasoningLen = reasoning.length;
+              lastGrowTs = Date.now();
+            }
+            if (stallMs > 0 && !content && reasoning && Date.now() - lastGrowTs > stallMs) {
+              stalled = true;
+              ac.abort();
+            }
+            // 思考字数配额（2026-09-15）：正文 0 字、思考累计超 thinkMaxChars →
+            // 判定"喂不饱的无限思考"（端点 max_tokens 是思考+正文共享预算，弱推理
+            // 模型会一直想到烧光 length），提前断流、重试强制关思考保底出正文
+            if (thinkMaxChars > 0 && !content && reasoning.length > thinkMaxChars) {
+              thinkExceeded = true;
+              ac.abort();
+            }
             // 思考硬闸：只在"还在思考、正文零字"阶段计时；正文一旦开流
             // 就不再限制（避免误杀正常生成长度）
             if (capMs > 0 && !content && reasoning && Date.now() - t0 > capMs) {
@@ -213,11 +244,13 @@ export async function chat(messages, opts = {}) {
         }
       }
       // 空正文必须视为失败：finish_reason=length 且思考有内容 = 预算被思考
-      // 耗尽（确定性失败，重试无效），把思考尾部带出来便于定位
+      // 耗尽（确定性失败，重试无效——但必须强制关思考再试：预算被思考吃光
+      // 时空正文=思考过度而非模型瘫痪，关思考重试能快速出正文）
       if (!content.trim()) {
+        if (finish === 'length') forceThinkingOff = true;
         const hint =
           finish === 'length'
-            ? `finish_reason=length：max_tokens=${body.max_tokens} 预算耗尽（思考 ${reasoning.length} 字），请调大该调用的 maxTokens｜思考尾部：${reasoning.slice(-120).replace(/\s+/g, ' ')}`
+            ? `finish_reason=length：max_tokens=${body.max_tokens} 预算耗尽（思考 ${reasoning.length} 字），重试将强制关思考｜思考尾部：${reasoning.slice(-120).replace(/\s+/g, ' ')}`
             : '流式响应结束但无正文内容';
         throw new Error(`AI 返回内容为空（${hint}）`);
       }
@@ -226,7 +259,17 @@ export async function chat(messages, opts = {}) {
         raw: { finish_reason: finish, reasoning_length: reasoning.length },
       };
     } catch (err) {
-      if (capped) {
+      if (thinkExceeded) {
+        forceThinkingOff = true;
+        err = new Error(
+          `思考超配额：正文 0 字且思考已 ${reasoning.length} 字（上限 ${thinkMaxChars}），弱推理模型无限思考风险，已主动断流；重试将强制关思考（AI_THINKING_MAX_CHARS 可调，0=关闭配额）`,
+        );
+      } else if (stalled) {
+        forceThinkingOff = true;
+        err = new Error(
+          `思考停滞：正文 0 字且思考 ${stallMs / 1000}s 无增长（思考已 ${reasoning.length} 字），疑似空转循环，已主动断流；重试将强制关思考（AI_THINKING_STALL_MS 可调，0=关闭停滞检测）`,
+        );
+      } else if (capped) {
         forceThinkingOff = true;
         err = new Error(
           `思考超限：${Math.round(capMs / 1000)}s 内正文仍为 0 字（思考已 ${reasoning.length} 字），已主动断流；重试将强制关思考（AI_THINKING_CAP_MS 可调，0=关闭硬闸）`,
@@ -244,6 +287,7 @@ export async function chat(messages, opts = {}) {
         await new Promise((r) => setTimeout(r, 800 * 2 ** i));
       }
     } finally {
+      offStop();
       clearTimeout(idle);
       clearInterval(hb);
     }
@@ -265,6 +309,9 @@ export async function generateCode({ problem, codeTemplate, extra = '' }) {
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature,
     maxTokens: cap.formValue?.modelParams?.maxTokens,
+    // 首轮快速出稿：默认关思考（时间优先，见 cfg.firstPassThinking）；
+    // 失败后的反思轮（reflectAndFix）才动用 high 思考档一次修对
+    enableThinking: cfg.ai.firstPassThinking,
   });
   return extractCodeFromMarkdown(content);
 }
@@ -358,14 +405,16 @@ export async function reflectAndFix({
     previous_code: previousCode,
     evaluation_result: evalResult,
     terminal_state: terminalState,
-    // 教训链（与 reflectCommands 的 lessons 同构）：各轮已确诊的原因注入本轮，
-    // 防止"第 N 轮改对了、第 N+1 轮又退回"的摇摆
+    // 教训链（与 reflectCommands 的 lessons 同构）：各轮已确诊的原因注入本
+    // 轮 prompt，防"这轮改对了、下轮又退回"的摇摆（2026-09-15：zincrby 参数
+    // 顺序 3 轮横跳就是反思无记忆导致的）
     lessons: lessons.map((l, i) => `第${i + 1}轮教训：${l}`).join('\n'),
   });
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature ?? 0.4,
     maxTokens: cap.formValue?.modelParams?.maxTokens,
-    reasoningEffort: 'low', // 反思降档：证据已在提示词中，low 档思考足够且更快
+    reasoningEffort: 'high', // 反思升档（2026-09-15）：low 档+思考硬闸曾让反思近乎无思考，
+    // 只能顺着评测文本说表面错误；high 档配合放宽后的 60s 思考硬闸，真正推演输出差异根因
   });
   return splitAnalysisAndCode(content);
 }
@@ -385,6 +434,17 @@ export function extractCodeFromMarkdown(markdown) {
  * 实测模型常漏掉 / 改写标记，导致平台判定"不符合格式"。此处以「原始模板」为权威，
  * AI 只负责标记之间的代码体，从根上消除格式错。
  *
+ * 多标记模板（2026-09-15 事故修复）：部分题目的模板含多对 Begin/End 标记
+ * （如 Redis 令牌管理题三个函数各一对）。旧实现只取第一对替换，导致
+ * AI 输出里后几个函数的实现被整体丢弃、模板其余块保持空白 → 评测
+ * IndentationError 且反思死循环。现按出现顺序逐对对应替换。
+ *
+ * 缩进保持（2026-09-15 实测复现，真正根因）：模板 Begin/End 行位于函数体
+ * 内（如 4 空格缩进），代码体必须保留行首缩进。旧实现用 trim() 提取代码体，
+ * 会把首行前导空格整体剥掉——AI 输出 `    return ...`，拼完变顶格
+ * `return ...`，评测 IndentationError 与「AI 没反思」表象同源：反思每次都
+ * 改对，但拼接次次把缩进剥掉。现改为仅清理行尾空白、行首缩进原样保留。
+ *
  * @param {string} originalTemplate 写入前从编辑器读取的原始模板（含 Begin/End 标记）
  * @param {string} aiOutput AI 返回的完整输出（可能含标记，也可能仅含代码体）
  * @returns {string} 可直接写入编辑器的最终代码
@@ -393,48 +453,131 @@ export function spliceIntoTemplate(originalTemplate, aiOutput) {
   const orig = String(originalTemplate ?? '');
   const ai = String(aiOutput ?? '');
 
-  const origBegin = findMarkerLine(orig, 'Begin');
-  const origEnd = findMarkerLine(orig, 'End');
+  // 完整代码直通（2026-09-15 真机实证 + 2026-09-15 标记可信方案）：
+  // 触发条件任意一个满足 → 直接返回 AI 完整输出，不按标记归位：
+  // 1. 模板本身标记不成对（Begin ≠ End 数量）：模板本身不完整，标记归位必丢函数
+  // 2. AI 输出含 ≥2 个模块级语句（import/from/def/class/@）：AI 已完整复刻结构
+  // 两种情况都意味着标记已不可信，标记归位只会丢代码、报 IndentationError。
+  // 平台只按执行结果评测，整体直通最接近 AI 给出的正确完整实现。
+  const matchesBegin = (orig.match(/\bbegin\b.*[*=#-]{3,}/i) || []).length;
+  const matchesEnd = (orig.match(/\bend\b.*[*=#-]{3,}/i) || []).length;
+  const topLevelStatements = (ai.match(/^(import |from |def |class |@)\S/m) || []).length;
+  if (matchesBegin !== matchesEnd || topLevelStatements >= 2) {
+    // 直通也必须带头部编码声明：平台是 Python 2，丢声明 + 中文注释 = SyntaxError
+    return withTemplateLeadingDecl(orig, ai);
+  }
+
+  const origPairs = collectMarkerPairs(orig);
   // 原始模板无标记：纯编辑器，直接信任 AI 输出（已做 markdown 抽取）
-  if (origBegin < 0 || origEnd < 0 || origEnd <= origBegin) {
-    return ai.trim();
-  }
+  if (!origPairs.length) return withTemplateLeadingDecl(orig, ai);
 
+  const aiPairs = collectMarkerPairs(ai);
   const origLines = orig.split(/\r?\n/);
-  const head = origLines.slice(0, origBegin + 1); // 含 Begin 标记行
-  const tail = origLines.slice(origEnd); // 含 End 标记行
+  const aiLines = ai.split(/\r?\n/);
 
-  // 从 AI 输出里取标记之间的代码体；若 AI 也未带标记，则把整段当作代码体
-  const aiBegin = findMarkerLine(ai, 'Begin');
-  const aiEnd = findMarkerLine(ai, 'End');
-  let body;
-  if (aiBegin >= 0 && aiEnd >= 0 && aiEnd > aiBegin) {
-    body = ai
-      .split(/\r?\n/)
-      .slice(aiBegin + 1, aiEnd)
-      .join('\n');
+  // 保留行首缩进、仅去行尾空白（见函数头注释：缩进被 trim 剥掉是死循环真正根因）
+  const keepIndent = (lines) => lines.map((l) => l.replace(/\s+$/, '')).join('\n');
+  const origBody = (pair) => keepIndent(origLines.slice(pair[0] + 1, pair[1]));
+
+  // 逐块取代码体：AI 带有标记时按序一一对应
+  let bodies;
+  if (!aiPairs.length) {
+    // AI 未复现模板标记且不是完整代码（单语句片段）→ 整段填第一个块（兼容旧行为）
+    bodies = origPairs.map((pair, i) => (i === 0 ? keepIndent(aiLines) : origBody(pair)));
   } else {
-    body = ai;
+    bodies = origPairs.map((pair, i) =>
+      i < aiPairs.length
+        ? keepIndent(aiLines.slice(aiPairs[i][0] + 1, aiPairs[i][1]))
+        : origBody(pair),
+    );
   }
 
-  return [...head, body.trim(), ...tail].join('\n');
+  // 逐块重组：模板行按原样保留（Begin/End 行字节不变），仅替换块内代码体
+  const out = [];
+  let next = 0;
+  for (let i = 0; i < origPairs.length; i++) {
+    const [b, e] = origPairs[i];
+    out.push(...origLines.slice(next, b + 1)); // 含 Begin 行
+    out.push(bodies[i]);
+    out.push(origLines[e]); // End 行
+    next = e + 1;
+  }
+  out.push(...origLines.slice(next));
+  return out.join('\n');
 }
 
 /**
- * 定位 Begin/End 标记行号。
- * 容错：不限定 # 注释前缀、星号数量；但要求行内同时含一个 ≥3 的装饰符串
- * （* / = / # / -），以区分平台标记与代码里可能出现的 begin/end 关键字
- * （如 Redis 事务里的 "BEGIN"）。
- * @returns {number} 行号，未找到返回 -1
+ * 直通模式下补回模板的前导声明（shebang / 编码声明）。
+ *
+ * 背景（2026-09-20 真机实证）：评测平台跑的是 **Python 2**，源文件缺少
+ * `#-*- coding:utf-8 -*-` 时，任何中文注释都会触发
+ * `SyntaxError: Non-ASCII character '\xe5' ... but no encoding declared`。
+ * 而「完整代码直通」分支整体采用 AI 输出，文件头全靠 AI 自觉复述模板——
+ * 实测 AI 有时会省略这两行。这里做确定性兜底：模板前两行是注释且含编码声明、
+ * AI 输出前两行没有时，把模板声明行补回（AI 已自带则原样返回，幂等）。
+ * @param {string} originalTemplate 平台原始模板
+ * @param {string} aiOutput 直通采用的 AI 输出
+ * @returns {string} 保证带编码声明的完整代码
  */
-function findMarkerLine(text, keyword) {
-  const kw = keyword === 'Begin' ? /\bbegin\b/i : /\bend\b/i;
+function withTemplateLeadingDecl(originalTemplate, aiOutput) {
+  const out = String(aiOutput ?? '').trim();
+  if (/coding\s*[:=]/.test(out.split(/\r?\n/).slice(0, 2).join('\n'))) return out;
+  const tplLines = String(originalTemplate ?? '').split(/\r?\n/);
+  const decl = [];
+  for (let i = 0; i < Math.min(2, tplLines.length); i++) {
+    const t = tplLines[i].trim();
+    if (!t || t.startsWith('#')) decl.push(tplLines[i].replace(/\s+$/, ''));
+    else break;
+  }
+  // 只补"模板前导里确实有编码声明"的情况：否则可能把无关注释塞进 AI 代码
+  if (!decl.length || !/coding\s*[:=]/.test(decl.join('\n'))) return out;
+  return [...decl, out].join('\n');
+}
+
+/**
+ * 检测 Begin/End 区域内是否缺少实质代码（只有注释/空白视为空）。
+ * 供提交前校验：AI 漏补全某些区域时在日志打点，提示反思轮对照模板补全。
+ * @param {string} text
+ * @returns {number[]} 空区域的序号（从 1 起）
+ */
+export function emptyMarkerBlocks(text) {
+  const pairs = collectMarkerPairs(text);
+  const lines = String(text ?? '').split(/\r?\n/);
+  const empty = [];
+  pairs.forEach(([b, e], i) => {
+    const hasCode = lines.slice(b + 1, e).some((l) => {
+      const t = l.trim();
+      return t && !t.startsWith('#');
+    });
+    if (!hasCode) empty.push(i + 1);
+  });
+  return empty;
+}
+
+/**
+ * 收集文本中所有平台 Begin/End 标记行号对（按出现顺序），每个 Begin 匹配其
+ * 后第一个 End。行匹配规则与旧 findMarkerLine 一致：行内同时含 begin/end
+ * 关键字与一个 ≥3 的装饰符串（* / = / # / -），以区分平台标记与代码里可能
+ * 出现的 begin/end 关键字（如 Redis 事务里的 "BEGIN"）。
+ * @param {string} text
+ * @returns {Array<[number, number]>}
+ */
+function collectMarkerPairs(text) {
   const deco = /[*=#-]{3,}/;
   const lines = String(text ?? '').split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    if (kw.test(lines[i]) && deco.test(lines[i])) return i;
+  const begins = [];
+  const ends = [];
+  lines.forEach((line, i) => {
+    if (/\bbegin\b/i.test(line) && deco.test(line)) begins.push(i);
+    else if (/\bend\b/i.test(line) && deco.test(line)) ends.push(i);
+  });
+  const pairs = [];
+  let e = 0;
+  for (const b of begins) {
+    while (e < ends.length && ends[e] <= b) e++;
+    if (e < ends.length) pairs.push([b, ends[e++]]);
   }
-  return -1;
+  return pairs;
 }
 
 /** 分离反思输出中的「分析」与「代码」两部分 */

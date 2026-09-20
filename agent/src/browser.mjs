@@ -1,4 +1,4 @@
-// EXPORTS: connectBrowser, pickTargetPage
+// EXPORTS: connectBrowser, pickTargetPage, pickTargetPageWithMeta
 // 浏览器连接层：通过 CDP 连接用户已登录的 Edge/Chrome，并挑出评测页面标签。
 // 连不上时支持自动拉起（AUTO_LAUNCH=1，默认开）：独立 profile + 调试端口，
 // 在用户桌面环境经 cmd start 启动可脱离父进程存活（见 launch-browser.mjs 坑 3）。
@@ -6,6 +6,11 @@
 import { chromium } from 'playwright-core';
 import { cfg } from './config.mjs';
 import { launchBrowser } from './launch-browser.mjs';
+import { isTaskUrl } from './task-url.mjs';
+import { looksLikeTaskPage } from './perceive.mjs';
+import { createLogger } from './logger.mjs';
+
+const log = createLogger('pick');
 
 /**
  * 在本机 CDP 连接期间临时摘除代理环境变量。
@@ -83,24 +88,95 @@ export async function connectBrowser() {
 }
 
 /**
- * 从多个标签页中挑出目标评测页
- * 优先 URL 含 urlHint 的，否则取第一个非 about:blank 的页面
+ * 从多个标签页中挑出目标评测页（四级挑页链）：
+ *
+ *   1. TARGET_URL_HINT（.env.local 显式指定的 URL 特征片段）——用户显式覆盖最高优先；
+ *      唯一命中即选；命中多个时**报错并列出全部**，绝不猜（防解错页）；零命中告警后降级；
+ *   2. 内置题目页 URL 形状正则（复用 watch 的 TASK_URL_PATTERN，默认匹配
+ *      /tasks/<courseId>/<数字>/<串>，eduCoder 官网与校内部署一致）；
+ *   3. 内容级兜底：URL 都认不出时逐标签页做单次内容探测（强代码编辑器 / 评测面板特征，
+ *      见 perceive.looksLikeTaskPage），命中多个取标签序第一个并列日志；
+ *   4. 最终兜底（历史行为）：第一个非 about:blank 的页面。
+ *
+ * 注意：CDP 下 document.visibilityState 对所有标签页都返回 visible（TROUBLESHOOTING
+ * C-4 实测），无法识别「用户正在看哪个标签」，因此多命中一律报错列出而不是猜。
+ *
+ * @returns {Promise<{page, tier: 'url-hint'|'url-pattern'|'content'|'first-page', candidates: import('playwright-core').Page[]}>}
  */
-export async function pickTargetPage(context) {
+export async function pickTargetPageWithMeta(context) {
   const pages = context.pages();
   if (pages.length === 0) throw new Error('浏览器没有任何打开的标签页。');
 
+  const safeUrl = (p) => {
+    try {
+      return p.url() || '';
+    } catch {
+      return '';
+    }
+  };
+  const listPages = (list) => list.map((p) => `  - ${safeUrl(p) || '(空白页)'}`).join('\n');
+
+  // ---- Tier 1：TARGET_URL_HINT 显式指定 ----
   const hint = cfg.browser.urlHint?.trim();
   if (hint) {
-    const hit = pages.find((p) => p.url().includes(hint));
-    if (hit) return hit;
+    const hits = pages.filter((p) => safeUrl(p).includes(hint));
+    if (hits.length === 1) {
+      log(`按 TARGET_URL_HINT「${hint}」选中：${safeUrl(hits[0])}`);
+      return { page: hits[0], tier: 'url-hint', candidates: hits };
+    }
+    if (hits.length > 1) {
+      throw new Error(
+        `TARGET_URL_HINT「${hint}」命中了 ${hits.length} 个标签页，为避免操作错页面请处理后重试` +
+          `（关闭多余的标签页，或把 .env.local 里的特征片段改得更具体）：\n${listPages(hits)}`,
+      );
+    }
+    log.warn(`TARGET_URL_HINT「${hint}」无命中，降级按题目页 URL 形状识别`);
+  }
+
+  // ---- Tier 2：内置题目页 URL 形状正则（TASK_URL_PATTERN） ----
+  const taskHits = pages.filter((p) => isTaskUrl(safeUrl(p)));
+  if (taskHits.length === 1) {
+    log(`按题目页 URL 形状（TASK_URL_PATTERN）选中：${safeUrl(taskHits[0])}`);
+    return { page: taskHits[0], tier: 'url-pattern', candidates: taskHits };
+  }
+  if (taskHits.length > 1) {
     throw new Error(
-      `没有找到 URL 含「${hint}」的标签页。当前打开的：\n` +
-        pages.map((p) => '  - ' + p.url()).join('\n'),
+      `发现 ${taskHits.length} 个题目页标签页（URL 匹配 TASK_URL_PATTERN），` +
+        `为避免解错页面，请只保留要做的那个题目页标签后重试：\n${listPages(taskHits)}`,
     );
   }
 
-  const usable = pages.find((p) => p.url() && p.url() !== 'about:blank');
-  if (usable) return usable;
-  return pages[0];
+  // ---- Tier 3：内容级兜底（URL 两级都落空时按页面特征识别） ----
+  const contentHits = [];
+  for (const p of pages) {
+    const u = safeUrl(p);
+    if (!u || u === 'about:blank') continue;
+    const sig = await looksLikeTaskPage(p).catch(() => null);
+    if (sig) contentHits.push({ page: p, sig });
+  }
+  if (contentHits.length > 0) {
+    if (contentHits.length > 1) {
+      log.warn(
+        `内容级识别命中 ${contentHits.length} 个页面，取标签序第一个：\n` +
+          listPages(contentHits.map((c) => c.page)),
+      );
+    }
+    const { page, sig } = contentHits[0];
+    log(`URL 未命中，按页面内容特征选中：${safeUrl(page)}（特征：${sig.reasons.join('、')}）`);
+    return { page, tier: 'content', candidates: contentHits.map((c) => c.page) };
+  }
+
+  // ---- Tier 4：最终兜底（历史行为：第一个非空白页） ----
+  const usable = pages.find((p) => safeUrl(p) && safeUrl(p) !== 'about:blank');
+  const page = usable ?? pages[0];
+  log.warn(`未识别到题目页，回退到第一个非空白标签页：${safeUrl(page)}`);
+  return { page, tier: 'first-page', candidates: [page] };
+}
+
+/**
+ * 挑出目标评测页（兼容旧签名，内部走 pickTargetPageWithMeta 四级链）。
+ */
+export async function pickTargetPage(context) {
+  const m = await pickTargetPageWithMeta(context);
+  return m.page;
 }

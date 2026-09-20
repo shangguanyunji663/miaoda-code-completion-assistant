@@ -5,8 +5,6 @@
 //   - 控制台输出保持原有 `[scope] msg` 形态，不改变使用者已有的阅读习惯
 //   - 同时落盘到 agent/logs/agent-<日期>.log，带完整时间戳与级别，供事后复盘
 //   - 落盘失败只降级不中断：日志系统绝不能让主流程崩溃
-//   - LOG_STREAM=stderr 把控制台输出切到 stderr：常驻协议进程（MCP stdio）的
-//     stdout 是 JSON-RPC 通道，任何日志混入都会破坏协议流（mcp-server.mjs 已内置设置）
 //
 // 此前常驻模式（watch / lite）跑完关掉终端窗口日志即丢失，而排查方法论
 // （见 docs/TROUBLESHOOTING.md）恰恰依赖事后回溯，故这里是必需基建。
@@ -66,20 +64,37 @@ function ensureStream(day) {
   }
 }
 
+// 日志汇点：常驻 UI 进程（web-server）订阅内存环形缓冲用。
+// 汇点异常只吞掉不外抛——日志系统绝不能拖垮主流程。
+const sinks = new Set();
+
+/**
+ * 注册一个日志汇点，返回取消注册函数。
+ * @param {(entry: {ts: string, level: string, scope: string, text: string}) => void} fn
+ */
+export function addLogSink(fn) {
+  sinks.add(fn);
+  return () => sinks.delete(fn);
+}
+
 /**
  * 创建一个带作用域的 logger。
  * 返回的函数可直接调用（INFO 级），也挂了 .warn / .error。
  * @param {string} scope 模块名，如 'loop'
  */
 export function createLogger(scope) {
-  // 每次输出时读环境变量：调用方可在 import 之后再切流（ESM import 会提升，
-  // mcp-server.mjs 在模块体内设置 LOG_STREAM，晚于依赖模块加载、早于任何输出）
-  const out = () => (process.env.LOG_STREAM === 'stderr' ? console.error : console.log);
   const emit = (level, msg) => {
     const d = new Date();
     const text = String(msg ?? '');
     const prefix = level === 'INFO' ? `[${scope}]` : `[${scope}] [${level}]`;
-    out()(`${prefix} ${text}`);
+    console.log(`${prefix} ${text}`);
+    for (const s of sinks) {
+      try {
+        s({ ts: fullStamp(d), level, scope, text });
+      } catch {
+        /* 汇点异常不影响主流程 */
+      }
+    }
     if (!TO_FILE) return;
     const s = ensureStream(dayKey(d));
     if (s) s.write(`${fullStamp(d)} ${level} [${scope}] ${text}\n`);

@@ -1,7 +1,7 @@
-// EXPORTS: probePage, readEditorCode, findClickable, writeEditorCode, dumpProbe,
+// EXPORTS: probePage, writeEditorCode, dumpProbe,
 //          collectCards, collectSections, collectCardCandidates, readEvalPanel, dumpCourseProbe,
 //          waitForTerminal, waitForEditor, readTerminalText, isTerminalAtPrompt, readTerminalLines,
-//          detectTerminalEnv
+//          detectTerminalEnv, looksLikeTaskPage
 // 页面感知层。
 //
 // 设计原则：**不硬编码任何站点 selector**。所有识别走启发式——
@@ -47,6 +47,29 @@ const READ_CODE = (type) => {
       return el?.innerText ?? '';
     }
     case 'monaco': {
+      // 优先用 Monaco 模型 API 拿全文（1.4.1 修，2026-09-20 真机事故）：
+      // .view-lines 是虚拟渲染、只含"当前可见行"，代码一长回读就被截断——
+      // 实测同一份代码：模型真值 1508 字符 / 3 对标记，view-lines 只读到
+      // 861 字符 / 2 对标记。被截断的模板会一路污染：喂给 AI 的 code_template
+      // 残缺、模板标记计数错乱（拼接判据跟着错）、题干里混入半截代码。
+      // 与 writeEditorCode 的回读策略保持一致（那里早已优先模型 API）。
+      try {
+        if (!window.monaco && typeof window.require === 'function') {
+          try {
+            window.monaco = window.require('monaco-editor');
+          } catch {}
+        }
+        const ns = window.monaco?.editor
+          ? window.monaco
+          : window.Monaco?.editor
+            ? window.Monaco
+            : null;
+        const models = (ns?.editor?.getModels?.() ?? [])
+          .map((m) => m.getValue?.() ?? '')
+          .filter((v) => v.trim());
+        if (models.length) return models.sort((a, b) => b.length - a.length)[0];
+      } catch {}
+      // 模型 API 不可用（极少数平台）→ 退回可见区读取（近似值，调用方需容忍偏短）
       const el = q('.view-lines');
       return el?.innerText ?? '';
     }
@@ -211,8 +234,6 @@ const READ_EVAL_PANEL = () => {
   // 稳定胜出——题干每次评测前后不变，判变化逻辑因此失效，60s 空等后
   // 误报"空结果"。必须先用结果区专属标记锁定，题干签名块直接排除。
   const RESULT_MARKER = /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/;
-  const PROBLEM_SIGNATURE = /任务描述/.test('');
-  void PROBLEM_SIGNATURE;
   const sel =
     'div, section, pre, article, code, [class*="result"], [class*="output"], [class*="eval"], [class*="console"], [class*="message"], [class*="modal"], [class*="panel"], [class*="toast"]';
   const cands = Array.from(document.querySelectorAll(sel)).filter((el) => {
@@ -255,6 +276,27 @@ const READ_EVAL_PANEL = () => {
   return best ? best.slice(0, 6000) : best;
 };
 
+/** 在浏览器上下文执行：单次轻量探测「这页像不像题目页」（挑页兜底用，不跑全页快照） */
+const TASK_PAGE_SIGNATURE = () => {
+  const q = (s) => document.querySelector(s);
+  // 强编辑器 = 专业代码编辑器；纯 textarea / contenteditable 不算——
+  // 普通网页的评论框、搜索框常见，误报多（pickTargetPage 兜底判据宁缺毋滥）
+  const strongEditor = Boolean(
+    q('.monaco-editor') || q('.ace_editor') || q('.CodeMirror') || q('.cm-editor'),
+  );
+  const text = (document.body?.innerText ?? '').slice(0, 20000);
+  const evalMarker = /共有\s*\d+\s*组测试集|本关最大执行时间|测试结果/.test(text);
+  const evalButton = Array.from(document.querySelectorAll('button, a, [role="button"]')).some(
+    (el) => {
+      const t = (el.innerText || '').trim();
+      if (!t || t.length > 12) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && /评测|自测运行|测测我/.test(t);
+    },
+  );
+  return { strongEditor, evalMarker, evalButton };
+};
+
 /**
  * 轻量读取评测结果面板：只扫结果区，不跑全页探测。
  * 与 probePage 的区别：probe 每次要取题干/输入控件/可点击元素等一大堆，
@@ -274,6 +316,37 @@ export async function readEvalPanel(page) {
     }
   }
   return '';
+}
+
+/**
+ * 内容级轻量判断：这页像不像题目页（pickTargetPage 兜底层专用）。
+ *
+ * 与 probePage 的区别：不取题干/输入控件/可点击枚举，每个 frame 只执行一次
+ * evaluate，逐页开销约百毫秒级。判据全部沿用本文件既有通用启发式，
+ * 不硬编码站点 selector；返回命中特征 {reasons} 或 null。
+ *   - 强代码编辑器（Monaco / Ace / CodeMirror5 / CodeMirror6）
+ *   - 评测结果面板专属标记（与 READ_EVAL_PANEL 的 RESULT_MARKER 同源文风）
+ *   - 可见的「评测 / 自测运行」类按钮
+ * @param {import('playwright-core').Page} page
+ * @returns {Promise<{reasons: string[]} | null>}
+ */
+export async function looksLikeTaskPage(page) {
+  const main = page.mainFrame();
+  const frames = [main, ...page.frames().filter((f) => f !== main)];
+  for (const f of frames) {
+    try {
+      const sig = await f.evaluate(TASK_PAGE_SIGNATURE);
+      if (!sig) continue;
+      const reasons = [];
+      if (sig.strongEditor) reasons.push('代码编辑器');
+      if (sig.evalMarker) reasons.push('评测结果面板');
+      if (sig.evalButton) reasons.push('评测按钮');
+      if (reasons.length > 0) return { reasons };
+    } catch {
+      /* frame 可能已 detach，跳过 */
+    }
+  }
+  return null;
 }
 
 /**
@@ -350,15 +423,6 @@ export function classifyTask({ editor, inputs }) {
 }
 
 /**
- * 读取编辑器当前代码
- * @param {import('playwright-core').Page} page
- */
-export async function readEditorCode(page) {
-  const p = await probePage(page);
-  return p.code ?? '';
-}
-
-/**
  * 轮询等待可见的 xterm 终端出现（命令行 tab 激活后内容懒渲染）。
  * 判定特征：.xterm-screen（xterm.js 标准结构，实测本平台为 DOM 渲染器，主 frame）。
  * @returns {Promise<boolean>} 超时前出现返回 true
@@ -401,21 +465,6 @@ export async function waitForEditor(page, timeoutMs = 10000) {
     await page.waitForTimeout(400);
   }
   return false;
-}
-
-/**
- * 在页面上按文本查找可点击元素，返回 Playwright locator（未点击）
- * 按关键词顺序匹配，返回第一个命中的
- * @param {import('playwright-core').Page} page
- * @param {string[]} keywords 如 ['评测','提交','运行']
- */
-export function findClickable(page, keywords) {
-  for (const kw of keywords) {
-    const loc = page.getByRole('button', { name: kw, exact: false }).first();
-    // 先不 await，交给调用方决定是否点击/计数
-    return { keyword: kw, locator: loc };
-  }
-  return null;
 }
 
 /**
@@ -552,11 +601,51 @@ export async function writeEditorCode(page, code) {
       log(`已通过编辑器 API 写入（方式=${label}，${code.length} 字符，回读逐字符一致）`);
       return { type: probe.editor.type, length: code.length, verified: true, via: `api:${method}` };
     }
-    log(
-      `API 写入（${label}）回读不一致（${strip(landed).length}/${want} 非空白字符），尝试下一方式`,
-    );
+    // 近似判定（1.4.1 修，2026-09-20 真机事故）：模型被平台异步重建/虚拟渲染时，
+    // 回读会比写入内容略短（实测 950/967 非空白字符，其实是同一份代码）。此时
+    // **必须视为写入成功**——若按失败降级到键盘路径，insertText 会被 Monaco
+    // autoIndent 逐行重排、给预缩进的 Python 多加一层缩进，制造 IndentationError
+    // 把好代码改坏（实测：降级键盘后下一轮评测报 `IndentationError: unexpected indent`）。
+    const gotApi = strip(landed).length;
+    if (gotApi >= want * 0.8) {
+      log(
+        `API 写入（${label}）回读 ${gotApi}/${want} 非空白字符，判为已写入（近似回读；不降级键盘，以免自动缩进改坏代码）`,
+      );
+      return {
+        type: probe.editor.type,
+        length: code.length,
+        verified: 'approx',
+        via: `api:${method}`,
+      };
+    }
+    log(`API 写入（${label}）回读不一致（${gotApi}/${want} 非空白字符），尝试下一方式`);
   }
-  log('API 写入均不可用或未通过验证，回退键盘写入');
+  // 键盘回退前先关闭编辑器自动缩进：insertText 会被 autoIndent/formatOnPaste 逐行
+  // 重排（预缩进的 Python 多一层缩进 → IndentationError）。尽量在源头消除。
+  const relaxedIndent = await target
+    .evaluate(() => {
+      try {
+        const ns = window.monaco?.editor
+          ? window.monaco
+          : window.Monaco?.editor
+            ? window.Monaco
+            : null;
+        if (!ns) return false;
+        for (const ed of ns.editor.getEditors?.() ?? []) {
+          ed.updateOptions?.({ autoIndent: 'none', formatOnType: false, formatOnPaste: false });
+        }
+        for (const m of ns.editor.getModels?.() ?? []) {
+          try {
+            m.updateOptions?.({ autoIndent: 'none' });
+          } catch {}
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .catch(() => false);
+  log(`API 写入均未通过验证，回退键盘写入${relaxedIndent ? '（已关闭编辑器自动缩进）' : ''}`);
 
   // ---- 回退：键盘写入（点击聚焦 → 全选 → 删除 → 插入）----
   // 写完回读验证是否真实落进编辑器；确证失败自动重试一次。

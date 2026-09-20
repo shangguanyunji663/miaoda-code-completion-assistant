@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.2.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -18,6 +18,7 @@
 
 > **📖 分支说明**：本分支（`feat/1-ad-mcp-server`）= master 基线 + 能力配置自动校验（`npm run caps-check`）+ **MCP 出口**——把解题能力暴露给 ZCode / Claude Desktop / Cursor 等 AI 编程助手，配置方法见 [agent/README.md](agent/README.md)「MCP 接入」。⚠️ **本分支有新增依赖**（`@modelcontextprotocol/sdk`）：从 master 或其他分支切换过来后，先在 `agent/` 下执行 `npm install` 再使用。原有 CLI 用法（watch / lite / course 等双击 bat）全部保留、零改动。
 > **平台知识回灌（1.2.0）**：`shared/platform-facts.json`（平台实测事实单一数据源）+ 生成/反思 prompt 规则升级已回灌到**全部四个版本**，故各分支 AI 行为一致；本分支的结构校验并入既有 `npm run caps-check`（不连浏览器、不调 AI）。
+> **平台适配逻辑通用化（1.3.0，回灌自 `feat/2-c-web-service`）**：四级挑页链、编辑器写入策略（Monaco/Ace/CM5/CM6 分版本 API 形态）、模板拼接与重载草稿判据、按钮文案点击兜底、思考预算控制旋钮等**与被评测平台/模型端点交互的适配逻辑**已回灌，故各分支的解题行为一致。本分支**不含** `control.mjs`（「停止做题」能力，属网页工作台特性），相关检查点已在移植时剥离；`web-server.mjs`、`mcp-server.mjs` 各自保留。
 
 ---
 
