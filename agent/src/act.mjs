@@ -6,6 +6,7 @@
 
 import { cfg } from './config.mjs';
 import { createLogger } from './logger.mjs';
+import { checkStop } from './control.mjs';
 import { readEvalPanel, isTerminalAtPrompt, readTerminalLines } from './perceive.mjs';
 
 // 按钮文本关键词（按优先级排序，模糊匹配）。
@@ -104,6 +105,7 @@ async function clickByKeywords(page, keywords, label) {
  */
 export async function settle(page) {
   if (!guard('写入后静置')) return;
+  checkStop('写入后静置');
   await page.mouse.click(5, 5).catch(() => {});
   await page.waitForTimeout(cfg.loop.cooldownMs);
 }
@@ -146,6 +148,9 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
     );
 
   while (Date.now() < deadline) {
+    // 手动停止检查点：评测等待最长 25s，是单步里最长的静默期，
+    // 用户点停止后应当在这里就断，而不是等满超时再走下一步
+    checkStop('等待评测结果');
     await page.waitForTimeout(400); // 2026-09-10：800→400ms，判定延迟减半
     // 「恭喜您通过本关」弹窗是平台权威通过宣告：出现即判过并立即返回。
     // （2026-09-10 真机实测：弹窗带入场动画、可能早于面板文本稳定出现，
@@ -583,6 +588,8 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   let prevCount = 0;
   const termErrors = [];
   for (let ci = 0; ci < commands.length; ci++) {
+    // 检查点放在命令边界：不在键入中途断，避免终端留下半条命令
+    checkStop(`终端键入第 ${ci + 1}/${commands.length} 条`);
     const cmd = commands[ci];
     // 非 ASCII 行（中文文件名/数据值等）走合成 paste；纯 ASCII 仍走键盘
     // 逐字符（快且稳）。合成 paste 失败回退 keyboard.type 并告警（该路径

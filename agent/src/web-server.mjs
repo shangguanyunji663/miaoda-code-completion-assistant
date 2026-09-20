@@ -8,7 +8,13 @@
 //   - 只绑定 127.0.0.1：服务不对局域网/外网暴露；真正的"多人使用"需要浏览器池
 //     与账号隔离，属产品化场景，不在本期范围
 //   - 不实现任何「抓取用户提供的 URL」类功能；AI 端点配置复用 .env.local，不新增密钥面
-//   - 端点固定且无参数（probe / solve），无任意文件读取、无代理跳转
+//   - 端点固定且无参数（probe / solve / stop），无任意文件读取、无代理跳转
+//
+// 手动停止（1.4.0）：评测反复不通过时，反思重试会一直烧到 MAX_RETRY（默认 10 轮，
+// 单轮可达数分钟）。POST /api/stop 置位中断标志，solveOnce 在下一个检查点抛
+// StopRequested——不再提交下一次评测、不再发起下一次 AI 调用。该端点**不经过**
+// 浏览器操作互斥队列（否则会被在途解题挡住，点了没反应）；停止语义与轮次隔离
+// 见 control.mjs。
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -18,6 +24,7 @@ import { cfg, loadEnv } from './config.mjs';
 import { pickTargetPageWithMeta } from './browser.mjs';
 import { probePage } from './perceive.mjs';
 import { solveOnce } from './loop.mjs';
+import { requestStop, stopState } from './control.mjs';
 import { withBrowserSession, disconnectSession, sessionStatus } from './browser-session.mjs';
 import { reportCdpPortStartupCheck } from './port-check.mjs';
 import { addLogSink, createLogger } from './logger.mjs';
@@ -110,6 +117,9 @@ const server = http.createServer(async (req, res) => {
         aiReady: Boolean(cfg.ai.baseUrl && cfg.ai.apiKey),
         model: syncModelFromEnv(),
         browser: sessionStatus(),
+        // 运行态：前端据此显示"跑到哪一步"并决定「停止做题」按钮是否可点
+        //（running 与浏览器连接解耦——探测类请求不置 running）
+        run: stopState(),
         logs: { buffered: logRing.length, lastSeq: logSeq },
       });
     }
@@ -170,14 +180,31 @@ const server = http.createServer(async (req, res) => {
 
     // ---- 解当前题（会真实提交评测；编排/反思循环在 agent 侧） ----
     if (req.method === 'POST' && url.pathname === '/api/solve') {
-      const r = await withBrowserSession(async (session) => {
-        const pick = await pickTargetPageWithMeta(session.context);
-        const probe = await probePage(pick.page);
-        const out = await solveOnce(pick.page, probe);
-        return { url: pick.page.url(), pickedBy: pick.tier, ...out };
-      });
+      let r;
+      try {
+        r = await withBrowserSession(async (session) => {
+          const pick = await pickTargetPageWithMeta(session.context);
+          const probe = await probePage(pick.page);
+          const out = await solveOnce(pick.page, probe);
+          return { url: pick.page.url(), pickedBy: pick.tier, ...out };
+        });
+      } catch (err) {
+        // 手动停止（1.4.0）：solveOnce 在检查点抛出的 StopRequested 收敛为
+        // 一次"正常结束但未通过"的响应（HTTP 200 + stopped:true），
+        // 前端据此显示"已停止"而不是把它当服务端错误
+        if (!err?.isStopRequested) throw err;
+        log(`已停止当前解题：${err.message}`);
+        return json(res, 200, {
+          ok: false,
+          stopped: true,
+          reason: 'stopped-by-user',
+          stoppedAt: err.stage || null,
+          message: err.message,
+        });
+      }
       return json(res, 200, {
         ok: r.ok,
+        stopped: false,
         kind: r.kind ?? null,
         reason: r.reason ?? null,
         attempts: r.attempts ?? null,
@@ -185,6 +212,33 @@ const server = http.createServer(async (req, res) => {
         pickedBy: r.pickedBy ?? null,
         verdict: r.verdict ? { passed: r.verdict.passed, reason: r.verdict.reason } : null,
         evalText: (r.evalText ?? '').slice(0, 3000),
+      });
+    }
+
+    // ---- 手动停止做题（打断在途的解题循环，幂等） ----
+    // 不走 withBrowserSession：那个队列被在途解题占着，排队就等于"点了没反应"。
+    // 置位后由 loop/ai/act 各检查点接管（不再提交评测、不再发起 AI 调用）。
+    if (req.method === 'POST' && url.pathname === '/api/stop') {
+      const st = stopState();
+      if (!st.running) {
+        return json(res, 200, {
+          ok: true,
+          stopped: false,
+          running: false,
+          message: '当前没有正在进行的解题任务（无需停止）',
+        });
+      }
+      requestStop('用户在网页工作台点击「停止做题」');
+      log(
+        `已收到「停止做题」请求——当前阶段：${st.phase}（将在该步骤的检查点立即中断，不再提交下一次评测、不再发起下一次 AI 调用）`,
+      );
+      return json(res, 200, {
+        ok: true,
+        stopped: true,
+        running: true,
+        phase: st.phase,
+        runSeq: st.runSeq,
+        message: `已请求停止（当前阶段：${st.phase}）`,
       });
     }
 
