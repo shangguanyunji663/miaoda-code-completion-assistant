@@ -50,6 +50,10 @@ tmp/
 temp/
 .playwright-cli/
 
+# 本地临时诊断产物（一次性预览报告，优先直接写到已忽略的 agent/dumps/ 下）
+*-preview.txt
+*.preview.diff
+
 # Lock files (keep package-lock.json for consistent installs)
 yarn.lock
 pnpm-lock.yaml
@@ -75,6 +79,11 @@ agent/logs/
 
 # WorkBuddy 工作区数据（本地记忆笔记，含个人信息）
 .workbuddy/
+
+# mimosa hook 运行时状态（会话账本 / baseline 文件内容快照 / 复核报告）
+# 单会话即可产生数千文件、数百 MB；快照按明文保留被扫描文件的内容，严禁提交
+# 不带前导斜杠，同时覆盖根目录 .mimosa/ 与 agent/.mimosa/
+.mimosa/
 
 # 上传的页面截图，可能含姓名学号
 uploaded_image.png
