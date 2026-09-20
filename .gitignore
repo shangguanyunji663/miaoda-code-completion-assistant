@@ -50,6 +50,11 @@ tmp/
 temp/
 .playwright-cli/
 
+# 本地临时诊断产物（prettier 漂移预览、手工 diff/对比副本等）——纯本地产物不入库
+# 约定：这类一次性产物优先直接写到已忽略的 agent/dumps/ 下；确需留在别处的按下列命名
+*-preview.txt
+*.preview.diff
+
 # Lock files (keep package-lock.json for consistent installs)
 yarn.lock
 pnpm-lock.yaml
