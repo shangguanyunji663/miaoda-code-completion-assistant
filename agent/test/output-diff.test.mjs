@@ -99,18 +99,23 @@ const USER_LINE_EXP =
 const USER_LINE_ACT =
   "创建的用户信息为: {'posts': '0', 'login_name': 'testuser', 'followers': '0', 'following': '0', 'real_name': 'Test User', 'id': '1'}";
 
-test('DICT_ORDER：键值一一对应只有键序不同 → 结论是写入顺序问题，不再误导去用 set()', () => {
+test('DICT_ORDER：键值一一对应只有键序不同 → 判为"代码改不了"的方向，不再推荐被证伪的写法', () => {
   const r = diffOutputs(USER_LINE_EXP, USER_LINE_ACT);
   assert.deepEqual(
     r.pairs.map((p) => p.kind),
     ['DICT_ORDER'],
   );
   assert.match(r.pairs[0].note, /预期 login_name → posts → real_name/);
-  assert.match(r.summary, /调整字面量书写顺序[\s\S]*无效|无法靠"调整字面量书写顺序"修复/);
-  assert.match(r.summary, /OrderedDict/);
+  assert.match(r.summary, /不是被测代码能修的方向/);
+  assert.match(r.summary, /逐字节相同/);
+  assert.ok(
+    !/改用 OrderedDict|必须用 collections\.OrderedDict|或逐字段 hset/.test(r.summary),
+    '不得再把已被真机证伪的写法当建议给出',
+  );
   assert.ok(!/set\(\)/.test(r.summary), '字典键序问题不该给出 set 假设');
   const note = describeOutputDiff(`预期输出：\n${USER_LINE_EXP}\n实际输出：\n${USER_LINE_ACT}`);
-  assert.match(note, /DICT_ORDER = 键的写入顺序问题/);
+  assert.match(note, /DICT_ORDER = 键的打印顺序问题/);
+  assert.match(note, /都不改变实际输出/);
 });
 
 test('标记写法兼容：「预期：/实际：」与「预期输出：」都要能识别', () => {

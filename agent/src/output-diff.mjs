@@ -47,20 +47,25 @@ function keysOnlyReordered(e, a) {
   return pe.map((p) => p[0]).join(',') !== pa.map((p) => p[0]).join(',');
 }
 
-const lineStart = (s, i) => (i <= 0 ? 0 : s.lastIndexOf('\n', i - 1) + 1);
-const lineEnd = (s, i) => {
-  const nl = s.indexOf('\n', i);
-  return nl < 0 ? s.length : nl + 1;
-};
-/** 最后一次出现某个标记的位置（标记写法多种，逐个试） */
+/** 最后一次出现某个标记的位置；返回 {index, end}，end 已跳过冒号以便兼容"标记与正文同一行" */
 function lastMarker(s, list) {
-  let best = -1;
+  let hit = null;
   for (const re of list) {
     re.lastIndex = 0;
     let m;
-    while ((m = re.exec(s))) best = Math.max(best, m.index);
+    while ((m = re.exec(s))) {
+      if (!hit || m.index > hit.index) {
+        let end = m.index + m[0].length;
+        while (end < s.length && (s[end] === ' ' || s[end] === '\t')) end++;
+        if (s[end] === ':' || s[end] === '：') {
+          end++;
+          while (end < s.length && (s[end] === ' ' || s[end] === '\t')) end++;
+        }
+        hit = { index: m.index, end };
+      }
+    }
   }
-  return best;
+  return hit;
 }
 
 const cleanBlock = (x) =>
@@ -70,16 +75,17 @@ const cleanBlock = (x) =>
     .filter((l) => l.trim() && !/^[—\-–\s]*$/.test(l))
     .join('\n');
 
-/** 从面板/明细文本里取最后一对「预期输出」「实际输出」段落（标记行本身不进正文） */
+/** 从面板/明细文本里取最后一对「预期输出」「实际输出」段落。
+ *  正文 = 标记（含冒号）之后 到 下一个标记之前；纯破折号/空白残渣由 cleanBlock 丢掉，
+ *  因此"标记独占一行"与"标记后同行就接正文"两种面板写法都能解析。 */
 export function splitExpectedActual(text) {
   const s = String(text ?? '').replace(/\r\n/g, '\n');
-  const iExp = lastMarker(s, EXPECTED_MARKERS);
-  const iAct = lastMarker(s, ACTUAL_MARKERS);
-  if (iExp < 0 || iAct < 0) return null;
-  if (iAct <= iExp) return null;
+  const exp = lastMarker(s, EXPECTED_MARKERS);
+  const act = lastMarker(s, ACTUAL_MARKERS);
+  if (!exp || !act || act.index <= exp.index) return null;
   return {
-    expected: cleanBlock(s.slice(lineEnd(s, iExp), lineStart(s, iAct))),
-    actual: cleanBlock(s.slice(lineEnd(s, iAct))),
+    expected: cleanBlock(s.slice(exp.end, act.index)),
+    actual: cleanBlock(s.slice(act.end)),
   };
 }
 
@@ -165,9 +171,10 @@ function summarize(pairs) {
   let summary = `定位到 ${pairs.length} 处实质差异`;
   if (dictPairs.length) {
     summary +=
-      '；其中字典键顺序差异无法靠"调整字面量书写顺序"修复——Python 2 的 ' +
-      'hmset(key, {…}) 按 dict 哈希序展开 items()，而 Redis 小哈希按**写入顺序**返回；' +
-      '要复现题面示意的字段顺序必须用 collections.OrderedDict（或逐字段 hset 按序写入）';
+      '；其中字典键顺序差异**不是被测代码能修的方向**——2026-09-22 真机实测：普通 dict 字面量与 ' +
+      'OrderedDict 两种写法先后提交，连续三轮实际输出逐字节相同（含键序），说明打印顺序由评测程序一侧决定。' +
+      '处置：不要在这一行上反复重交同类改动；先逐个值排除真正的值差，或在容器终端实测写入顺序是否影响回显，' +
+      '确认代码无法影响时按"需要人工判定"上报';
   }
   if (orderPairs.length) {
     const asc = orderPairs.every((p) => isSorted(tokensOf(p.expected)));
@@ -223,7 +230,7 @@ export function describeOutputDiff(detailText) {
       `=== 本地差异定位（程序逐行比对所得，非平台输出）===\n${a.summary}\n` +
       `${lines.join('\n')}\n` +
       '要求：① 只针对上面定位到的差异改实现，不要顺手改其它已被证明一致的部分；' +
-      '② DICT_ORDER = 键的写入顺序问题：改用 OrderedDict 或逐字段 hset，**调整字典字面量的书写顺序在 Python 2 里是空操作**；' +
+      '② DICT_ORDER = 键的打印顺序问题：本平台实测改字面量顺序与改用 OrderedDict **都不改变实际输出**，不要在这一方向反复重交；' +
       '③ ORDER_ONLY = 元素顺序问题：按 summary 的假设检验容器类型（题面用「集合」字样处应真用 set() 再 list()），而不是给 list 加 sort()；' +
       '④ WHITESPACE = 逐字符照抄预期那一行的空白，不要改逻辑；' +
       '⑤ 同一处顺序问题已改过一次仍不变时，说明当前假设是错的，换假设而不是再调一次参数。'
