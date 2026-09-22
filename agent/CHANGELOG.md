@@ -2,6 +2,42 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.5.0] - 2026-09-22（分支 feat/2-c-web-service）
+
+**一条被日志完整记下的连锁失效**（2026-09-22 真机，Redis 优先级队列关 `tasks/XBLSCWNL/4870`）。四个环节各自"看起来正常"，串起来让一道题的三轮反思全部建立在假证据上：
+
+```
+12:16:31 点击「评测」
+12:16:35 判"未通过"            ← 只等了 4 秒，读到的是上一轮遗留面板
+12:17:37 写入反思后的代码
+12:17:46 / 12:18:02 / 12:18:19 点「评测」三次全被拦截   ← 第 1 轮的 120s 评测还在跑
+12:18:27 未找到评测按钮，终止本题                      ← 第二版代码从未被评测
+```
+
+根因不是"AI 太笨"，而是**Agent 把没观测到的东西当成了观测结果**：等待预算 30s < 平台自报的本关最大执行时间 120s，「同错复现」捷径又在 3 秒闸门后采信了与点击前逐字符相同的面板；反思于是拿遗留文本编出了一个不存在的机制（"列表弹空后队列名会被 blpop 从有序集合隐式删除"），并给出在 Python 2 下**连语法都不过**的 `conn.blpop(*task_lists, 10)`（PEP 448 属 Python 3.5+）与零等待热自旋 `if not task_lists: continue`；紧接着第 2 轮点击落在仍在评测的页面上被拦截，重扫窗口 20s 到点即放弃 → 整题作废。
+
+### Fixed
+
+- **陈旧结果面板不再当本轮结论（`act.mjs` `waitEvalResult` 第 3 参数 `opts.codeUnchanged`）**：「同错复现」捷径此前只看"文本带结果面板标记 + 3 次采样稳定 + 已过 3 秒"，代码换了也照采。现在**只有本轮提交与上次送进评测的文本逐字节相同**才允许走捷径（`loop.mjs` 新增 `lastEvaluatedCode` / `lastEvaluatedCommands` 记账）；代码变了就等满预算，返回带 `STALE_EVAL_PREFIX` 首行的文本，由 `loop.mjs` 的 `verdictOf()` 统一判为未通过（遗留面板里写着「全部通过」也不能判过）。最短等待闸门 3s → 可配 `EVAL_UNCHANGED_MIN_MS`（默认 10s）
+- **等待预算覆盖平台自报执行时间（`act.mjs` 新增纯函数 `parsePlatformMaxSeconds` / `evalDeadlineAt`）**：面板「本关最大执行时间：N 秒」这一栏就是本轮评测的最坏耗时；旧版固定 `EVAL_TIMEOUT_MS=30000` 在 120 秒的题目上必然中途放弃。现按 `max(配置预算, N + EVAL_GRACE_MS)` 抬高，`EVAL_BUDGET_CAP_MS` 兜住离谱自报值，评测中途新读到的面板也能继续延长
+- **评测按钮点不动不再终止整题（`act.mjs` `clickByKeywords` 返回 `exists`）**：`sawAny` 此前只进日志、不进返回值，loop 只能把"点不动"和"页面没有按钮"一起当 `no-eval-button` 终止。现在两者分开（`eval-button-busy` / `no-eval-button`），`clickEval` 的重扫窗口 20s → `EVAL_CLICK_WAIT_MS`（默认 150s，覆盖上一轮评测仍在跑的情形），窗口内每轮补 `checkStop` 检查点，且按钮压根不存在时按 `absentGraceMs` 快速失败不拖满窗口
+- **推测不得进教训链（`loop.mjs`）**：`stale` 轮次的反思诊断只打日志、不写入 `lessons`，改写一条事实性教训（"本轮未取得平台反馈，该轮改动均未验证"）——旧版会把编造的机制当真教训传给后面每一轮；同理 `stale` 轮不参与"连续同类报错重载"的签名计数（报错来自遗留面板，不是本轮）
+
+### Added
+
+- **`src/py2-guard.mjs`（新增，零依赖）+ 写入前本地语法守卫**：`checkPython2Syntax(code)` 检出「Python 2 下必定 SyntaxError」的 Python 3 形态——PEP 448（`f(*a, x)`）、f-string、`:=`、参数/返回值/变量注解、`def f(a, *, b)`、`nonlocal`、`yield from`、`async/await`、`raise X from Y`、`except*`、字面量内 `[*a]`/`{**d}`、无参 `super()`。实现是「字符串/注释掩码 + 括号栈」两轮：掩码保留等长与换行（行号可回溯，顺带在扫描前缀时抓 f-string），栈上区分 call/def/group/list/brace 帧，只在**实参起始位置**判解包，因此 `f(a * b)`、`x = (a\n * 2)` 的乘号与切片 `a[1::2]` 都不误报。取向是**宁漏不误报**（误报会让模型来回改本来正确的代码——本项目反复吃过横跳的亏），非 Python 提交整体跳过，检查器自身异常一律放行。命中即在 `loop.mjs` 打回反思修正（材料明确标注"未提交评测"，至多 `PY_GUARD_MAX=2` 次），不过则照旧提交
+- **提交流水线抽出为 `finalizeSubmission(template, code)`（`loop.mjs`）**：拼接 → 空区域打点 → shell 护栏清洗 → echo 包裹，反思修正与守卫打回共用同一条路径；`isFragment` 残缺判据同步提为模块级 `isFragmentCode` 供守卫路径复用
+- **反思/生成 prompt 加固（`shared/capabilities/`）**：反思器新增第 11 条「改动必须由本轮证据驱动」（材料标注"结果未确认/未捕获输出"时**原样输出上一版代码**，严禁以"更优/更优雅"为由改动未报错代码）、第 12 条「机制断言必须有出处」、第 13 条 Python 2 语法禁区、第 14 条「循环不得零等待空转」；原「事实优先级」归位为第 15 条（此前误挂在输出小节之后）。生成器规则 11 补「题面相关知识的 Python 片段是命令语义、不是 redis-py 可调用签名」，规则 15 的 py3 语法清单补全（含 PEP 448 与 `super()`）并加入热自旋禁令
+- **`shared/platform-facts.json` 新增 `python2_syntax` 段与 `redis_py.cmd_examples_not_python_signature`**：语法禁区清单下沉到事实档案（单一数据源，两侧 prompt 自动继承），按 `_readme` 纪律标注依据（runtime 段实测 Python 2 + PEP 448 归属），并把两条尚未真机留证的条目（多键 blpop 的实际回显、`blpop(list(keys), timeout=10)` 形态）放进 `unknowns`
+- **新增单测 20 项**：`test/py2-guard.test.mjs` 10 项（事故原文 / py2 合法综合样本零误报 / 字符串注释掩码 / 非 Python 跳过 / fail-open）+ `test/eval-freshness.test.mjs` 7 项（假时钟驱动，覆盖 30s/120s 量级预算也只跑几十毫秒）+ `test/click-fallback.test.mjs` 追加 3 项（`exists` 语义 / 快速失败 / 重扫窗口量级）
+
+### Notes
+
+- 验证：`npm test` **101/101**（改动前 81）；`npm run caps-check` 通过（7 个能力文件 + 事实档案）；`npx eslint src/` 通过；`npm run format:check` 全绿。守卫规则另按事故原文与 8 组对照样本逐条核验（`blpop(*lists, 10)` 命中、`blpop(list(lists), timeout=10)` 干净）
+- **未验证边界**：本轮所有改动均为离线改动，**尚未在真机上跑过这道题**——`python2_syntax` 段与多键 blpop 的正确形态仍缺平台回显（已登记 `unknowns`）；守卫的实际打回效果需下次真机观察日志中的「本地语法守卫拦下 N 处」行确认；`EVAL_CLICK_WAIT_MS=150s` 是"上一轮评测仍在进行"假设下的取值，真机若表现为人机争抢按钮需再调
+- 既有欠债不变：`npm run lint` 仍有 `test/ai.test.mjs` 的 `no-regex-spaces` 1 项（1.4.3 已登记，非本次引入，未一并改动）
+
+
 ## [1.4.4] - 2026-09-20（分支 feat/2-c-web-service）
 
 **文档与格式收口**（无行为改动）：① 补齐 `shared/capabilities/README.md` 缺失的「加载前校验（fail-fast）」条目——该机制自 1.1.x 就在 `readCapability` 里跑，但本分支的 README 一直没写，属文档落后于代码；② `src/ai.mjs` / `src/loop.mjs` / `test/ai.test.mjs` 三文件不符合仓库自身的 `.prettierrc`（`printWidth: 100` 超宽未换行、多余括号、缺 `trailingComma`、个别引号风格），跑了 `npm run format` 归一；③ 修正 README 版本徽章滞后（写 1.3.0，实际 1.4.3）。

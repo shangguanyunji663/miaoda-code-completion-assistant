@@ -133,8 +133,21 @@ export const cfg = {
   loop: {
     // 单题最大反思重试次数（用户指定 10；注意失败题最坏耗时与 token 消耗随重试线性放大）
     maxRetry: pickNum('MAX_RETRY', 10),
-    // 等待评测结果的最长时间（毫秒）
+    // 等待评测结果的最长时间（毫秒）。1.5.0 起这是**下限**：面板自报「本关最大执行
+    // 时间」更长时按平台值抬高（见 evalGraceMs / evalBudgetCapMs）
     evalTimeoutMs: pickNum('EVAL_TIMEOUT_MS', 25000),
+    // 平台自报执行时间之外的收尾余量：评测跑完还要渲染面板、稳定 3 次采样
+    evalGraceMs: pickNum('EVAL_GRACE_MS', 15000),
+    // 评测等待预算上限（面板文本可能自报离谱数值，用它兜住）
+    evalBudgetCapMs: pickNum('EVAL_BUDGET_CAP_MS', 300000),
+    // 重交同一份代码时，"面板与点击前一致"要等多久才允许采信（同错复现捷径）。
+    // 旧版硬编码 3s：实测平台 4 秒时评测根本没跑完（2026-09-22 事故）
+    evalUnchangedMinMs: pickNum('EVAL_UNCHANGED_MIN_MS', 10000),
+    // 评测按钮存在但点不动时的重扫窗口：多半是上一轮评测仍在进行（平台此时会
+    // 禁用/遮挡按钮）。窗口太短→放弃点击→刚写入的代码连一次评测都没拿到
+    evalClickMs: pickNum('EVAL_CLICK_WAIT_MS', 150000),
+    // 上述重扫的步进
+    evalClickStepMs: pickNum('EVAL_CLICK_STEP_MS', 3000),
     // 每题之间的间隔（毫秒），避免触发平台风控
     cooldownMs: pickNum('COOLDOWN_MS', 1500),
     // 连续解题数量上限，0 表示不限

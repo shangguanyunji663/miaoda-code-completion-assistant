@@ -1,7 +1,8 @@
 // EXPORTS: clickEval, clickByKeywords, waitEvalResult, clickNext, answerChoice, fillBlank, settle,
 //          readTaskNo, waitTaskAdvance, clickExitTask, clickBackArrow,
 //          clickContinueChallenge, clickStartLearning, switchTaskTab, runTerminalCommands,
-//          collectTestSetDetails, dismissPassModal, ensureTaskPage
+//          collectTestSetDetails, dismissPassModal, ensureTaskPage,
+//          STALE_EVAL_PREFIX, isStaleEvalText, parsePlatformMaxSeconds, evalDeadlineAt
 // 执行层：所有真实点击 / 输入动作。受 DRY_RUN 控制——干跑时只打日志不动页面。
 
 import { cfg } from './config.mjs';
@@ -23,6 +24,37 @@ function guard(action) {
     return false;
   }
   return true;
+}
+
+/** 陈旧面板返回值的固定首行：loop 据此把判定强制为"未通过"，绝不把上一轮
+ *  遗留面板当成本轮结果（见 waitEvalResult 的 1.5.0 说明）。 */
+export const STALE_EVAL_PREFIX = '=== 本轮评测结果未确认 ===';
+
+/** 评测文本是否为"未观测到本轮结果"的陈旧返回 */
+export function isStaleEvalText(text) {
+  return String(text ?? '').startsWith(STALE_EVAL_PREFIX);
+}
+
+/** 从结果面板文本解析平台自报的「本关最大执行时间：N 秒」，解析不到返回 0。
+ *  平台这一栏就是本轮评测可能的最长耗时：本地预算若小于它，等待会在评测
+ *  中途放弃（2026-09-22 事故根因之一：Redis 阻塞类题 120 秒 vs 本地 30 秒）。 */
+export function parsePlatformMaxSeconds(text) {
+  const m = /本关最大执行时间[^\d]{0,10}(\d+)\s*秒/.exec(String(text ?? ''));
+  const n = m ? Number(m[1]) : 0;
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * 计算评测等待的截止时间戳（毫秒）。取「配置预算」与「平台自报上限 + 收尾余量」
+ * 的较大者，并用 cap 兜住（面板文本可能自报离谱数值）。
+ * @returns {{deadlineAt: number, extended: boolean}}
+ */
+export function evalDeadlineAt(startAt, baseTimeoutMs, panelText, capMs, graceMs) {
+  const sec = parsePlatformMaxSeconds(panelText);
+  if (!sec) return { deadlineAt: startAt + baseTimeoutMs, extended: false };
+  const want = Math.min(capMs, sec * 1000 + graceMs);
+  if (want <= baseTimeoutMs) return { deadlineAt: startAt + baseTimeoutMs, extended: false };
+  return { deadlineAt: startAt + want, extended: want > baseTimeoutMs };
 }
 
 /**
@@ -63,9 +95,14 @@ export async function clickByKeywords(page, keywords, label, opts = {}) {
   // 重扫窗口（毫秒）：短暂遮挡/渲染竞态时自愈；0 表示只试一轮（旧行为）
   const settleMs = opts.settleMs ?? 6000;
   const stepMs = opts.settleStepMs ?? 2000;
-  const deadline = Date.now() + settleMs;
+  // 「一轮扫下来什么都没见到」的容忍窗口：超过它就认定页面本来没有这个按钮，
+  // 不再拖满 settleMs（点不动 ≠ 不存在，两者的处置与耗时完全不同）
+  const absentGraceMs = opts.absentGraceMs ?? Math.min(settleMs, 6000);
+  const start = Date.now();
+  const deadline = start + settleMs;
   let sawAny = false;
   for (let round = 1; ; round++) {
+    checkStop(`点击「${label}」`);
     for (const kw of keywords) {
       // 按角色优先级尝试。实测该评测平台上「评测」是 <button>，而「上一关/下一关」
       // 是 <a>（class ghost-link），只查 button 会漏掉后者，因此必须覆盖 link。
@@ -97,7 +134,7 @@ export async function clickByKeywords(page, keywords, label, opts = {}) {
           }
           if (!clicked) continue; // 重试仍失败，换下一个候选
           log(`已点击「${label}」（匹配词：${kw}）`);
-          return { clicked: true, keyword: kw };
+          return { clicked: true, keyword: kw, exists: true };
         }
       }
     }
@@ -107,6 +144,7 @@ export async function clickByKeywords(page, keywords, label, opts = {}) {
     //（唯一命中项是 Monaco 内部的 margin-view-overlays），属渲染/收起面板的瞬时态。
     // 给一个有界重扫窗口，比误判"没有评测按钮"而整题作废划算。
     if (Date.now() >= deadline) break;
+    if (!sawAny && Date.now() - start >= absentGraceMs) break;
     await dismissResultPanel(page);
     log(`「${label}」本轮未点中（第 ${round} 轮），${Math.round(stepMs / 1000)}s 后重扫`);
     await page.waitForTimeout(stepMs);
@@ -114,10 +152,10 @@ export async function clickByKeywords(page, keywords, label, opts = {}) {
   // 区分两种失败：按钮根本不存在 vs 存在但一直点不动——排查方向完全不同
   log(
     sawAny
-      ? `「${label}」按钮存在但始终未点中（疑似被遮挡/未就绪），放弃本次点击`
+      ? `「${label}」按钮存在但始终未点中（疑似平台仍在评测中/被遮挡），放弃本次点击`
       : `未找到「${label}」按钮（尝试词：${keywords.join('/')}）`,
   );
-  return { clicked: false, keyword: null };
+  return { clicked: false, keyword: null, exists: sawAny };
 }
 
 /**
@@ -132,9 +170,17 @@ export async function settle(page) {
   await page.waitForTimeout(cfg.loop.cooldownMs);
 }
 
-/** 点击「评测」按钮 */
+/** 点击「评测」按钮。
+ * 重扫窗口默认给到「平台自报最大执行时间 + 余量」量级（1.5.0）：上一轮评测仍在
+ * 进行时平台会让评测按钮不可点，旧版 20s 窗口到点就放弃 → loop 判「未找到评测
+ * 按钮」终止整题，刚写入的代码连一次评测都没拿到（2026-09-22 真机事故）。
+ * 按钮压根不存在时按 absentGraceMs 快速失败，不拖满窗口。 */
 export async function clickEval(page) {
-  return clickByKeywords(page, BTN_EVAL, '评测', { settleMs: 20000, settleStepMs: 2000 });
+  return clickByKeywords(page, BTN_EVAL, '评测', {
+    settleMs: cfg.loop.evalClickMs,
+    settleStepMs: cfg.loop.evalClickStepMs,
+    absentGraceMs: Math.min(cfg.loop.evalClickMs, 8000),
+  });
 }
 
 /** 点击「下一题」按钮 */
@@ -148,13 +194,39 @@ export async function clickNext(page) {
  * 直到与点击前不同、且连续 3 次采样保持不变。
  * 相比旧版逐轮跑全页探测（probePage，每轮多次 evaluate、秒级延迟），
  * 现在每轮只做一次 evaluate，通过类结果可秒级判定（弹窗/成功词即时返回）。
+ *
+ * 1.5.0 两条硬约束（2026-09-22 真机事故：Redis 优先级队列题）：
+ *  ① **预算必须覆盖平台自报的本关最大执行时间**——旧版固定 30s，而该题评测要跑
+ *    120s，等待在评测中途就放弃；
+ *  ② **本轮代码与上一轮不同时，绝不采信"与点击前一致"的面板文本**——那份文本是
+ *    上一轮（甚至用户手动提交）的遗留，把它当本轮结果会让反思基于假证据编造
+ *    机制（实测反思据此写下"队列名被 blpop 从有序集合中隐式删除"这种不存在的
+ *    原理）。此时等满预算，返回值加 STALE_EVAL_PREFIX 首行，由 loop 判为未通过
+ *    并把"未观测到结果"如实写进反思材料。
+ * @param {string} [timeoutMs] 本地等待预算下限
+ * @param {{codeUnchanged?: boolean}} [opts] codeUnchanged=true 表示本次提交的
+ *   文本与上一次评测的完全相同（同错复现允许走捷径）
  * @returns {Promise<string>} 评测结果文本
  */
-export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
+export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs, opts = {}) {
+  const codeUnchanged = opts.codeUnchanged === true;
   const before = await readEvalPanel(page);
   const start = Date.now();
-  const deadline = start + timeoutMs;
+  let { deadlineAt: deadline } = evalDeadlineAt(
+    start,
+    timeoutMs,
+    before,
+    cfg.loop.evalBudgetCapMs,
+    cfg.loop.evalGraceMs,
+  );
+  if (deadline > start + timeoutMs) {
+    log(
+      `面板自报本关最大执行时间 ${parsePlatformMaxSeconds(before)}s，` +
+        `评测等待预算 ${Math.round(timeoutMs / 1000)}s → ${Math.round((deadline - start) / 1000)}s`,
+    );
+  }
   let last = before;
+  let lastSample = '';
   let stableCount = 0;
   let best = '';
   // 与 readEvalPanel 的结果标记策略配套：判定捕获文本是否带结果面板特征
@@ -187,6 +259,21 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
       return '全部通过（结构标记 test-result.success）';
     }
     const now = await readEvalPanel(page);
+    lastSample = now || lastSample;
+    // 评测中途才出现的面板也可能自报更长的执行时间：预算随之延长
+    if (now) {
+      const d2 = evalDeadlineAt(
+        start,
+        timeoutMs,
+        now,
+        cfg.loop.evalBudgetCapMs,
+        cfg.loop.evalGraceMs,
+      );
+      if (d2.deadlineAt > deadline) {
+        deadline = d2.deadlineAt;
+        log(`评测等待预算延长至 ${Math.round((deadline - start) / 1000)}s（面板自报执行时间）`);
+      }
+    }
     if (now && now !== before) {
       best = now;
       if (isDefiniteSuccess(now)) {
@@ -202,14 +289,20 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
         stableCount = 1;
       }
       last = now;
-    } else if (now && hasResultMarker(now) && Date.now() - start > 3000) {
-      // 同错复现场景（2026-09-09 实测 60s 空等）：新评测结果与点击前面板
-      // 完全一致（同代码同错误），"等变化"永远等不到。文本带结果面板标记
-      // 且连续 3 次采样稳定即直接采用，避免烧满超时预算后误报"空结果"。
+    } else if (
+      now &&
+      hasResultMarker(now) &&
+      codeUnchanged &&
+      Date.now() - start >= cfg.loop.evalUnchangedMinMs
+    ) {
+      // 同错复现场景（2026-09-09 实测 60s 空等）：重交**同一份代码**，新结果与
+      // 点击前面板完全一致，"等变化"永远等不到。文本带结果面板标记、且已过最短
+      // 等待（1.5.0：3s→可配 10s，4 秒时平台多半还没跑完）且连续 3 次采样稳定，
+      // 才直接采用——代码变了就不允许走这条路（见函数头注 ②）。
       stableCount++;
       if (stableCount >= 3) {
         best = now;
-        log('结果面板文本与点击前一致（同错复现），连续 3 次稳定后直接采用');
+        log('代码与上一轮相同且结果面板文本一致（同错复现），连续 3 次稳定后直接采用');
         break;
       }
     }
@@ -235,9 +328,28 @@ export async function waitEvalResult(page, timeoutMs = cfg.loop.evalTimeoutMs) {
     }
   }
 
+  const spentSec = Math.round((Date.now() - start) / 1000);
   if (!best) {
+    // 全程未观测到面板变化：本轮结果不可知。带标记返回遗留文本（或空串），
+    // 由 loop 判未通过并如实告诉反思"没有本轮证据"——宁可多跑一轮，也不能
+    // 拿上一轮的报错去"修"这一版的代码（2026-09-22 事故：反思据陈旧面板编出
+    // 不存在的机制，改出的代码在 Python 2 下连语法都不过）
+    if (!codeUnchanged && lastSample && hasResultMarker(lastSample)) {
+      log(
+        `${spentSec}s 内结果面板与点击前完全一致：本轮评测结果未观测到，` +
+          '不把遗留面板当本轮结论（陈旧面板已如实标注给反思）',
+      );
+      return (
+        `${STALE_EVAL_PREFIX}\n` +
+        `本轮提交与上一轮不同，但等待 ${spentSec}s 期间结果面板文本未发生任何变化——` +
+        '本轮评测结果**未被观测到**（可能仍在评测中）。以下文本是点击评测之前就已存在的遗留内容，' +
+        '只能作为"平台此前对该题的反馈"参考，**严禁**据此推断本轮的失败原因；' +
+        '没有可引用的本轮报错原文时，请输出与上一版完全相同的代码，不要凭推测改动。\n\n' +
+        `--- 遗留面板内容（非本轮结果）---\n${lastSample}`
+      );
+    }
     log(
-      `${Math.round(timeoutMs / 1000)}s 内未捕获到评测结果文本（提交本身可能已成功）。` +
+      `${spentSec}s 内未捕获到评测结果文本（提交本身可能已成功）。` +
         '请在题目页保持该状态立即执行 npm run dump，把 dumps JSON 发给开发侧按真实结构精调结果面板识别',
     );
   }

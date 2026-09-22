@@ -9,6 +9,10 @@
 //   ② 始终点不动 → 必须在有界窗口内放弃（**绝不死循环**）
 //   ③ 按钮不存在 → 不点击、直接返回失败（失败原因可与"点不动"区分）
 //
+// 1.5.0 追加（2026-09-22 事故）：②的返回值必须带 exists:true，与③的 exists:false
+// 区分开——loop 只有对"页面根本没有按钮"才该终止整题；点不动多半是上一轮评测仍在
+// 进行，重扫窗口要按平台执行时间量级（默认 150s）给。
+//
 // 运行：npm test。
 
 import test from 'node:test';
@@ -67,4 +71,34 @@ test('页面上没有该按钮 → 不点击、直接返回失败', async () => 
   assert.equal(r.clicked, false);
   assert.equal(r.keyword, null);
   assert.equal(state.clicks, 0);
+});
+
+// ---- 1.5.0：exists 语义（2026-09-22 事故：点不动被当成"没有按钮"，整题作废）----
+
+test('按钮存在但点不动 → exists:true，loop 据此改判"评测仍在进行"而非页面结构问题', async () => {
+  const { page } = makeFakePage({ failFirstClicks: Number.MAX_SAFE_INTEGER });
+  const r = await clickByKeywords(page, ['评测'], '评测', { settleMs: 60, settleStepMs: 1 });
+  assert.equal(r.clicked, false);
+  assert.equal(r.exists, true);
+});
+
+test('按钮不存在 → exists:false 且在 absentGrace 内快速失败（不拖满重扫窗口）', async () => {
+  const { page, state } = makeFakePage({ present: false });
+  const t0 = Date.now();
+  const r = await clickByKeywords(page, ['评测'], '评测', {
+    settleMs: 5000,
+    settleStepMs: 1000,
+    absentGraceMs: 1,
+  });
+  assert.equal(r.exists, false);
+  assert.equal(state.clicks, 0);
+  assert.ok(Date.now() - t0 < 1000, '没有按钮就不该等到 settleMs 才返回');
+});
+
+test('clickEval 的重扫窗口按平台执行时间量级配置（150s 级），不再 20s 就放弃', async () => {
+  const { cfg } = await import('../src/config.mjs');
+  assert.ok(
+    cfg.loop.evalClickMs >= 120_000,
+    `默认应覆盖「本关最大执行时间 120 秒」量级，实际 ${cfg.loop.evalClickMs}ms`,
+  );
 });

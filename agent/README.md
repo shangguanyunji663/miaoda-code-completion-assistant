@@ -59,7 +59,7 @@ npm run probe
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流，见下方「网页工作台」） |
 | `npm run caps-check` | 校验配置类 JSON：能力文件（必填字段、prompt 占位符与 `paramsSchema` 声明一致性）+ 平台事实档案（事实段必须带 evidence/date、待验证项必须隔离在 `unknowns`）——编辑 `shared/capabilities/` 或 `shared/platform-facts.json` 后先跑 |
-| `npm test` | 运行单测（81 项：核心纯函数 + 挑页链 + 能力配置/事实档案校验 + 运行控制，Node 内置 `node:test`，零新增依赖） |
+| `npm test` | 运行单测（101 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + Python 2 语法守卫 + 能力配置/事实档案校验 + 运行控制，Node 内置 `node:test`，零新增依赖） |
 | `npm run lint` | ESLint 静态检查（`eslint.config.js`） |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 | `npm run format:check` | 只检查格式不写入，适合放进 CI |
@@ -116,7 +116,10 @@ npm run probe
 | `TASK_URL_PATTERN` | 题目页 URL 形状正则：自动挑页与 watch/lite 识别共用（换平台改这里） | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `READY_TIMEOUT_MS` | 等题目区渲染完成的超时 | `15000` |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
-| `EVAL_TIMEOUT_MS` | 等待评测结果上限 | `25000` |
+| `EVAL_TIMEOUT_MS` | 等待评测结果预算**下限**：结果面板自报「本关最大执行时间 N 秒」更长时自动抬高（1.5.0，实测 Redis 阻塞类题 120 秒） | `25000` |
+| `EVAL_GRACE_MS` / `EVAL_BUDGET_CAP_MS` | 平台自报执行时间之外的收尾余量 / 预算上限 | `15000` / `300000` |
+| `EVAL_UNCHANGED_MIN_MS` | 重交**同一份**代码时，"面板与点击前一致"要等多久才允许采信；代码变了则绝不采信遗留面板 | `10000` |
+| `EVAL_CLICK_WAIT_MS` / `EVAL_CLICK_STEP_MS` | 评测按钮存在但点不动时的重扫窗口与步进（上一轮评测仍在跑时点不动属正常） | `150000` / `3000` |
 | `COOLDOWN_MS` | 每题间隔，避免触发平台风控 | `1500` |
 | `TERMINAL_TYPE_DELAY_MS` | 命令行题：每字符键入延迟 | `10` |
 | `TERMINAL_GAP_MIN_MS` / `TERMINAL_GAP_MAX_MS` | 命令行题：回车后等提示符返回的最短/最长时间（自适应） | `200` / `2500` |
@@ -139,7 +142,7 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 ```
 
 - **题型自动分类**：选择题/填空题按结构信号识别（`choice` 检测到 radio/checkbox、`blank` 检测到文本输入框）；代码题、**命令行题**与**混合题**先读左侧题干做 **AI 意图判定**（`task_router_1`：`code` 写代码文件 / `cmdline` 敲命令 / `mixed` 先命令行数据准备再写代码栏），判定后自动切换到对应工作区 tab 再执行
-- **代码题**：生成 → 评测 → 失败则带着「题目 + 上一版代码 + 评测输出」反思修复 → 重评，最多 `MAX_RETRY` 次
+- **代码题**：生成 → 写入前本地守卫（`py2-guard.mjs` 拦 Python 2 必定 SyntaxError 的 py3 语法，命中即打回修正、不浪费一次评测）→ 评测 → 失败则带着「题目 + 上一版代码 + 评测输出」反思修复 → 重评，最多 `MAX_RETRY` 次。**本轮结果必须被观测到才算数**：提交文本与上一轮不同时，绝不采信"面板与点击前一致"的遗留反馈（1.5.0；这类假证据曾让反思编出不存在的机制并改出语法都不过的代码）
 - **命令行题**（头歌类平台的数据库/运维任务）：生成命令序列 → 逐条真实键入 xterm 终端（每条回车后自适应等提示符返回，`TERMINAL_GAP_MIN_MS`~`TERMINAL_GAP_MAX_MS`；含中文的命令由执行层合成 paste 事件直入 xterm 保证键入保真，纯 ASCII 走键盘逐字符）→ 评测；未通过时由 `cmdline_reflection_fixer_1` 结合评测输出重新生成完整命令序列再重试。bash 环境且题干涉数据库时，先实测客户端可用性（mongosh 是否存在这类硬事实进 prompt、缺失者入禁令并执行层别名替换），避免子命令被敲进 bash
 - **混合题**（如「先命令行插入文档、再代码栏写查询」）：**先命令行插入题面文档到指定库（必需，1.0.0 实测评测环境共享终端数据库、未插入则查询结果为空）**，再落入代码分支作答；代码栏数据库命令题用 `echo "` 双引号包裹裸查询（分号 `;` 分隔、`$`→`\$`，1.0.0 生成/反思守则——平台对代码栏双重执行：bash 环节 + 提取 echo 引号内内容做数据库 eval）
 - **选择题/填空题**：直接作答后评测；当前版本不做多轮反思

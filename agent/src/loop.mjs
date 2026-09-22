@@ -47,6 +47,7 @@ import {
   dismissPassModal,
   ensureTaskPage,
   probeTerminalClients,
+  isStaleEvalText,
 } from './act.mjs';
 import {
   generateCode,
@@ -62,6 +63,7 @@ import {
   generateCommands,
   reflectCommands,
 } from './ai.mjs';
+import { checkPython2Syntax, formatPython2Problems } from './py2-guard.mjs';
 
 const log = createLogger('loop');
 
@@ -76,6 +78,84 @@ const NEEDS_DB = /(mongodb|mongosh|\bmongo\b|mysql|redis|psql|postgres|数据库
  * heredoc 正文与其余命令不动。
  */
 const COMMAND_ALIASES = { mongosh: 'mongo' };
+
+/** 本地语法守卫最多打回几次（仍不过则放行提交——守卫宁漏不误阻断） */
+const PY_GUARD_MAX = 2;
+
+/**
+ * 评测文本 → 判定。陈旧面板（本轮未观测到结果）单独短路：遗留文本里可能有
+ * 「全部通过」，绝不能据此判过（2026-09-22 事故的误判方向）。
+ */
+function verdictOf(evalText) {
+  if (isStaleEvalText(evalText)) {
+    return { passed: false, reason: '本轮未观测到结果面板变化（遗留面板不作本轮结论）' };
+  }
+  return detectVerdict(evalText);
+}
+
+/**
+ * 拼接 + 执行层护栏，得到「真正会写进编辑器的那份文本」。
+ * 从主循环里抽出来复用：反思修正、守卫打回重生成后都走同一条流水线，
+ * 避免哪一处漏了清洗或漏了留痕。
+ * @returns {{submitted: string, sanitizeNote: string, emptyBlocks: number[]}}
+ */
+function finalizeSubmission(template, code) {
+  // 实际提交评测的是"模板拼接后"的版本；反思必须带上它而不是 AI 原始
+  // 输出，否则 AI 审的是一份没提交过的文本（2026-09-09 用户指出）
+  let submitted = spliceIntoTemplate(template, code);
+  // 拼接方式留痕（2026-09-15 定位用）：AI 输出是否带标记、模式块数 → 判断
+  // 走的是逐块归位还是无标记直通，失败时可快速归因
+  log(
+    `拼接方式：模板 ${(String(template ?? '').match(/\bbegin\b/gi) || []).length} 对标记 / AI 输出 ${(String(code ?? '').match(/\bbegin\b/gi) || []).length} 对标记 / 拼后 ${submitted.length} 字符`,
+  );
+  // 多标记模板校验（2026-09-15）：模板含多处 Begin/End 区域时，AI 漏补全的
+  // 空区域会让评测直接 IndentationError——拼完立即打点，让反思轮感知
+  const emptyBlocks = emptyMarkerBlocks(submitted);
+  if (emptyBlocks.length) {
+    log(
+      `⚠ 拼接后仍有 ${emptyBlocks.length} 处 Begin/End 区域为空（#${emptyBlocks.join('、#')}），AI 未补全全部区域`,
+    );
+  }
+  // shell 书写护栏（0.9.1）：数据库脚本题（模板含 db. 调用）中，AI 偶发把
+  // 中文标签拼在命令前（"输出集合前3条文档: db.educoder…"）——送进 shell
+  // eval 必报 SyntaxError: illegal character。写入前确定性清洗：
+  // 剥标签留命令 / 剔除裸中文行 / 全角分号转半角；普通编程题零触发。
+  let sanitizeNote = '';
+  const san = sanitizeShellSubmission(submitted);
+  if (san.changes.length) {
+    submitted = san.code;
+    sanitizeNote = san.changes.map((n) => `- ${n}`).join('\n');
+    log(`shell 护栏清洗 ${san.changes.length} 处：${san.changes.slice(0, 3).join('；')}`);
+  }
+  // 数据库命令题 echo 双引号包裹兜底（1.0.1）：平台对代码栏双重执行（bash 环节 +
+  // 提取 echo 引号内容做数据库 eval），AI 即使被守则要求仍可能输出裸命令 →
+  // bash 报错污染实际输出。这里确定性包裹（幂等：已包裹/普通编程题零触发）。
+  const wrap = wrapDbCommandsInEcho(submitted);
+  if (wrap.wrapped) {
+    submitted = wrap.code;
+    log('数据库命令题 echo 双引号包裹兜底（bash 环节零噪音，平台提取引号内命令 eval）');
+  }
+  return { submitted, sanitizeNote, emptyBlocks };
+}
+
+/** 残缺产物检测（2026-09-15 放开轮数实验沉淀）：思考超限断流→强制关思考的重试轮
+ *  偶发输出 45~207 字符碎片（无顶层语句）。直接提交只会制造新的语法错误把下一轮
+ *  带偏、白费一次评测——检测到即不提交、重试一次。 */
+function isFragmentCode(cc) {
+  const t = String(cc ?? '').trim();
+  return t.length > 0 && t.length < 300 && !/(?:^|\n)(?:def |class |import |from |@)\S/m.test(t);
+}
+
+/** 守卫结论渲染成反思能读的评测位材料（标明"未提交评测"，不与平台反馈混淆） */
+function pyGuardEvalText(problems) {
+  return (
+    '=== 本地 Python 2 语法守卫（本轮未提交评测；平台运行 Python 2）===\n' +
+    '以下写法在 Python 2 下直接 SyntaxError，评测会整轮失败，故提交前被本地拦下：\n' +
+    `${formatPython2Problems(problems)}\n` +
+    '请只修正上述语法形态（保持函数签名、Begin/End 标记与其余代码原样不变），' +
+    '不要顺手改逻辑或改输出格式，输出完整代码。'
+  );
+}
 
 /** 从输入期报错行提取 command not found 的命令名（仅收干净词法名，滤掉大表达式碎片） */
 function extractMissingCommands(termErrors) {
@@ -294,7 +374,7 @@ async function solveOnceInner(page, probe) {
     await settle(page);
     await clickEval(page);
     const ev = await waitEvalResult(page);
-    const v = detectVerdict(ev);
+    const v = verdictOf(ev);
     log(`评测判定：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
     if (v.passed) {
       // 通过收尾：关闭庆祝弹窗（如有），返回等待用户操作
@@ -404,6 +484,9 @@ async function solveOnceInner(page, probe) {
     const bannedCmds = new Set(); // 本题内累积的 command not found 命令（跨反思轮生效）
     const lessons = []; // 各轮反思的诊断结论（Reflexion 式教训链，跨轮注入）
     let roundsCleanRun = 0; // 命令全部跑通（无输入期报错）的轮数——逃生舱判据
+    // 上一次送进评测的命令序列：与代码题的 lastEvaluatedCode 同义
+    // （1.5.0，只有重交同一份内容才允许采信"面板没变化"）
+    let lastEvaluatedCommands = '';
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
       checkStop(`命令行第 ${attempt}/${cfg.loop.maxRetry} 轮`);
       if (cmds === null) {
@@ -463,13 +546,29 @@ async function solveOnceInner(page, probe) {
 
       const clicked = await clickEval(page);
       if (!clicked.clicked) {
-        log('未找到评测按钮，终止本题');
-        return { ok: false, kind: 'cmdline', reason: 'no-eval-button' };
+        log(
+          clicked.exists
+            ? '⚠ 评测按钮存在但始终点不动（上一轮评测可能仍在进行）：命令已键入但未提交评测，终止本题'
+            : '页面没有评测按钮，终止本题',
+        );
+        return {
+          ok: false,
+          kind: 'cmdline',
+          reason: clicked.exists ? 'eval-button-busy' : 'no-eval-button',
+        };
       }
-      lastEval = await waitEvalResult(page);
-      const v = detectVerdict(lastEval);
+      lastEval = await waitEvalResult(page, undefined, {
+        codeUnchanged: cmds.join('\n') === lastEvaluatedCommands,
+      });
+      lastEvaluatedCommands = cmds.join('\n');
+      const v = verdictOf(lastEval);
       log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
       if (!v.passed) {
+        if (isStaleEvalText(lastEval)) {
+          lessons.push(
+            `第 ${attempt} 轮：等待预算内结果面板无变化，本轮未取得平台反馈；该轮的任何改动推测均未验证。`,
+          );
+        }
         // v0.7.0：评测后平台可能跳转到全屏「实际输出」结果页——先抓证据、
         // 返回题目页，再继续后续反思（此前需用户手动返回）
         const nav = await ensureTaskPage(page);
@@ -577,6 +676,9 @@ async function solveOnceInner(page, probe) {
   // 上一轮实际提交的完整文本（重载兜底的草稿判据，见 looksLikeOwnDraft）：平台持久化
   // 草稿时，重载只能拿回它——据此识别「重载无效」，避免覆盖干净的模板存档
   let lastSubmitted = '';
+  // 上一次**送进评测**的完整文本：本轮提交与它相同才允许采信"面板没变化"
+  // （同错复现）；不同则遗留面板不作本轮结论（2026-09-22 事故，见 waitEvalResult）
+  let lastEvaluatedCode = '';
   // 代码反思教训链（与 cmdline 分支同构，2026-09-15）：每轮反思诊断沉淀，
   // 下一轮注入，防止"这轮改对了、下轮又退回"的横跳（zincrby 3 轮横跳即无记忆）
   const lessons = [];
@@ -608,41 +710,49 @@ async function solveOnceInner(page, probe) {
       return { ok: false, kind: 'code', reason: 'empty-code' };
     }
 
-    // 实际提交评测的是"模板拼接后"的版本；反思必须带上它而不是 AI 原始
-    // 输出，否则 AI 审的是一份没提交过的文本（2026-09-09 用户指出）
-    let submitted = spliceIntoTemplate(codeProbe.code, code);
-    // 拼接方式留痕（2026-09-15 定位用）：AI 输出是否带标记、模式块数 → 判断
-    // 走的是逐块归位还是无标记直通，失败时可快速归因
-    log(
-      `拼接方式：模板 ${(codeProbe.code.match(/\bbegin\b/gi) || []).length} 对标记 / AI 输出 ${(code.match(/\bbegin\b/gi) || []).length} 对标记 / 拼后 ${submitted.length} 字符`,
-    );
-    // 多标记模板校验（2026-09-15）：模板含多处 Begin/End 区域时，AI 漏补全的
-    // 空区域会让评测直接 IndentationError——拼完立即打点，让反思轮感知
-    const emptyBlocks = emptyMarkerBlocks(submitted);
-    if (emptyBlocks.length) {
+    // 拼接 + 执行层护栏 → 实际提交评测的文本
+    let submitted;
+    ({ submitted, sanitizeNote } = finalizeSubmission(codeProbe.code, code));
+
+    // ---- 写入前本地 Python 2 语法守卫（1.5.0）----
+    // 平台运行时是 Python 2：一个 f-string / `f(*a, x)` / 类型注解 的代价是
+    // 「写入 + 一整轮评测（实测 120s）+ 一轮反思」，本地毫秒级就能查出。
+    // 命中即打回反思修正（明确标注未提交评测），最多 PY_GUARD_MAX 次；
+    // 仍不过则照旧提交——守卫宁漏不误，绝不因误报阻断作答。
+    for (let g = 0; g < PY_GUARD_MAX; g++) {
+      const chk = checkPython2Syntax(submitted);
+      if (chk.ok) break;
       log(
-        `⚠ 拼接后仍有 ${emptyBlocks.length} 处 Begin/End 区域为空（#${emptyBlocks.join('、#')}），AI 未补全全部区域`,
+        `本地语法守卫拦下 ${chk.problems.length} 处 Python 3 语法（未提交评测）：` +
+          chk.problems
+            .slice(0, 4)
+            .map((p) => `第 ${p.line} 行 ${p.rule}`)
+            .join('、'),
+      );
+      checkStop('语法守卫修正');
+      const repaired = await reflectAndFix({
+        problem: slimForReflection(problem),
+        previousCode: submitted,
+        evalResult: pyGuardEvalText(chk.problems),
+        terminalState: clientFact,
+        lessons: lessons.slice(-6),
+      });
+      if (!repaired.code || isFragmentCode(repaired.code)) {
+        log('守卫修正产物残缺/为空，按现状提交（交由评测反馈兜底）');
+        break;
+      }
+      code = repaired.code;
+      const again = finalizeSubmission(codeProbe.code, code);
+      submitted = again.submitted;
+      sanitizeNote = again.sanitizeNote;
+    }
+    const finalChk = checkPython2Syntax(submitted);
+    if (!finalChk.ok) {
+      log(
+        `⚠ 守卫修正 ${PY_GUARD_MAX} 次后仍有 ${finalChk.problems.length} 处 Python 3 语法，按现状提交`,
       );
     }
 
-    // shell 书写护栏（0.9.1）：数据库脚本题（模板含 db. 调用）中，AI 偶发把
-    // 中文标签拼在命令前（"输出集合前3条文档: db.educoder…"）——送进 shell
-    // eval 必报 SyntaxError: illegal character。写入前确定性清洗：
-    // 剥标签留命令 / 剔除裸中文行 / 全角分号转半角；普通编程题零触发。
-    const san = sanitizeShellSubmission(submitted);
-    if (san.changes.length) {
-      submitted = san.code;
-      sanitizeNote = san.changes.map((n) => `- ${n}`).join('\n');
-      log(`shell 护栏清洗 ${san.changes.length} 处：${san.changes.slice(0, 3).join('；')}`);
-    }
-    // 数据库命令题 echo 双引号包裹兜底（1.0.1）：平台对代码栏双重执行（bash 环节 +
-    // 提取 echo 引号内内容做数据库 eval），AI 即使被守则要求仍可能输出裸命令 →
-    // bash 报错污染实际输出。这里确定性包裹（幂等：已包裹/普通编程题零触发）。
-    const wrap = wrapDbCommandsInEcho(submitted);
-    if (wrap.wrapped) {
-      submitted = wrap.code;
-      log('数据库命令题 echo 双引号包裹兜底（bash 环节零噪音，平台提取引号内命令 eval）');
-    }
     checkStop('写入编辑器');
     lastSubmitted = submitted; // 重载兜底的草稿判据（写入什么，草稿就长什么样）
     await writeEditorCode(page, submitted);
@@ -651,12 +761,29 @@ async function solveOnceInner(page, probe) {
     checkStop('提交评测');
     const clicked = await clickEval(page);
     if (!clicked.clicked) {
-      log('未找到评测按钮，终止本题');
-      return { ok: false, kind: 'code', reason: 'no-eval-button' };
+      // 1.5.0：区分两种失败。按钮存在却点不动，多半是上一轮评测仍在进行（平台会
+      // 禁用/遮挡按钮）——clickEval 已在有界窗口内重扫过，这里如实记录"代码已写入
+      // 但未提交成功"，用户可手动点或让 watch 下一轮再来；按钮压根不存在才是页面结构问题。
+      log(
+        clicked.exists
+          ? `⚠ 评测按钮存在但始终点不动（上一轮评测可能仍在进行）：本轮代码已写入但未提交评测，终止本题`
+          : '页面没有评测按钮，终止本题',
+      );
+      return {
+        ok: false,
+        kind: 'code',
+        reason: clicked.exists ? 'eval-button-busy' : 'no-eval-button',
+        codeWritten: true,
+        code: submitted,
+      };
     }
 
-    lastEval = await waitEvalResult(page);
-    const v = detectVerdict(lastEval);
+    lastEval = await waitEvalResult(page, undefined, {
+      codeUnchanged: submitted === lastEvaluatedCode,
+    });
+    lastEvaluatedCode = submitted;
+    const stale = isStaleEvalText(lastEval);
+    const v = verdictOf(lastEval);
     log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
 
     if (!v.passed) {
@@ -680,7 +807,9 @@ async function solveOnceInner(page, probe) {
       // 提交的草稿而非原始模板 ⇒ 该兜底在此平台不可用；若照旧覆盖存档，会把干净的
       // 模板基准换成污染草稿（比不重载更糟）。故重载后先用 looksLikeOwnDraft 判据
       // 识别"拿回的是自己的草稿"，命中即保留原存档并停用兜底。
-      const sigMatch = String(lastEval).match(/\b[A-Z][A-Za-z]*(?:Error|Exception)[^\n]{0,80}/);
+      const sigMatch = stale
+        ? null
+        : String(lastEval).match(/\b[A-Z][A-Za-z]*(?:Error|Exception)[^\n]{0,80}/);
       const sig = sigMatch ? sigMatch[0].trim() : '';
       if (sig) {
         if (sig === lastErrSig) sameErrStreak++;
@@ -758,7 +887,17 @@ async function solveOnceInner(page, probe) {
       lessons: lessons.slice(-6),
     });
     log(`AI 代码反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
-    if (fixed.analysis) {
+    if (stale) {
+      // 本轮没有平台证据：AI 的"诊断"必然是推测（2026-09-22 事故里它据此编出了
+      // 不存在的 Redis 机制）。推测不进教训链，改记一条事实性教训，
+      // 让后续轮次知道这一轮什么都没被证实。
+      log(
+        `反思分析（本轮无平台证据，不纳入教训链）：${String(fixed.analysis ?? '').replace(/\s+/g, ' ')}`,
+      );
+      lessons.push(
+        `第 ${attempt} 轮：等待预算内结果面板无变化，本轮未取得平台反馈；该轮的任何改动推测均未验证。`,
+      );
+    } else if (fixed.analysis) {
       // 全量打印（0.9.1）：旧版 slice(0,160) 把诊断拦腰截断（见图 1 事故：
       // "根据"SyntaxError: missing…"源" 戛然而止），用户无法判断是真截断
       // 还是 AI 没想全。分析被 prompt 约束 3 句话内，全量打印成本可忽略
@@ -770,16 +909,8 @@ async function solveOnceInner(page, probe) {
       log('反思未产出代码，终止本题');
       break;
     }
-    // 残缺产物检测（2026-09-15 放开轮数实验沉淀）：思考超限断流→强制关思考的
-    // 重试轮偶发输出 45~207 字符碎片（无顶层语句）。直接提交只会制造新的语法
-    // 错误把下一轮带偏、白费一次评测——检测到即不提交、重试一次。
-    const isFragment = (cc) => {
-      const t = String(cc ?? '').trim();
-      return (
-        t.length > 0 && t.length < 300 && !/(?:^|\n)(?:def |class |import |from |@)\S/m.test(t)
-      );
-    };
-    if (isFragment(fixed.code)) {
+    // 残缺产物检测：见 isFragmentCode（1.5.0 提到模块级，守卫修正路径复用同一判据）
+    if (isFragmentCode(fixed.code)) {
       log(`反思产物疑似残缺（${fixed.code.length} 字符且无顶层语句），不提交评测，重试一次…`);
       const retry = await reflectAndFix({
         problem: slimForReflection(problem),
@@ -788,7 +919,7 @@ async function solveOnceInner(page, probe) {
         terminalState: clientFact,
         lessons: lessons.slice(-6),
       });
-      if (retry.code && !isFragment(retry.code)) {
+      if (retry.code && !isFragmentCode(retry.code)) {
         fixed = retry;
         if (retry.analysis) log(`重试反思分析：${String(retry.analysis).replace(/\s+/g, ' ')}`);
         log(`重试反思完成（${retry.code.length} 字符），提交评测`);

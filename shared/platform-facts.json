@@ -8,21 +8,34 @@
   },
   "redis_py": {
     "zadd_dict_form_supported": false,
-    "zadd_positional_order": [
-      "member",
-      "score"
-    ],
+    "zadd_positional_order": ["member", "score"],
     "zadd_evidence": "zadd(key,{member:score}) → redis.exceptions.RedisError: ZADD requires an equal number of values and scores；zadd(key,member,score) 成功写入 80008 条（探针实测 zcard=80008、min=(member, 16777216.0)）；zadd(key,score,member)（Redis 官方顺序）→ ResponseError: value is not a valid float；另经「自动补全」题面示例独立确认：conn.zadd(\"testzset\",\"member2\",3) 即 member2 分值 3（与 Redis 官方 ZADD key score member 相反）",
-    "zrevrangebyscore_order": [
-      "max",
-      "min"
-    ],
+    "zrevrangebyscore_order": ["max", "min"],
     "zrevrangebyscore_evidence": "题面示例：四个成员分值 10/70/50/100 调 zrevrangebyscore(key,100,50) 得 member4/member2/member3（按分值降序、含两端）",
     "date": "2026-09-20",
     "zrank_semantics": "zrank(key, member) 返回从 0 开始的排名（升序分值）；题面示例：分值 member3=1/member1=2/member2=3 时 zrank(\"testzset\",\"member2\")=2",
     "zrange_semantics": "zrange(key, start, stop) 按排名区间返回成员，两端**闭区间**；返回 bytes（Python 2 下即 str），例如题面示例 zrange(\"testzset\",0,1) → [\"member3\",\"member1\"]",
     "zrangebylex_on_equal_scores": "分值全相同时，Redis 按**成员字典序**排序——这是前缀补全类题目用「哨兵 + zrank/zrange」或 zrangebylex 的基础",
-    "zrange_signature": "只按题面示例的三参数位置形式用：zrange(key, start, stop)（闭区间、按排名）。**不支持 start=/num= 这类关键字参数**——实测（2026-09-20 自动补全题）写 zrange(key, start_rank, end_rank, start=0, num=10) 直接 TypeError: zrange() got multiple values for keyword argument 'start'。要\"取前 N 个\"就在 Python 层切片（items[:10]），不要指望客户端关键字参数"
+    "zrange_signature": "只按题面示例的三参数位置形式用：zrange(key, start, stop)（闭区间、按排名）。**不支持 start=/num= 这类关键字参数**——实测（2026-09-20 自动补全题）写 zrange(key, start_rank, end_rank, start=0, num=10) 直接 TypeError: zrange() got multiple values for keyword argument 'start'。要\"取前 N 个\"就在 Python 层切片（items[:10]），不要指望客户端关键字参数",
+    "cmd_examples_not_python_signature": "题面「相关知识」里的 Python 片段是 **Redis 命令语义说明**，不是 redis-py 的可调用签名：示例 conn.blpop(\"blist\", \"alist\", 5) 表达的是「BLPOP key [key...] timeout」（多个键各自作为参数、末尾一个数值超时），照抄成 Python 会得到 `blpop(*keys, 5)` 这种 Python 2 不支持的形态。多键阻塞弹出按 redis-py 旧签名把键**集合成一个列表**传入：conn.blpop(list(keys), timeout=10)",
+    "cmd_examples_not_python_signature_evidence": "题面原文（Redis 优先级队列关「相关知识」）：conn.blpop(\"blist\", \"alist\", 5) 与 conn.blpop(\"clist\", 5)，同时正文写明\"给定多个列表时，按列表的先后顺序依次检查\"\"阻塞连接，直到等待超时\"——即 CLI 的 key 变长参数 + timeout 语义；另经 runtime 段实测确认平台为 Python 2（该形态在 Python 2 属语法错误，见 python2_syntax 段）",
+    "date": "2026-09-22"
+  },
+  "python2_syntax": {
+    "note": "以下形态在平台运行时（Python 2，见 runtime 段）会**直接 SyntaxError 使整轮评测失败**——不是风格问题，是能否编译的问题。由 runtime 段的实测结论（平台为 Python 2）加语言规范推导，agent 侧另有提交前的本地静态守卫（agent/src/py2-guard.mjs）在写入前拦这些形态",
+    "star_then_positional": "`f(*a, x)`（*解包 之后再接位置实参）属 PEP 448「Additional Unpacking Generalizations」，Python 3.5+ 才支持；Python 2 只允许 `f(*a)`、`f(**kw)`、`f(*a, k=1)`、`f(*a + [x])`。多键命令的等价写法：把参数拼进一个列表再解包，或直接传列表给客户端方法",
+    "star_then_positional_evidence": "PEP 448 归属 Python 3.5；平台运行时 Python 2 的实测证据见 runtime 段（SyntaxError: Non-ASCII character… / open() 不接受 encoding= / 打印 [u'…'] unicode repr）",
+    "other_forbidden": [
+      "f-string：`f\"{x}\"`（3.6+）→ 用 % 或 .format()",
+      "海象运算符 `:=`（3.8+）",
+      "类型注解：`def f(x: int) -> str`、变量注解 `x: int = 1`（3.0+/3.6+）",
+      "仅关键字参数分隔符 `def f(a, *, b)`（3.0+）",
+      "`nonlocal`（3.0+）、`yield from`（3.3+）、`async def`/`await`（3.5+）、`raise X from Y`（3.0+）、`except*`（3.11+）",
+      "无参 `super()`（3.0+）：Python 2 必须写 `super(类名, self)`，否则运行时 TypeError",
+      "列表/字典字面量内的解包 `[*a, b]`、`{**d, \"k\": v}`（3.5+）"
+    ],
+    "comments_must_be_ascii_safe": "源文件若无 `-*- coding:utf-8 -*-` 声明，中文注释即报 SyntaxError: Non-ASCII character——模板首两行的编码声明必须原样保留（见 runtime 段证据）",
+    "date": "2026-09-22"
   },
   "python_stdlib": {
     "open_encoding_param": false,
@@ -51,6 +64,9 @@
   "unknowns": [
     "zrangebylex 是否可用（本题面未使用它；用的是 zrank + zrange 哨兵法）",
     "zadd 的 score 是否接受 int（题面示例用 int 3/0，实测待单独确认；当前证据表明接受）",
-    "题面「预期输出」是否为字节级精确（本次已用实测判定 u 前缀问题，但其他空白差异未逐一验证）"
+    "题面「预期输出」是否为字节级精确（本次已用实测判定 u 前缀问题，但其他空白差异未逐一验证）",
+    "多键阻塞弹出的可调用形态 conn.blpop(list(keys), timeout=10) 在本平台 redis-py 上的真机回显（2026-09-22 该题因评测按钮始终点不动，这份代码一次都没提交成功，缺平台侧证据）",
+    "python2_syntax 段各形态的 SyntaxError 原文（依据是 runtime 段实测的 Python 2 + 语言规范，尚未拿到本平台的报错回显逐条留证）",
+    "本关最大执行时间的实际值是否总是出现在结果面板文本里（1.5.0 的等待预算按该栏动态抬高，读不到时回落到 EVAL_TIMEOUT_MS）"
   ]
 }

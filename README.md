@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.4.4-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.5.0-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -118,7 +118,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
-| `npm test` | 运行单测（81 项：核心纯函数 + 挑页链 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
+| `npm test` | 运行单测（101 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + Python 2 语法守卫 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -138,7 +138,10 @@ Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-brows
 | `TASK_URL_PATTERN` | 题目页 URL 形状正则：自动挑页与 watch/lite 识别共用，换平台改这里 | `/tasks/[^/]+/\d+/[A-Za-z0-9]+` |
 | `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。题目页 URL 不是 `/tasks/` 形状的平台在此改 | 留空自动按 `TASK_URL_PATTERN` 识别 |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
-| `EVAL_TIMEOUT_MS` | 等待评测结果上限 | `25000` |
+| `EVAL_TIMEOUT_MS` | 等待评测结果预算**下限**（面板自报「本关最大执行时间」更长时按平台值抬高，见 CHANGELOG 1.5.0） | `25000` |
+| `EVAL_GRACE_MS` / `EVAL_BUDGET_CAP_MS` | 平台自报执行时间之外的收尾余量 / 等待预算上限 | `15000` / `300000` |
+| `EVAL_UNCHANGED_MIN_MS` | 重交同一份代码时，"面板与点击前一致"要等多久才允许采信（代码变了则绝不采信遗留面板） | `10000` |
+| `EVAL_CLICK_WAIT_MS` | 评测按钮存在但点不动时的重扫窗口（上一轮评测仍在跑时，窗口太短会白丢一次评测） | `150000` |
 | `DRY_RUN` | `1` = 只感知与生成，不写入不点击 | `0` |
 
 </details>
@@ -191,6 +194,7 @@ miaoda-code-completion-assistant/
 │   │   ├── loop.mjs                # 编排：单题流程 + watch / lite / course 常驻循环
 │   │   ├── perceive.mjs            # 感知：题干、编辑器、终端、评测结果、DOM 快照
 │   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定 + 平台事实注入
+│   │   ├── py2-guard.mjs           # 写入前本地守卫：检出 Python 2 下必定 SyntaxError 的 py3 语法
 │   │   ├── capability-schema.mjs   # 能力 JSON 加载前校验（fail-fast）
 │   │   ├── platform-facts-schema.mjs  # 平台事实档案结构校验
 │   │   ├── control.mjs             # 运行控制层：停止请求 + 运行态快照
@@ -203,10 +207,12 @@ miaoda-code-completion-assistant/
 │   │   ├── port-check.mjs          # 启动自检 CDP 调试端口
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
-│   ├── test/                       # 单测：10 个文件 / 81 项（node:test，零新增依赖）
+│   ├── test/                       # 单测：12 个文件 / 101 项（node:test，零新增依赖）
 │   │   ├── ai.test.mjs             # 核心纯函数（判定 / 拼接 / 渲染 / 解析）
 │   │   ├── pick-target.test.mjs    # 四级挑页链
-│   │   ├── click-fallback.test.mjs # 按钮点击有界重扫
+│   │   ├── click-fallback.test.mjs # 按钮点击有界重扫 + exists 语义
+│   │   ├── eval-freshness.test.mjs # 评测结果防陈旧 + 动态预算（假时钟）
+│   │   ├── py2-guard.test.mjs      # Python 2 语法守卫（含零误报对照样本）
 │   │   ├── slim-for-reflection.test.mjs
 │   │   ├── reload-draft-guard.test.mjs
 │   │   ├── capability-schema.test.mjs
@@ -217,7 +223,7 @@ miaoda-code-completion-assistant/
 │   ├── eslint.config.js            # ESLint flat config
 │   ├── .prettierrc                 # 格式化规则
 │   ├── docs/
-│   │   └── TROUBLESHOOTING.md      # 16 个真实踩坑与排查方法论
+│   │   └── TROUBLESHOOTING.md      # 18 个真实踩坑与排查方法论
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
 │   ├── public/
 │   │   └── index.html              # 网页工作台前端（单文件原生，无构建链）
@@ -267,7 +273,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 81 项单测必须全绿
+npm test          # 101 项单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 
@@ -311,7 +317,7 @@ npm run lint      # ESLint 零问题
 |---|---|
 | [`同学使用指南.md`](同学使用指南.md) | **傻瓜式教程**：从零装环境到自动做题，给第一次用的同学 |
 | [`agent/README.md`](agent/README.md) | 完整文档：全部配置项、三种工作模式详解、设计要点、平台兼容性 |
-| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 16 个真实踩坑（环境级 + 代码级）与排查方法论 |
+| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 18 个真实踩坑（环境级 + 代码级）与排查方法论 |
 | [`agent/CHANGELOG.md`](agent/CHANGELOG.md) | 变更日志 |
 | [`shared/capabilities/README.md`](shared/capabilities/README.md) | AI 能力配置说明 |
 | [`AGENTS.md`](AGENTS.md) | 面向 AI 开发代理的项目说明与硬约束 |

@@ -5,7 +5,7 @@
 > 分析日期：2026-09-11
 > 方法：先读代码做事实核查，再按四维度量化评分
 > **落地状态（2026-09-11）**：方案 C 已在本分支 `feat/2-c-web-service` 以**最小形态**实现（`web-server.mjs` + 单文件原生前端 + `start-web.bat`）。决策修正说明：本文第五节"只做 API、不做 UI"的否决建议被用户明确决策推翻——用户需要的正是网页访问形态；实现上以单文件原生前端控制成本（无 React、无构建链），仅绑 127.0.0.1，不引入"远程/多人"所需的浏览器池与账号隔离，故原分析中"双栈维护成本高"的顾虑已被该形态规避。文档其余部分保持为分析快照。2026-09-14 补充：方案 D（能力 JSON 校验）已自 `feat/3-d-capability-guard` 回灌至本分支落地（`capability-schema.mjs` + `caps-check`）；另有方案外增量——四级挑页链（真机驱动的 `browser.mjs` 挑页重构，不属本文五层分析范围），四个版本行为一致。
-> **落地状态（2026-09-20 补记）——与下文快照冲突时以本节为准**：① 新增 `control.mjs`（运行控制层，「停止做题」）及 `web-server.mjs` 的 `POST /api/stop`、`/api/config` 端点（1.4.0）；② 新增 `shared/platform-facts.json`（平台实测事实单一数据源，由 `ai.mjs` 统一注入全部能力 prompt）与 `platform-facts-schema.mjs` 结构校验，`caps-check` 一并覆盖（1.4.2 / 1.4.3）；③ 单测由 **22 项增至 81 项**；④ 因此下文 L5 表末行「**无 HTTP 服务、无协议出口、无 UI**」已**过期**——当前对外出口为 CLI + 本机 HTTP 工作台（本分支），MCP 出口见 `feat/1-ad-mcp-server`。
+> **落地状态（2026-09-20 补记）——与下文快照冲突时以本节为准**：① 新增 `control.mjs`（运行控制层，「停止做题」）及 `web-server.mjs` 的 `POST /api/stop`、`/api/config` 端点（1.4.0）；② 新增 `shared/platform-facts.json`（平台实测事实单一数据源，由 `ai.mjs` 统一注入全部能力 prompt）与 `platform-facts-schema.mjs` 结构校验，`caps-check` 一并覆盖（1.4.2 / 1.4.3）；③ 单测由 **22 项增至 81 项**（1.5.0 再增至 101 项）；④ 因此下文 L5 表末行「**无 HTTP 服务、无协议出口、无 UI**」已**过期**——当前对外出口为 CLI + 本机 HTTP 工作台（本分支），MCP 出口见 `feat/1-ad-mcp-server`。
 
 ---
 
@@ -118,7 +118,7 @@
 **思路**：保持单机 CLI，做四件小事：
 1. 把 `chat()` 抽成 provider 接口（`ai.mjs:37`），为将来换端点/SDK 留缝；
 2. 给 `shared/capabilities/*.json` 加 JSON Schema 校验（当前 `readCapability` 只做 `JSON.parse`，`ai.mjs:24`，配置写错要到运行时才炸）；
-3. 给 `detectVerdict` / `sanitizeShellSubmission` 等纯函数补单测（当时 22 项；现已 81 项）；
+3. 给 `detectVerdict` / `sanitizeShellSubmission` 等纯函数补单测（当时 22 项；1.5.0 现为 101 项）；
 4. 加结构化 trace（`logger.mjs` 已 2.9 KB，可扩展为 JSONL）。
 
 **作用面**：L1/L2/L4 部分，L3/L5 不动。
@@ -247,7 +247,7 @@ B 作为技术探讨的价值在于**反面案例**：可以完整论证"为什�
 **回归验证要求**（沿用项目既有纪律）：
 ```bash
 cd agent
-npm test          # 22 项单测必须全绿（现为 81 项）
+npm test          # 22 项单测必须全绿（1.5.0 现为 101 项）
 npm run lint      # ESLint 零问题
 npm run probe     # 确认识别逻辑未被破坏
 ```
@@ -265,4 +265,4 @@ npm run probe     # 确认识别逻辑未被破坏
 
 ---
 
-*分析基于仓库 v1.1.1 代码快照，引用行号对应该快照；当前分支 tip 已演进至 1.4.4，变化见文首「落地状态」补记。*
+*分析基于仓库 v1.1.1 代码快照，引用行号对应该快照；当前分支 tip 已演进至 1.5.0，变化见文首「落地状态」补记。*
