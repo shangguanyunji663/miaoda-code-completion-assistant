@@ -75,6 +75,7 @@ import {
   findRedundantPrints,
 } from './requirement-contract.mjs';
 import { rankCandidates } from './candidate-rank.mjs';
+import { describeOutputDiff } from './output-diff.mjs';
 
 const log = createLogger('loop');
 
@@ -661,6 +662,12 @@ async function solveOnceInner(page, probe) {
         if (detail) {
           lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
         }
+        // 与代码分支同源（1.6.4）：先算出实质差异再交给反思
+        const diffNote = describeOutputDiff(lastEval);
+        if (diffNote) {
+          log(`本地差异定位：${diffNote.split('\n')[1] ?? ''}`);
+          lastEval = `${lastEval}\n\n${diffNote}`;
+        }
         // 输入期报错优先呈现（键入/执行即报错的命令与回现行，键入时逐条检测）
         const inputErrors = formatInputErrors(r.termErrors);
         if (inputErrors) {
@@ -1032,6 +1039,14 @@ async function solveOnceInner(page, probe) {
       const detail = await collectTestSetDetails(page);
       if (detail) {
         lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
+      }
+      // 本地差异定位（1.6.4）：实质差异由程序逐行算出来（类型 + 字符位置 + 顺序假设
+      // 排除），不再把两坨几千字符的文本丢给模型自己找不同——真机见过它烧到 2.4 万字
+      // 思考仍没看出"部分行要升序、部分行要降序"这种一眼可判的矛盾。
+      const diffNote = describeOutputDiff(lastEval);
+      if (diffNote) {
+        log(`本地差异定位：${diffNote.split('\n')[1] ?? ''}`);
+        lastEval = `${lastEval}\n\n${diffNote}`;
       }
 
       // ---- 实际输出指纹（1.5.1）：本轮改动到底有没有影响可观测行为 ----

@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.6.3-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.6.4-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -118,7 +118,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
-| `npm test` | 运行单测（125 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
+| `npm test` | 运行单测（132 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -198,6 +198,7 @@ miaoda-code-completion-assistant/
 │   │   ├── py2-guard.mjs           # 写入前本地守卫：检出 Python 2 下必定 SyntaxError 的 py3 语法
 │   │   ├── requirement-contract.mjs # 题面契约：切条 + 对齐表 + 冗余 print 守卫（漏要求 / 幻觉引用 / 复制评测程序输出当场打回）
 │   │   ├── candidate-rank.mjs      # 多候选择优：四道闸门当评分器 + 多数派投票（CANDIDATES，默认关）
+│   │   ├── output-diff.mjs         # 输出差异定位器：逐行算出实质差异类型与顺序假设排除
 │   │   ├── capability-schema.mjs   # 能力 JSON 加载前校验（fail-fast）
 │   │   ├── platform-facts-schema.mjs  # 平台事实档案结构校验
 │   │   ├── control.mjs             # 运行控制层：停止请求 + 运行态快照
@@ -210,7 +211,7 @@ miaoda-code-completion-assistant/
 │   │   ├── port-check.mjs          # 启动自检 CDP 调试端口
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
-│   ├── test/                       # 单测：15 个文件 / 125 项（node:test，零新增依赖）
+│   ├── test/                       # 单测：16 个文件 / 132 项（node:test，零新增依赖）
 │   │   ├── ai.test.mjs             # 核心纯函数（判定 / 拼接 / 渲染 / 解析）
 │   │   ├── pick-target.test.mjs    # 四级挑页链
 │   │   ├── click-fallback.test.mjs # 按钮点击有界重扫 + exists 语义
@@ -277,7 +278,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 125 项单测必须全绿
+npm test          # 132 项单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 
