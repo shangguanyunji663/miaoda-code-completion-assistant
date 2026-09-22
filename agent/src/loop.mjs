@@ -1,4 +1,5 @@
-// EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop, slimForReflection, looksLikeOwnDraft
+// EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop, slimForReflection,
+//          looksLikeOwnDraft, outputFingerprint, pickEvalEvidence
 // 主编排：感知 → 意图判定 → 生成/作答 → 提交评测 → 读结果 → 失败反思 → 成功翻页。
 //
 // 单题流程（代码题 / 命令行题 / 混合题，按题干意图分流）：
@@ -10,6 +11,7 @@
 //     mixed:   generateCommands(仅数据准备) → 键入终端（输入期报错反思自愈，≤2 轮）→ 落入 code 分支
 // 选择题 / 填空题走 answerQuestion 分支，题型由 perceive.classifyTask 判定。
 
+import { createHash } from 'node:crypto';
 import { cfg } from './config.mjs';
 import { createLogger } from './logger.mjs';
 import { beginRun, endRun, checkStop, StopRequested } from './control.mjs';
@@ -81,6 +83,54 @@ const COMMAND_ALIASES = { mongosh: 'mongo' };
 
 /** 本地语法守卫最多打回几次（仍不过则放行提交——守卫宁漏不误阻断） */
 const PY_GUARD_MAX = 2;
+
+/** 实际输出连续相同到达多少次就停止死磕（1.5.1）：真机一轮评测 ≈ 120s，
+ *  MAX_RETRY=20 时同一方向的盲试可以烧掉 40 分钟 */
+const STUCK_LIMIT = 2;
+
+/** 从评测文本里挑出「可观测行为」那一段做指纹：优先测试集明细（预期/实际输出），
+ *  它不含面板上的耗时/进度噪音。无明细时退回全文。 */
+export function pickEvalEvidence(text) {
+  const s = String(text ?? '');
+  const i = s.indexOf('=== 测试集明细 ===');
+  return i >= 0 ? s.slice(i) : s;
+}
+
+/**
+ * 实际输出指纹（归一化空白后取 sha1 前 10 位；空文本 → 空串）。
+ *
+ * 为什么需要它（2026-09-22 真机，Redis 优先级队列题）：第 1~4 轮提交的代码字符数
+ * 711/779/932/934 各不相同，反思每轮都"改了"，但抓到的预期/实际输出明细恒为
+ * 738 字符一字未变——四个版本都是「逐队列 blpop」这同一个错误方向（每轮多花
+ * 3×10s 阻塞，必然同样超时）。当时 loop 没有任何机制能发现"改了等于没改"，
+ * 于是把 MAX_RETRY 的额度全花在同一个方向上反复盲试。
+ */
+export function outputFingerprint(text) {
+  const norm = pickEvalEvidence(text)
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter((l) => l)
+    .join('\n');
+  if (!norm) return '';
+  return createHash('sha1').update(norm).digest('hex').slice(0, 10);
+}
+
+/** 指纹相同时注入反思材料的本地比对提示（标明不是平台输出，防被当成报错引用） */
+function stuckNote(fp, lessons) {
+  return (
+    `\n\n=== 本地比对提示（非平台输出）===\n` +
+    `本轮「实际输出」与上一轮**逐字节相同**（指纹 ${fp}）。这说明上一轮的改动完全没有影响` +
+    `可观测行为——你在同一个错误方向上做等价微调。本轮要求：\n` +
+    `① 禁止再输出与历轮同方向的实现（历轮做法见「历史教训」）；必须换一个**本质不同**的方向；\n` +
+    `② 若某个环境事实（客户端方法签名、参数形态）在几轮之间来回矛盾，不要继续猜——` +
+    `在分析里显式写出"需要实测"以及要实测什么，并给出该事实两种取值下各自正确的写法；\n` +
+    `③ 优先回到题面「编程要求」逐条对照：题面要求的手法是不是根本没被实现？\n` +
+    (lessons?.length
+      ? `已试过的方向：\n${lessons.map((l, i) => `${i + 1}. ${l.slice(0, 120)}`).join('\n')}\n`
+      : '')
+  );
+}
 
 /**
  * 评测文本 → 判定。陈旧面板（本轮未观测到结果）单独短路：遗留文本里可能有
@@ -679,6 +729,9 @@ async function solveOnceInner(page, probe) {
   // 上一次**送进评测**的完整文本：本轮提交与它相同才允许采信"面板没变化"
   // （同错复现）；不同则遗留面板不作本轮结论（2026-09-22 事故，见 waitEvalResult）
   let lastEvaluatedCode = '';
+  // 实际输出指纹与"连续相同"计数（1.5.1，见 outputFingerprint 头注）
+  let lastOutputFp = '';
+  let sameOutputStreak = 0;
   // 代码反思教训链（与 cmdline 分支同构，2026-09-15）：每轮反思诊断沉淀，
   // 下一轮注入，防止"这轮改对了、下轮又退回"的横跳（zincrby 3 轮横跳即无记忆）
   const lessons = [];
@@ -784,6 +837,8 @@ async function solveOnceInner(page, probe) {
     lastEvaluatedCode = submitted;
     const stale = isStaleEvalText(lastEval);
     const v = verdictOf(lastEval);
+    let fp = '';
+    let sameOutput = false;
     log(`第 ${attempt} 次评测：${v.passed ? '通过' : '未通过'}（${v.reason}）`);
 
     if (!v.passed) {
@@ -797,6 +852,23 @@ async function solveOnceInner(page, probe) {
       const detail = await collectTestSetDetails(page);
       if (detail) {
         lastEval = `${lastEval || '（面板文本未捕获，以下为折叠块明细）'}\n\n=== 测试集明细 ===\n${detail}`;
+      }
+
+      // ---- 实际输出指纹（1.5.1）：本轮改动到底有没有影响可观测行为 ----
+      // 2026-09-22 真机：四轮代码各不相同、明细恒为同一段 738 字符，loop 却把每轮
+      // 都当成"新证据"继续在同一方向盲试（一轮评测 ≈120s，额度 20 轮＝40 分钟）。
+      const fingerprint = outputFingerprint(lastEval);
+      sameOutput = !!fingerprint && fingerprint === lastOutputFp;
+      fp = fingerprint;
+      sameOutputStreak = sameOutput ? sameOutputStreak + 1 : 0;
+      lastOutputFp = fingerprint;
+      if (sameOutput) {
+        log(
+          `实际输出与上一轮逐字节相同（指纹 ${fp}，已是连续第 ${sameOutputStreak + 1} 轮）` +
+            '——上一轮改动未影响可观测行为，反思材料已注入换方向要求',
+        );
+      } else if (fp) {
+        log(`实际输出指纹 ${fp}（与上一轮不同）`);
       }
 
       // 连续同类报错重载兜底（2026-09-15 方案，仅代码题）：同一 Python 异常
@@ -871,6 +943,30 @@ async function solveOnceInner(page, probe) {
 
     if (attempt === cfg.loop.maxRetry) break;
 
+    // 同一份实际输出连续多轮 = 在同一个错误方向上盲试。一轮评测 ≈120s，继续烧下去
+    // 只是把 MAX_RETRY 的额度耗尽在等价变体上（1.5.1，见 outputFingerprint 头注）。
+    if (sameOutputStreak >= STUCK_LIMIT) {
+      log(
+        `实际输出已连续 ${sameOutputStreak + 1} 轮逐字节相同——历轮改动均未影响可观测行为，` +
+          '停止本题盲试。若卡点是客户端方法签名一类的环境事实，须实测取证后再继续',
+      );
+      return {
+        ok: false,
+        kind: 'code',
+        reason: 'output-unchanged',
+        attempts: attempt,
+        evalText: lastEval,
+        code: submitted,
+      };
+    }
+
+    // 反思材料 = 平台反馈 + 本地清洗留痕 + 本地比对提示（指纹相同时才非空）
+    const evalMaterial = `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${
+      sanitizeNote
+        ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}`
+        : ''
+    }${sameOutput ? stuckNote(fp, lessons.slice(-6)) : ''}`;
+
     checkStop('代码反思');
     log(
       `正在调用 AI 代码反思（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
@@ -880,7 +976,7 @@ async function solveOnceInner(page, probe) {
       problem: slimForReflection(problem),
       // 反思看的是实际提交评测的代码（模板拼接后、经护栏清洗、写入验证的版本）
       previousCode: submitted,
-      evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
+      evalResult: evalMaterial,
       // 注入客户端实测事实：反思守则第 4 条按它选 heredoc 的客户端名
       terminalState: clientFact,
       // 教训链：此前各轮已确诊的原因（2026-09-15 新增强化，防横跳）
@@ -915,7 +1011,7 @@ async function solveOnceInner(page, probe) {
       const retry = await reflectAndFix({
         problem: slimForReflection(problem),
         previousCode: submitted,
-        evalResult: `${lastEval || '（未捕获到评测输出，请根据题目要求重新审视实现）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际提交的代码） ===\n${sanitizeNote}` : ''}`,
+        evalResult: evalMaterial,
         terminalState: clientFact,
         lessons: lessons.slice(-6),
       });
