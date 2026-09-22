@@ -2,6 +2,24 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.6.3] - 2026-09-22（分支 feat/2-c-web-service）
+
+**L2 多候选择优：把四道本地闸门从"打回循环"改造成"评分器"**（`CANDIDATES` 控制，**默认 1 = 关闭，现行为一字不变**）。串行"打回—重生成"是拿 120 秒评测换一次教训：反向索引关 5 轮 9 分钟、优先级队列关 4 轮全超时。而这四道判据本来就是确定性的——首轮并行出 K 份、互相比较，比串行烧评测便宜得多。
+
+### Added
+
+- **`src/candidate-rank.mjs`（新增，纯函数）**：`scoreCandidate()` 对每个"拼进模板后的提交文本"跑四道闸门并打分（100 起扣）——`py_syntax`/`empty_block` 各 −100（一票否决级）、`missing_item` −3、`bad_quote`/`redundant_print` 各 −2；`rankCandidates()` 按分数降序、**同分取多数派**、再同分保持生成顺序；`apiFingerprint()` 抽取客户端调用序列（`incr>hset>sadd…`）作为多数派比较键
+- **`loop.mjs` 首轮择优**：`CANDIDATES=K>1` 时并行发 K 次 `generateCode`（`Promise.all`，不碰页面故不抢浏览器互斥），逐个 `finalizeSubmission` 后择优，日志打印 `候选择优：#1=100  #2=98(redundant_print) → 选 #1`；反思轮仍单次（那时手里有平台反馈，多采样纯浪费）。选中的候选继续走原有闸门与打回路径，择优不是替代而是少错一次
+- **`systemic` 提前止损**：K 份候选**全都**带同一类硬缺陷时（`py_syntax` 或 `empty_block`）记一条明确日志——多采样解决不了，该转终端实测取证或人工判定，而不是把 `MAX_RETRY` 额度烧完。这是比输出指纹早 2~3 轮的"这题需要人"信号
+
+### Notes
+
+- **能力边界如实写进测试**：`hincrby` 把 string 计数器建成 hash（反向索引关的 WRONGTYPE 真凶）本地闸门**一条都抓不到**——那是 Redis 键类型问题，只有平台回显或事实档案能定。多采样对它的唯一价值是 2:1 多数派投票；测试用例就叫"同分取多数派：本地闸门分不清 incr 与 hincrby，只能靠 2:1 投票"
+- 成本：token ≈ ×K；墙钟≈单次（请求并发发出 + 首轮默认关思考，实测单次生成 3~5 秒）。上限收在 K≤5（`config.mjs` 里 clamp）。判定口径：K=3 只要多省一轮反思就回本
+- 验证：`npm test` **125/125**（新增 `test/candidate-rank.test.mjs` 6 项，15 个文件）、`caps-check`、`npx eslint src/`、`format:check` 全绿；`cfg.loop.candidates` 默认值实测为 1（关闭态）
+- **未验证边界**：择优与 systemic 均**未经真机验证**——需要拿一道题设 `CANDIDATES=3` 实跑，观察日志的候选打分是否与实际通过情况一致（尤其多数派有没有选到更差的形态）。默认关着，开关交给用户
+
+
 ## [1.6.2] - 2026-09-22（分支 feat/2-c-web-service）
 
 **把第三次于同一处的坑做成确定性守卫**：模型看到「预期输出」里有"当前全文编号 / 当前全文详情 / 当前索引词 / 索引词: keyword:…"就以为该由自己输出，复制进被测函数 → 逐行比对必然多行。反向索引关因此来回横跳：第 2 轮"补全三个 print"、第 5 轮"删掉所有 print"才通过——而这四组行是评测程序 `step1/read.py` 自己打印的（它的第 40 行就是那条 print，WRONGTYPE 的 traceback 直接坐实）。守则文字已写过两次仍拦不住，故按 AGENTS.md 新立的规矩：**能机器判定的不交给 prompt**。

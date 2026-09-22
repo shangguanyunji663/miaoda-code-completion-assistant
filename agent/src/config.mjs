@@ -133,6 +133,11 @@ export const cfg = {
   loop: {
     // 单题最大反思重试次数（用户指定 10；注意失败题最坏耗时与 token 消耗随重试线性放大）
     maxRetry: pickNum('MAX_RETRY', 10),
+    // 多候选择优（1.6.3）：首轮并行生成 K 份候选，用本地四道闸门（py2 语法 / 空
+    // Begin-End / 题面对齐 / 多余 print）择优再提交。默认 1 = 关闭，行为与旧版一致。
+    // K>1 时 token 成本≈×K；首轮默认关思考且请求并发发出，墙钟时间≈单次，真正的代价是
+    // token 与端点并发数，故上限收在 5。
+    candidates: Math.min(5, Math.max(1, pickNum('CANDIDATES', 1))),
     // 等待评测结果的最长时间（毫秒）。1.5.0 起这是**下限**：面板自报「本关最大执行
     // 时间」更长时按平台值抬高（见 evalGraceMs / evalBudgetCapMs）
     evalTimeoutMs: pickNum('EVAL_TIMEOUT_MS', 25000),

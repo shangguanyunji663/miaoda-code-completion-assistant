@@ -74,6 +74,7 @@ import {
   formatAlignmentProblems,
   findRedundantPrints,
 } from './requirement-contract.mjs';
+import { rankCandidates } from './candidate-rank.mjs';
 
 const log = createLogger('loop');
 
@@ -781,21 +782,73 @@ async function solveOnceInner(page, probe) {
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     checkStop(`代码第 ${attempt}/${cfg.loop.maxRetry} 轮`);
     if (code === null) {
-      // 同命令行分支：预告静默期 + 统计耗时，消除"切完 tab 就没动静"的观感
-      log(
-        `正在调用 AI 生成代码（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
-      );
+      const K = attempt === 1 ? cfg.loop.candidates : 1;
       const t0 = Date.now();
-      const gen = await generateCode({
-        problem,
-        codeTemplate: codeProbe.code ?? '',
-        // 注入客户端实测事实（mixed 题：本机有 mongo 没 mongosh 等），
-        // 支撑生成守则第 7 条 heredoc 形态选对客户端
-        extra: clientFact ? `\n${clientFact}` : '',
-        requirementContract: contractBlock,
-      });
-      code = gen.code;
-      pendingAlignment = gen.alignment;
+      if (K > 1) {
+        // ---- 多候选择优（1.6.3，CANDIDATES=K 时启用；默认 K=1 走下面的单发路径）----
+        // 闸门本来就是确定性的，串行"打回—重生成"是拿 120 秒评测换一次教训；
+        // 首轮并行出 K 份、互相比较择优，墙钟几乎不变（请求并发 + 首轮默认关思考）。
+        log(`并行生成 ${K} 份候选并用本地闸门择优（token ×${K}，耗时≈单次）…`);
+        const made = await Promise.all(
+          Array.from({ length: K }, () =>
+            generateCode({
+              problem,
+              codeTemplate: codeProbe.code ?? '',
+              extra: clientFact ? `\n${clientFact}` : '',
+              requirementContract: contractBlock,
+            }),
+          ),
+        );
+        const cands = made.map((g) => {
+          const f = finalizeSubmission(codeProbe.code, g.code);
+          return {
+            code: g.code,
+            alignment: g.alignment,
+            submitted: f.submitted,
+            emptyBlocks: f.emptyBlocks,
+          };
+        });
+        const { pick, ranked, systemic } = rankCandidates(cands, { contract, problem });
+        log(
+          `候选择优：${ranked
+            .slice()
+            .sort((a, b) => a.index - b.index)
+            .map(
+              (r) =>
+                `#${r.index + 1}=${r.score}${
+                  r.defects.length
+                    ? `(${[...new Set(r.defects.map((d) => d.kind))].join(',')})`
+                    : ''
+                }`,
+            )
+            .join('  ')} → 选 #${pick + 1}`,
+        );
+        if (systemic.length) {
+          // K 份全都带同一硬缺陷 = 模型系统性不会，多采样救不了：提前说明，
+          // 后面再连续失败就该实测取证或人工判定，而不是把 20 轮额度烧完
+          log(
+            `⚠ ${K} 份候选都带同一硬缺陷（${systemic.join(',')}）——多采样解决不了，` +
+              '后续若仍不通过请实测取证（终端跑一遍）或人工判定',
+          );
+        }
+        code = cands[pick].code;
+        pendingAlignment = cands[pick].alignment;
+      } else {
+        // 同命令行分支：预告静默期 + 统计耗时，消除"切完 tab 就没动静"的观感
+        log(
+          `正在调用 AI 生成代码（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
+        );
+        const gen = await generateCode({
+          problem,
+          codeTemplate: codeProbe.code ?? '',
+          // 注入客户端实测事实（mixed 题：本机有 mongo 没 mongosh 等），
+          // 支撑生成守则第 7 条 heredoc 形态选对客户端
+          extra: clientFact ? `\n${clientFact}` : '',
+          requirementContract: contractBlock,
+        });
+        code = gen.code;
+        pendingAlignment = gen.alignment;
+      }
       log(
         `AI 生成代码完成（第 ${attempt} 次，${code.length} 字符，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`,
       );
