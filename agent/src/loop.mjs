@@ -93,6 +93,8 @@ const PY_GUARD_MAX = 2;
 
 /** 题面对齐校验最多打回几次（同上：打回是秒级，评测是 120 秒级） */
 const CONTRACT_MAX = 2;
+/** 契约层整题累计打回上限（含跨轮），防止每轮都白烧一次 AI 调用 */
+const CONTRACT_TOTAL_MAX = 3;
 
 /** 实际输出连续相同到达多少次就停止死磕（1.5.1）：真机一轮评测 ≈ 120s，
  *  MAX_RETRY=20 时同一方向的盲试可以烧掉 40 分钟 */
@@ -770,6 +772,10 @@ async function solveOnceInner(page, probe) {
     log(`题面契约：从「${contract.source}」切出 ${contract.items.length} 条要求，要求逐条对齐`);
   // 模型输出的对齐表（围栏块之前的文字），生成/反思/守卫修正三条路径都会更新它
   let pendingAlignment = '';
+  // 打回预算：整题累计上限 + "同一类问题再来一次就说明判据不可靠"的止损
+  //（1.6.0 真机教训：切条漏段导致每轮都判 bad_quote，5 轮白烧 8 次打回）
+  let contractRepairs = 0;
+  let contractKindsPrev = '';
 
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     checkStop(`代码第 ${attempt}/${cfg.loop.maxRetry} 轮`);
@@ -850,15 +856,23 @@ async function solveOnceInner(page, probe) {
     // 拦的是"漏掉某条要求"和"凭记忆改写/编造题面"。行号只作提示（模板拼接会让行号
     // 整体偏移，当硬判据会误伤）。打回上限 CONTRACT_MAX 次后放行提交，不阻断主流程。
     for (let c = 0; c < CONTRACT_MAX; c++) {
-      if (!contract.present) break;
+      if (!contract.present || contractRepairs >= CONTRACT_TOTAL_MAX) break;
       const rows = parseAlignmentTable(pendingAlignment);
-      const chkA = validateAlignment({ contract, rows, code: submitted });
+      // 摘录的真值传**原始题干**（不是切条清单），否则切条不完美时正确抄写会被判成幻觉
+      const chkA = validateAlignment({ contract, rows, code: submitted, problemText: problem });
+      // Begin/End 空区域 = 评测必报 IndentationError 的确定缺陷，与对齐问题同一门槛打回
+      const empties = emptyMarkerBlocks(submitted).map((no) => ({
+        no,
+        kind: 'empty_block',
+        message: `第 ${no} 处 Begin/End 区域仍是空的（评测必报 IndentationError），必须补全`,
+      }));
+      const allProblems = [...(chkA.problems ?? []), ...empties];
       if (chkA.advisories?.length && c === 0) {
         log(
           `题面对齐提示（不影响提交）：${chkA.advisories.map((a) => `第${a.no}条 ${a.kind}`).join('、')}`,
         );
       }
-      if (chkA.ok) {
+      if (!allProblems.length) {
         if (c > 0) log(`题面对齐校验通过（第 ${c} 次打回后补齐）`);
         break;
       }
@@ -866,18 +880,30 @@ async function solveOnceInner(page, probe) {
         log(`题面对齐表缺失（清单有 ${contract.items.length} 条要求，模型一条都没答）`);
       } else {
         log(
-          `题面对齐校验未过：${chkA.problems.length} 处（未提交评测）：` +
-            chkA.problems
+          `题面对齐校验未过：${allProblems.length} 处（未提交评测）：` +
+            allProblems
               .slice(0, 3)
               .map((p) => `第${p.no}条 ${p.kind}`)
               .join('、'),
         );
       }
+      // 止损：同一类问题打回一次还是同一类问题，说明是我们判错而非模型没照做——
+      // 停止打回，交给评测反馈（旧版每轮重复打回同一处，5 轮白烧 8 次 AI 调用）
+      const kinds = allProblems
+        .map((p) => p.kind)
+        .sort()
+        .join(',');
+      if (kinds && kinds === contractKindsPrev) {
+        log(`题面对齐打回后仍是同一类问题（${kinds}）——判定依据不可靠，停止打回，按现状提交`);
+        break;
+      }
+      contractKindsPrev = kinds;
+      contractRepairs++;
       checkStop('题面对齐修正');
       const repaired = await reflectAndFix({
         problem: slimForReflection(problem),
         previousCode: submitted,
-        evalResult: contractEvalText(chkA.problems, chkA.advisories),
+        evalResult: contractEvalText(allProblems, chkA.advisories),
         terminalState: clientFact,
         lessons: lessons.slice(-6),
         requirementContract: contractBlock,

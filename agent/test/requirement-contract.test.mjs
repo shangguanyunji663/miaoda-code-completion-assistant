@@ -147,3 +147,50 @@ test('渲染出的清单要求逐编号作答，且带预期输出摘录', () =>
   assert.match(block, /7\. /m);
   assert.match(block, /【题面预期输出/);
 });
+
+// ---- 1.6.1：修 1.6.0 真机误伤（5 轮白烧 8 次打回）的两条回归 ----
+
+const TWO_HEADERS = `任务描述
+本关任务：编写一个将文本标记化并创建反向索引的程序。
+任务要求
+请实现 tokenize 与 index_document 两个函数。
+相关知识
+incr：将 key 中储存的数字值增一。
+编程要求
+在Begin-End区域编写 tokenize(content) 函数，实现文本标记化的功能，具体参数与要求如下：
+文本标记的实现：使用正则表达式提取全小写化后的文本中长度 >= 2 的英文单词，并将这些标记词依次记录到标记词集合中；
+返回标记词的实现：返回（return）标记词集合。
+测试说明
+测试输入：Design Patterns
+预期输出：
+该全文的索引为：['design']`;
+
+test('一道题里同时有「任务要求」和「编程要求」时，两段的条目都要收到（旧版只取第一段 → 只切出 1 条）', () => {
+  const c = extractRequirementContract(TWO_HEADERS);
+  assert.equal(c.source, '任务要求+编程要求');
+  assert.ok(c.items.length >= 4, `条目数应覆盖两段，实际 ${c.items.length}`);
+  const all = c.items.join('\n');
+  assert.ok(all.includes('请实现 tokenize 与 index_document 两个函数'), '任务要求段内容丢失');
+  assert.ok(all.includes('长度 >= 2 的英文单词'), '编程要求段内容丢失');
+});
+
+test('摘录只要真是题面原文就该放过（判据真值是题干全文，不是切条清单）', () => {
+  // 1.6.0 事故复现：切条只切到 1 条，模型从「编程要求」原样抄写却被判 bad_quote，
+  // 每轮打回、每轮同样失败
+  const c = extractRequirementContract(TWO_HEADERS);
+  const quoted = '使用正则表达式提取全小写化后的文本中长度 >= 2 的英文单词';
+  const rows = parseAlignmentTable(`1 | 请实现 tokenize 与 index_document 两个函数 | 5 | 入口
+2 | ${quoted} | 8 | 正则提取
+3 | 返回（return）标记词集合 | 9 | 返回`);
+  const v = validateAlignment({
+    contract: c,
+    rows,
+    code: 'a\n'.repeat(12),
+    problemText: TWO_HEADERS,
+  });
+  assert.deepEqual(
+    v.problems.filter((p) => p.kind === 'bad_quote'),
+    [],
+    '题面里确实有的原文不得判成幻觉',
+  );
+});

@@ -83,17 +83,33 @@ function splitItems(body) {
 
 /**
  * 从题干抽取要求清单 + 预期输出摘录。
+ *
+ * 1.6.1 修正（真机日志暴露）：要求类标题在一道题里**可能同时出现多个**（本平台
+ * 「任务要求」+「编程要求」并存），旧版取第一个命中段，结果只切出 1 条，模型从
+ * 「编程要求」里原样抄的摘录反倒不在"真值"里，被判 bad_quote 反复打回（5 轮 8 次
+ * 白烧）。现在：合并**所有**要求类段（按出现顺序、去重），每段截到下一个任意标题为止。
  * @returns {{present: boolean, items: string[], expectedOutput: string, source: string}}
  */
 export function extractRequirementContract(problem) {
   const text = String(problem ?? '');
   try {
     const sections = findSections(text);
-    const req = sections.find((s) => REQUIRE_TITLES.includes(s.title));
-    if (!req) return { present: false, items: [], expectedOutput: '', source: '' };
-    const next = sections.find((s) => s.index > req.index && s.title !== req.title);
-    const body = text.slice(req.end, next ? next.index : undefined);
-    const items = splitItems(body);
+    const reqSections = sections.filter((s) => REQUIRE_TITLES.includes(s.title));
+    if (!reqSections.length) {
+      return { present: false, items: [], expectedOutput: '', source: '' };
+    }
+    const items = [];
+    const seenItem = new Set();
+    for (const sec of reqSections) {
+      const next = sections.find((s) => s.index >= sec.end);
+      for (const item of splitItems(text.slice(sec.end, next ? next.index : undefined))) {
+        const key = canon(item);
+        if (seenItem.has(key)) continue;
+        seenItem.add(key);
+        items.push(item);
+      }
+      if (items.length >= MAX_ITEMS) break;
+    }
     const test = sections.find((s) => s.title === '测试说明');
     let expectedOutput = '';
     if (test) {
@@ -103,9 +119,9 @@ export function extractRequirementContract(problem) {
     }
     return {
       present: items.length > 0,
-      items,
+      items: items.slice(0, MAX_ITEMS),
       expectedOutput,
-      source: req.title,
+      source: reqSections.map((s) => s.title).join('+'),
     };
   } catch (e) {
     // fail-open：抽取器自身异常绝不能阻断作答
@@ -173,13 +189,18 @@ function parseLineNos(spec) {
  * 代码"的行号，而落进编辑器还要过模板拼接，行号会整体偏移，拿它当硬判据会误伤。
  * @returns {{ok: boolean, skipped?: string, problems: Array, advisories: Array}}
  */
-export function validateAlignment({ contract, rows, code }) {
+export function validateAlignment({ contract, rows, code, problemText = '' }) {
   if (!contract?.present) return { ok: true, skipped: 'no-contract', problems: [], advisories: [] };
   const problems = [];
   const advisories = [];
   try {
+    // 摘录的真值是**题干全文**（模型抄题面任何一句都算数）；切条清单只用来查覆盖度。
+    // 旧版只拿清单当唯一真值，1.6.0 真机上因切条漏段把正确抄写判成幻觉，每轮 bad_quote
+    // 反复打回（5 轮白烧 8 次）——判据用错真值比漏判更贵。
     const hay = canon(
-      `${contract.items.join('\n')}\n${contract.expectedOutput}\n${code ?? ''}`.slice(0, 200000),
+      [problemText, contract.items.join('\n'), contract.expectedOutput, code ?? '']
+        .join('\n')
+        .slice(0, 400000),
     );
     const codeLines = String(code ?? '').split('\n').length;
     const seen = new Set();

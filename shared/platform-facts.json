@@ -28,7 +28,11 @@
     "blpop_signature": "题面「相关知识」里的 Python 片段是 **Redis 命令语义说明，不是 redis-py 可调用签名**：示例 conn.blpop('blist', 'alist', 5) 表达的是「BLPOP key [key...] timeout」（变长键 + 末尾一个数值超时）。而 2.10.6 的签名是 blpop(self, keys, timeout=0)、varargs=None——只接受**一个** keys 实参，所以照抄必然 TypeError，`blpop(*keys, timeout)` 同样不行；多键阻塞弹出的正确写法是把键集合成一个列表传入：conn.blpop(list(keys), timeout=10)（按分值排序后一次性交给 blpop，由 Redis 按传入顺序找第一个非空列表）",
     "blpop_signature_evidence": "容器内实测（2026-09-22，root@coder 终端）：python -c \"import redis,inspect; print redis.__version__; print inspect.getargspec(redis.Redis.blpop)\" → 2.10.6 / ArgSpec(args=['self', 'keys', 'timeout'], varargs=None, keywords=None, defaults=(0,))；题面原文（Redis 优先级队列关「相关知识」）另写明\"给定多个列表时，按列表的先后顺序依次检查\"",
     "version": "2.10.6",
-    "version_evidence": "容器内实测 python -c \"import redis; print redis.__version__\" → 2.10.6（2026-09-22）"
+    "version_evidence": "容器内实测 python -c \"import redis; print redis.__version__\" → 2.10.6（2026-09-22）",
+    "counters_are_strings": "题面说「对计数器 X 递增 1，并取递增后的值」时，X 是 **string 键**：只能用 conn.incr(\"X\")（incr 的返回值就是递增后的整数，不需要再读一次）。不要用 hincrby —— 它会把 X 建成 hash，而评测程序按 string 读它（conn.get），当场 WRONGTYPE 中断整轮评测",
+    "counters_are_strings_evidence": "2026-09-22 真机（反向索引关）：index_document 里写 conn.hincrby(\"content:id\", \"num\", 1)，评测回显 Traceback (most recent call last): File \"step1/read.py\", line 40, in <module> print \"当前全文编号: %s\"%(conn.get('content:id')) … redis.exceptions.ResponseError: WRONGTYPE Operation against a key holding the wrong kind of value；题面「相关知识」另给出 conn.incr(\"testcount\") → 执行后 testcount '1'",
+    "harness_prints_are_not_ours": "同关实测：评测程序 step1/read.py 自己打印「当前全文编号 / 当前全文详情 / 当前索引词 / 索引词: keyword:…」全部四组行（第 40 行即其中一条 print）。被测函数里再打一遍 → 实际输出里这些行按调用次数成倍出现，逐行比对必然不匹配。「编程要求」里没有打印要求时，一个字都不要输出",
+    "harness_prints_are_not_ours_evidence": "2026-09-22 真机（反向索引关）：index_document 内自带 4 行 print，实际输出里「索引词: keyword:…」整段重复出现 3 次（每题面输入行调用一次），而 step1/read.py 自己那份因 WRONGTYPE 未打出"
   },
   "python2_syntax": {
     "note": "以下形态在平台运行时（Python 2，见 runtime 段）会**直接 SyntaxError 使整轮评测失败**——不是风格问题，是能否编译的问题。由 runtime 段的实测结论（平台为 Python 2）加语言规范推导，agent 侧另有提交前的本地静态守卫（agent/src/py2-guard.mjs）在写入前拦这些形态",
