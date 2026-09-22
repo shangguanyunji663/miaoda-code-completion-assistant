@@ -304,14 +304,24 @@ export async function chat(messages, opts = {}) {
 
 /**
  * 代码补全：复用 code_completion_generator_1 的 prompt 与参数
- * @returns {Promise<string>} 完整可提交代码
+ * @param {{problem: string, codeTemplate: string, extra?: string, requirementContract?: string}} args
+ *   requirementContract（1.6.0）由 `requirement-contract.mjs` 从题干切分后渲染；传空串时
+ *   prompt 里的「题面对齐表」要求自动落空（那条指令的前提就是"清单非空"）
+ * @returns {Promise<{code: string, alignment: string}>} code = 第一个围栏块；
+ *   alignment = 围栏块之前的全部文字——对齐表就在这里，交给 validateAlignment 机器校验
  */
-export async function generateCode({ problem, codeTemplate, extra = '' }) {
+export async function generateCode({
+  problem,
+  codeTemplate,
+  extra = '',
+  requirementContract = '',
+}) {
   const cap = readCapability('code_completion_generator_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
     problem_description: problem,
     code_template: codeTemplate,
     additional_requirements: extra,
+    requirement_contract: requirementContract,
   });
   const { content } = await chat([{ role: 'user', content: prompt }], {
     temperature: cap.formValue?.modelParams?.temperature,
@@ -320,7 +330,12 @@ export async function generateCode({ problem, codeTemplate, extra = '' }) {
     // 失败后的反思轮（reflectAndFix）才动用 high 思考档一次修对
     enableThinking: cfg.ai.firstPassThinking,
   });
-  return extractCodeFromMarkdown(content);
+  const raw = String(content ?? '');
+  const fence = raw.indexOf('```');
+  return {
+    code: extractCodeFromMarkdown(raw),
+    alignment: fence >= 0 ? raw.slice(0, fence) : raw,
+  };
 }
 
 /**
@@ -405,6 +420,7 @@ export async function reflectAndFix({
   evalResult,
   terminalState = '',
   lessons = [],
+  requirementContract = '',
 }) {
   const cap = readCapability('code_reflection_fixer_1');
   const prompt = renderTemplate(cap.formValue.prompt, {
@@ -412,6 +428,7 @@ export async function reflectAndFix({
     previous_code: previousCode,
     evaluation_result: evalResult,
     terminal_state: terminalState,
+    requirement_contract: requirementContract,
     // 教训链（与 reflectCommands 的 lessons 同构）：各轮已确诊的原因注入本
     // 轮 prompt，防"这轮改对了、下轮又退回"的摇摆（2026-09-15：zincrby 参数
     // 顺序 3 轮横跳就是反思无记忆导致的）

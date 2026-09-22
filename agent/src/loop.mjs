@@ -66,6 +66,13 @@ import {
   reflectCommands,
 } from './ai.mjs';
 import { checkPython2Syntax, formatPython2Problems } from './py2-guard.mjs';
+import {
+  extractRequirementContract,
+  renderContractBlock,
+  parseAlignmentTable,
+  validateAlignment,
+  formatAlignmentProblems,
+} from './requirement-contract.mjs';
 
 const log = createLogger('loop');
 
@@ -83,6 +90,9 @@ const COMMAND_ALIASES = { mongosh: 'mongo' };
 
 /** 本地语法守卫最多打回几次（仍不过则放行提交——守卫宁漏不误阻断） */
 const PY_GUARD_MAX = 2;
+
+/** 题面对齐校验最多打回几次（同上：打回是秒级，评测是 120 秒级） */
+const CONTRACT_MAX = 2;
 
 /** 实际输出连续相同到达多少次就停止死磕（1.5.1）：真机一轮评测 ≈ 120s，
  *  MAX_RETRY=20 时同一方向的盲试可以烧掉 40 分钟 */
@@ -204,6 +214,21 @@ function pyGuardEvalText(problems) {
     `${formatPython2Problems(problems)}\n` +
     '请只修正上述语法形态（保持函数签名、Begin/End 标记与其余代码原样不变），' +
     '不要顺手改逻辑或改输出格式，输出完整代码。'
+  );
+}
+
+/** 对齐表不合格的结论渲染成打回材料：只补条目与抄原文，同样禁止顺手改逻辑 */
+function contractEvalText(problems, advisories) {
+  return (
+    '=== 本地题面对齐校验（本轮未提交评测）===\n' +
+    '你上一版没有按要求逐条对齐题面「编程要求」，因此被本地拦下：\n' +
+    `${formatAlignmentProblems(problems)}\n` +
+    (advisories?.length
+      ? `（另有提示，不影响提交，仅告你自查：${advisories.map((a) => `第${a.no}条 ${a.kind}`).join('、')}）\n`
+      : '') +
+    '本轮要求：① 先按编号补全「题面对齐表」，摘录必须从题面要求清单里**原样抄写**；' +
+    '② 对确实还没实现的条目，把实现补上（题面怎么写就怎么写，不要顺手改其它已通过的代码）；' +
+    '③ 输出完整代码。'
   );
 }
 
@@ -735,6 +760,16 @@ async function solveOnceInner(page, probe) {
   // 代码反思教训链（与 cmdline 分支同构，2026-09-15）：每轮反思诊断沉淀，
   // 下一轮注入，防止"这轮改对了、下轮又退回"的横跳（zincrby 3 轮横跳即无记忆）
   const lessons = [];
+  // ---- 题面契约（1.6.0）：从**当次题干**确定性切出「编程要求」条目清单 ----
+  // 目的不是"再提醒模型一次"，而是让它逐条抄原文 + 给落点，再由程序校验：
+  // 漏条目、改写/编造摘录当场打回（成本几秒，不是一次 120 秒评测）。
+  // 题干没有「编程要求」这类标题时 present=false，整层自动不启用（跨平台 fail-open）。
+  const contract = extractRequirementContract(problem);
+  const contractBlock = renderContractBlock(contract);
+  if (contract.present)
+    log(`题面契约：从「${contract.source}」切出 ${contract.items.length} 条要求，要求逐条对齐`);
+  // 模型输出的对齐表（围栏块之前的文字），生成/反思/守卫修正三条路径都会更新它
+  let pendingAlignment = '';
 
   for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
     checkStop(`代码第 ${attempt}/${cfg.loop.maxRetry} 轮`);
@@ -744,13 +779,16 @@ async function solveOnceInner(page, probe) {
         `正在调用 AI 生成代码（第 ${attempt} 次）…${cfg.ai.thinkingCapMs > 0 ? `思考超 ${Math.round(cfg.ai.thinkingCapMs / 1000)}s 未出正文将自动截断重试` : '推理模型可能需要 1~3 分钟'}`,
       );
       const t0 = Date.now();
-      code = await generateCode({
+      const gen = await generateCode({
         problem,
         codeTemplate: codeProbe.code ?? '',
         // 注入客户端实测事实（mixed 题：本机有 mongo 没 mongosh 等），
         // 支撑生成守则第 7 条 heredoc 形态选对客户端
         extra: clientFact ? `\n${clientFact}` : '',
+        requirementContract: contractBlock,
       });
+      code = gen.code;
+      pendingAlignment = gen.alignment;
       log(
         `AI 生成代码完成（第 ${attempt} 次，${code.length} 字符，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`,
       );
@@ -789,12 +827,14 @@ async function solveOnceInner(page, probe) {
         evalResult: pyGuardEvalText(chk.problems),
         terminalState: clientFact,
         lessons: lessons.slice(-6),
+        requirementContract: contractBlock,
       });
       if (!repaired.code || isFragmentCode(repaired.code)) {
         log('守卫修正产物残缺/为空，按现状提交（交由评测反馈兜底）');
         break;
       }
       code = repaired.code;
+      pendingAlignment = repaired.analysis ?? '';
       const again = finalizeSubmission(codeProbe.code, code);
       submitted = again.submitted;
       sanitizeNote = again.sanitizeNote;
@@ -804,6 +844,53 @@ async function solveOnceInner(page, probe) {
       log(
         `⚠ 守卫修正 ${PY_GUARD_MAX} 次后仍有 ${finalChk.problems.length} 处 Python 3 语法，按现状提交`,
       );
+    }
+
+    // ---- 写入前题面对齐校验（1.6.0）----
+    // 拦的是"漏掉某条要求"和"凭记忆改写/编造题面"。行号只作提示（模板拼接会让行号
+    // 整体偏移，当硬判据会误伤）。打回上限 CONTRACT_MAX 次后放行提交，不阻断主流程。
+    for (let c = 0; c < CONTRACT_MAX; c++) {
+      if (!contract.present) break;
+      const rows = parseAlignmentTable(pendingAlignment);
+      const chkA = validateAlignment({ contract, rows, code: submitted });
+      if (chkA.advisories?.length && c === 0) {
+        log(
+          `题面对齐提示（不影响提交）：${chkA.advisories.map((a) => `第${a.no}条 ${a.kind}`).join('、')}`,
+        );
+      }
+      if (chkA.ok) {
+        if (c > 0) log(`题面对齐校验通过（第 ${c} 次打回后补齐）`);
+        break;
+      }
+      if (!rows.length) {
+        log(`题面对齐表缺失（清单有 ${contract.items.length} 条要求，模型一条都没答）`);
+      } else {
+        log(
+          `题面对齐校验未过：${chkA.problems.length} 处（未提交评测）：` +
+            chkA.problems
+              .slice(0, 3)
+              .map((p) => `第${p.no}条 ${p.kind}`)
+              .join('、'),
+        );
+      }
+      checkStop('题面对齐修正');
+      const repaired = await reflectAndFix({
+        problem: slimForReflection(problem),
+        previousCode: submitted,
+        evalResult: contractEvalText(chkA.problems, chkA.advisories),
+        terminalState: clientFact,
+        lessons: lessons.slice(-6),
+        requirementContract: contractBlock,
+      });
+      if (!repaired.code || isFragmentCode(repaired.code)) {
+        log('对齐修正产物残缺/为空，按现状提交（交由评测反馈兜底）');
+        break;
+      }
+      code = repaired.code;
+      pendingAlignment = repaired.analysis ?? '';
+      const again = finalizeSubmission(codeProbe.code, code);
+      submitted = again.submitted;
+      sanitizeNote = again.sanitizeNote;
     }
 
     checkStop('写入编辑器');
@@ -981,7 +1068,10 @@ async function solveOnceInner(page, probe) {
       terminalState: clientFact,
       // 教训链：此前各轮已确诊的原因（2026-09-15 新增强化，防横跳）
       lessons: lessons.slice(-6),
+      requirementContract: contractBlock,
     });
+    // 对齐表在围栏块之前，反思产物的 analysis 段里就有它（1.6.0 契约校验的输入）
+    pendingAlignment = fixed.analysis ?? '';
     log(`AI 代码反思完成（第 ${attempt} 次，耗时 ${((Date.now() - rt0) / 1000).toFixed(1)}s）`);
     if (stale) {
       // 本轮没有平台证据：AI 的"诊断"必然是推测（2026-09-22 事故里它据此编出了
@@ -1014,9 +1104,11 @@ async function solveOnceInner(page, probe) {
         evalResult: evalMaterial,
         terminalState: clientFact,
         lessons: lessons.slice(-6),
+        requirementContract: contractBlock,
       });
       if (retry.code && !isFragmentCode(retry.code)) {
         fixed = retry;
+        pendingAlignment = retry.analysis ?? '';
         if (retry.analysis) log(`重试反思分析：${String(retry.analysis).replace(/\s+/g, ' ')}`);
         log(`重试反思完成（${retry.code.length} 字符），提交评测`);
       } else {
@@ -1025,6 +1117,8 @@ async function solveOnceInner(page, probe) {
         // 退回上一版完整代码，让下一轮反思仍从完整代码出发。
         log('重试仍残缺——丢弃残缺产物，退回上一版完整代码提交（以评测反馈兜底）');
         fixed.code = submitted;
+        // 退回的是"拼好已提交过的那份"，它没有对应的对齐表：清空，让契约层按缺失处理
+        pendingAlignment = '';
       }
     }
     code = fixed.code;
