@@ -75,11 +75,17 @@ function splitItems(body) {
       .map((s) => s.trim())
       .filter(Boolean);
   }
-  return items
-    .map((s) => s.replace(/\s+/g, ' ').trim())
-    .filter((s) => s.length >= 6)
-    .slice(0, MAX_ITEMS)
-    .map((s) => (s.length > MAX_ITEM_CHARS ? `${s.slice(0, MAX_ITEM_CHARS)}…` : s));
+  return (
+    items
+      .map((s) => s.replace(/\s+/g, ' ').trim())
+      .filter((s) => s.length >= 6)
+      // 题干提取常把页面导航残渣带进来（真机：「参考答案 记录 评论」被当成一条要求，
+      // 模型只能为一个不存在的要求编造落点）。这类行既无中文标点也无技术记号，剔除；
+      // 足够长的行一律保留（宁可漏删不误删真要求）。
+      .filter((s) => s.length >= 24 || /[。；:：，,()（）[\]{}<>=_.\-+/"'`]/.test(s))
+      .slice(0, MAX_ITEMS)
+      .map((s) => (s.length > MAX_ITEM_CHARS ? `${s.slice(0, MAX_ITEM_CHARS)}…` : s))
+  );
 }
 
 /**

@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-const { splitExpectedActual, diffOutputs, describeOutputDiff } =
+const { splitExpectedActual, diffOutputs, describeOutputDiff, diffSkipReason } =
   await import('../src/output-diff.mjs');
 
 const EXPECTED = `—— 预期输出 ——
@@ -89,5 +89,38 @@ test('注入材料：完全一致时静默（不打扰反思），有差异时�
   const note = describeOutputDiff(`${EXPECTED}\n${ACTUAL}`);
   assert.match(note, /=== 本地差异定位（程序逐行比对所得，非平台输出）===/);
   assert.match(note, /\[ORDER_ONLY\]/);
-  assert.match(note, /set\(\) 再 list\(\) 转换/);
+  assert.match(note, /set\(\) 再 list\(\)/);
+});
+
+// ---- 1.6.5：微博用户/动态关的真机形态（字典键顺序）+ 可诊断性 ----
+
+const USER_LINE_EXP =
+  "创建的用户信息为: {'login_name': 'testuser', 'posts': '0', 'real_name': 'Test User', 'followers': '0', 'following': '0', 'id': '1'}";
+const USER_LINE_ACT =
+  "创建的用户信息为: {'posts': '0', 'login_name': 'testuser', 'followers': '0', 'following': '0', 'real_name': 'Test User', 'id': '1'}";
+
+test('DICT_ORDER：键值一一对应只有键序不同 → 结论是写入顺序问题，不再误导去用 set()', () => {
+  const r = diffOutputs(USER_LINE_EXP, USER_LINE_ACT);
+  assert.deepEqual(
+    r.pairs.map((p) => p.kind),
+    ['DICT_ORDER'],
+  );
+  assert.match(r.pairs[0].note, /预期 login_name → posts → real_name/);
+  assert.match(r.summary, /调整字面量书写顺序[\s\S]*无效|无法靠"调整字面量书写顺序"修复/);
+  assert.match(r.summary, /OrderedDict/);
+  assert.ok(!/set\(\)/.test(r.summary), '字典键序问题不该给出 set 假设');
+  const note = describeOutputDiff(`预期输出：\n${USER_LINE_EXP}\n实际输出：\n${USER_LINE_ACT}`);
+  assert.match(note, /DICT_ORDER = 键的写入顺序问题/);
+});
+
+test('标记写法兼容：「预期：/实际：」与「预期输出：」都要能识别', () => {
+  const a = splitExpectedActual("预期：\n['a', 'b']\n实际：\n['b', 'a']");
+  assert.ok(a, '简写标记未被识别');
+  assert.deepEqual(a.expected, "['a', 'b']");
+  assert.deepEqual(a.actual, "['b', 'a']");
+});
+
+test('未启用时必须给出原因（静默失效要能在日志里看见）', () => {
+  assert.match(diffSkipReason('一段没有任何标记的面板文本'), /找不到「预期输出 \/ 实际输出」标记/);
+  assert.equal(diffSkipReason(`${EXPECTED}\n${ACTUAL}`), '');
 });

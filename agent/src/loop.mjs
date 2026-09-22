@@ -75,7 +75,7 @@ import {
   findRedundantPrints,
 } from './requirement-contract.mjs';
 import { rankCandidates } from './candidate-rank.mjs';
-import { describeOutputDiff } from './output-diff.mjs';
+import { describeOutputDiff, diffSkipReason } from './output-diff.mjs';
 
 const log = createLogger('loop');
 
@@ -667,6 +667,9 @@ async function solveOnceInner(page, probe) {
         if (diffNote) {
           log(`本地差异定位：${diffNote.split('\n')[1] ?? ''}`);
           lastEval = `${lastEval}\n\n${diffNote}`;
+        } else {
+          const why = diffSkipReason(lastEval);
+          if (why) log(`本地差异定位未启用：${why}`);
         }
         // 输入期报错优先呈现（键入/执行即报错的命令与回现行，键入时逐条检测）
         const inputErrors = formatInputErrors(r.termErrors);
@@ -1047,6 +1050,10 @@ async function solveOnceInner(page, probe) {
       if (diffNote) {
         log(`本地差异定位：${diffNote.split('\n')[1] ?? ''}`);
         lastEval = `${lastEval}\n\n${diffNote}`;
+      } else {
+        // 静默失效必须可见：没启用就说清原因（真机见过明细里没有预期/实际标记）
+        const why = diffSkipReason(lastEval);
+        if (why) log(`本地差异定位未启用：${why}`);
       }
 
       // ---- 实际输出指纹（1.5.1）：本轮改动到底有没有影响可观测行为 ----

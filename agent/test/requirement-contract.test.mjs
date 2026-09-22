@@ -237,6 +237,14 @@ incr：将 key 中储存的数字值增一。
 预期输出：
 该全文的索引为：['design']`;
 
+test('题干里的页面导航残渣不得当成要求（真机：「参考答案 记录 评论」被编造了落点）', () => {
+  const c = extractRequirementContract(
+    '编程要求\n参考答案 记录 评论\n在Begin-End区域编写 create_user(login_name, real_name) 函数，实现创建新用户的功能：\n重名检测的实现：查询哈希键users中是否存在与用户登录名同名的域，若存在，则返回None；',
+  );
+  assert.equal(c.items.length, 2);
+  assert.ok(!c.items.some((s) => s.includes('参考答案')), '导航残渣未被剔除');
+});
+
 test('一道题里同时有「任务要求」和「编程要求」时，两段的条目都要收到（旧版只取第一段 → 只切出 1 条）', () => {
   const c = extractRequirementContract(TWO_HEADERS);
   assert.equal(c.source, '任务要求+编程要求');

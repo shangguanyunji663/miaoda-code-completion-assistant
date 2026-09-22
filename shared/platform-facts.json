@@ -32,7 +32,9 @@
     "counters_are_strings": "题面说「对计数器 X 递增 1，并取递增后的值」时，X 是 **string 键**：只能用 conn.incr(\"X\")（incr 的返回值就是递增后的整数，不需要再读一次）。不要用 hincrby —— 它会把 X 建成 hash，而评测程序按 string 读它（conn.get），当场 WRONGTYPE 中断整轮评测",
     "counters_are_strings_evidence": "2026-09-22 真机（反向索引关）：index_document 里写 conn.hincrby(\"content:id\", \"num\", 1)，评测回显 Traceback (most recent call last): File \"step1/read.py\", line 40, in <module> print \"当前全文编号: %s\"%(conn.get('content:id')) … redis.exceptions.ResponseError: WRONGTYPE Operation against a key holding the wrong kind of value；题面「相关知识」另给出 conn.incr(\"testcount\") → 执行后 testcount '1'",
     "harness_prints_are_not_ours": "同关实测：评测程序 step1/read.py 自己打印「当前全文编号 / 当前全文详情 / 当前索引词 / 索引词: keyword:…」全部四组行（第 40 行即其中一条 print）。被测函数里再打一遍 → 实际输出里这些行按调用次数成倍出现，逐行比对必然不匹配。「编程要求」里没有打印要求时，一个字都不要输出",
-    "harness_prints_are_not_ours_evidence": "2026-09-22 真机（反向索引关）：index_document 内自带 4 行 print，实际输出里「索引词: keyword:…」整段重复出现 3 次（每题面输入行调用一次），而 step1/read.py 自己那份因 WRONGTYPE 未打出"
+    "harness_prints_are_not_ours_evidence": "2026-09-22 真机（反向索引关）：index_document 内自带 4 行 print，实际输出里「索引词: keyword:…」整段重复出现 3 次（每题面输入行调用一次），而 step1/read.py 自己那份因 WRONGTYPE 未打出",
+    "hmset_dict_literal_order": "小哈希在 Redis 里按**写入顺序**保存并返回（ziplist 编码），所以 hgetall 打印出来的键序就是被测代码写入字段的先后顺序。Python 2 下 hmset(key, {…}) 传入普通 dict 字面量时，redis-py 2.10 遍历 mapping.items() —— 顺序由 dict 哈希序决定，**调整字面量的书写顺序是空操作**；要复现题面示意的字段顺序，必须传 collections.OrderedDict([…]) 或逐字段 hset 按序写入",
+    "hmset_dict_literal_order_evidence": "2026-09-22 真机（微博用户/动态关，18:10–18:16）：预期 创建的用户信息为: {'login_name': 'testuser', 'posts': '0', 'real_name': 'Test User', 'followers': '0', 'following': '0', 'id': '1'}，实际为 {'posts': '0', 'login_name': 'testuser', 'followers': '0', 'following': '0', 'real_name': 'Test User', 'id': '1'}；第 2、3 两轮反思都只改 hmset 字典字面量的键书写顺序，两轮实际输出逐字节相同（本地指纹 83878eee25 连续第 2 轮，即改字面量顺序完全无效）"
   },
   "python2_syntax": {
     "note": "以下形态在平台运行时（Python 2，见 runtime 段）会**直接 SyntaxError 使整轮评测失败**——不是风格问题，是能否编译的问题。由 runtime 段的实测结论（平台为 Python 2）加语言规范推导，agent 侧另有提交前的本地静态守卫（agent/src/py2-guard.mjs）在写入前拦这些形态",
