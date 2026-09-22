@@ -72,6 +72,7 @@ import {
   parseAlignmentTable,
   validateAlignment,
   formatAlignmentProblems,
+  findRedundantPrints,
 } from './requirement-contract.mjs';
 
 const log = createLogger('loop');
@@ -863,10 +864,23 @@ async function solveOnceInner(page, probe) {
       // Begin/End 空区域 = 评测必报 IndentationError 的确定缺陷，与对齐问题同一门槛打回
       const empties = emptyMarkerBlocks(submitted).map((no) => ({
         no,
+        label: `Begin/End 区域 #${no}`,
         kind: 'empty_block',
-        message: `第 ${no} 处 Begin/End 区域仍是空的（评测必报 IndentationError），必须补全`,
+        message: '这一处 Begin/End 仍然空着（评测必报 IndentationError），必须补全',
       }));
-      const allProblems = [...(chkA.problems ?? []), ...empties];
+      // 冗余 print 守卫（1.6.2）：题面「编程要求」没要求输出却 print，就是把评测程序
+      // 自己打印的行复制进被测代码 → 逐行比对必然多行。真机同一坑已栽三次。
+      const strayPrints = findRedundantPrints({
+        requireText: contract.requireText,
+        problemText: problem,
+        code: submitted,
+      }).map((f) => ({
+        no: f.line,
+        label: `代码第 ${f.line} 行`,
+        kind: 'redundant_print',
+        message: `这行 print 属多余——题面「编程要求」没有要求任何输出，它打印的是评测程序自己负责的行：${f.text}`,
+      }));
+      const allProblems = [...(chkA.problems ?? []), ...empties, ...strayPrints];
       if (chkA.advisories?.length && c === 0) {
         log(
           `题面对齐提示（不影响提交）：${chkA.advisories.map((a) => `第${a.no}条 ${a.kind}`).join('、')}`,

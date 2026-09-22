@@ -14,8 +14,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-const { extractRequirementContract, renderContractBlock, parseAlignmentTable, validateAlignment } =
-  await import('../src/requirement-contract.mjs');
+const {
+  extractRequirementContract,
+  renderContractBlock,
+  parseAlignmentTable,
+  validateAlignment,
+  findRedundantPrints,
+  formatAlignmentProblems,
+} = await import('../src/requirement-contract.mjs');
 
 const PRIORITY_TASK = `任务描述
 本关任务：使用 Redis 构建一个区分优先级的任务队列。
@@ -146,6 +152,72 @@ test('渲染出的清单要求逐编号作答，且带预期输出摘录', () =>
   assert.match(block, /^1\. /m);
   assert.match(block, /7\. /m);
   assert.match(block, /【题面预期输出/);
+});
+
+// ---- 1.6.2 冗余 print 守卫（真机反向索引关：模型把评测程序打印的行复制进被测函数，
+//      第 2 轮加 print、第 5 轮删 print 才通过——同一坑本项目已栽三次）----
+
+const NO_PRINT_CONTRACT = extractRequirementContract(PRIORITY_TASK); // 其「编程要求」无任何输出措辞
+const SUBMIT_CODE = [
+  '#!/usr/bin/env python',
+  'import redis',
+  'conn = redis.Redis()',
+  'def index_document(content):',
+  '    #********* Begin *********#',
+  '    doc_id = conn.incr("content:id")',
+  '    print "当前全文编号: %s" % doc_id',
+  '    print "当前索引词:"',
+  '    #********* End *********#',
+  '',
+].join('\n');
+
+test('题面未要求输出时，Begin/End 里的 print 逐行被抓（行号指向提交文本）', () => {
+  const hits = findRedundantPrints({
+    requireText: NO_PRINT_CONTRACT.requireText,
+    code: SUBMIT_CODE,
+  });
+  assert.deepEqual(
+    hits.map((h) => h.line),
+    [7, 8],
+  );
+  assert.match(hits[0].text, /当前全文编号/);
+});
+
+test('「编程要求」里出现"输出/打印/print"任一措辞 → 整题不启用守卫（要求打印的题绝不误伤）', () => {
+  assert.deepEqual(
+    findRedundantPrints({ requireText: '按以下格式打印结果，并输出每行内容', code: SUBMIT_CODE }),
+    [],
+  );
+});
+
+test('注释里的 print 与标记区域外的模板原有 print 不算', () => {
+  const code = [
+    'def f(x):',
+    '    #********* Begin *********#',
+    '    # print 这行是注释不是输出',
+    '    return x',
+    '    #********* End *********#',
+    'print "模板顶层原有"',
+    '',
+  ].join('\n');
+  assert.deepEqual(findRedundantPrints({ requireText: NO_PRINT_CONTRACT.requireText, code }), []);
+});
+
+test('问题渲染：print 与空区域用自带标签，不与"要求条目第 N 条"混号', () => {
+  const text = formatAlignmentProblems([
+    { no: 2, message: '漏答第 2 条要求' },
+    { no: 7, label: '代码第 7 行', message: '这行 print 属多余' },
+  ]);
+  assert.match(text, /- 第 2 条｜漏答/);
+  assert.match(text, /- 代码第 7 行｜这行 print/);
+});
+
+test('没有 Begin/End 标记时按整段判（不因找不到区域而漏判）', () => {
+  const code = ['def f():', '    return 1', 'print "多余输出"', ''].join('\n');
+  assert.deepEqual(
+    findRedundantPrints({ requireText: NO_PRINT_CONTRACT.requireText, code }).map((h) => h.line),
+    [3],
+  );
 });
 
 // ---- 1.6.1：修 1.6.0 真机误伤（5 轮白烧 8 次打回）的两条回归 ----

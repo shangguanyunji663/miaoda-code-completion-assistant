@@ -59,7 +59,7 @@ npm run probe
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流，见下方「网页工作台」） |
 | `npm run caps-check` | 校验配置类 JSON：能力文件（必填字段、prompt 占位符与 `paramsSchema` 声明一致性）+ 平台事实档案（事实段必须带 evidence/date、待验证项必须隔离在 `unknowns`）——编辑 `shared/capabilities/` 或 `shared/platform-facts.json` 后先跑 |
-| `npm test` | 运行单测（114 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 能力配置/事实档案校验 + 运行控制，Node 内置 `node:test`，零新增依赖） |
+| `npm test` | 运行单测（118 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 能力配置/事实档案校验 + 运行控制，Node 内置 `node:test`，零新增依赖） |
 | `npm run lint` | ESLint 静态检查（`eslint.config.js`） |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 | `npm run format:check` | 只检查格式不写入，适合放进 CI |

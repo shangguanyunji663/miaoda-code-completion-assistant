@@ -1,4 +1,5 @@
-// EXPORTS: extractRequirementContract, renderContractBlock, parseAlignmentTable, validateAlignment
+// EXPORTS: extractRequirementContract, renderContractBlock, parseAlignmentTable,
+//          validateAlignment, findRedundantPrints
 // 题面契约层（1.6.0）：把"照题面写"从模型的自觉，变成程序可校验的动作。
 //
 // 为什么不是"再补一条 prompt 守则"（用户明确要求：不能每题靠人工纠正）：
@@ -88,7 +89,7 @@ function splitItems(body) {
  * 「任务要求」+「编程要求」并存），旧版取第一个命中段，结果只切出 1 条，模型从
  * 「编程要求」里原样抄的摘录反倒不在"真值"里，被判 bad_quote 反复打回（5 轮 8 次
  * 白烧）。现在：合并**所有**要求类段（按出现顺序、去重），每段截到下一个任意标题为止。
- * @returns {{present: boolean, items: string[], expectedOutput: string, source: string}}
+ * @returns {{present: boolean, items: string[], expectedOutput: string, source: string, requireText: string}}
  */
 export function extractRequirementContract(problem) {
   const text = String(problem ?? '');
@@ -96,13 +97,16 @@ export function extractRequirementContract(problem) {
     const sections = findSections(text);
     const reqSections = sections.filter((s) => REQUIRE_TITLES.includes(s.title));
     if (!reqSections.length) {
-      return { present: false, items: [], expectedOutput: '', source: '' };
+      return { present: false, items: [], expectedOutput: '', source: '', requireText: '' };
     }
     const items = [];
     const seenItem = new Set();
+    const requireChunks = []; // 要求段原文：print 守卫据此判断题面是否要求输出
     for (const sec of reqSections) {
       const next = sections.find((s) => s.index >= sec.end);
-      for (const item of splitItems(text.slice(sec.end, next ? next.index : undefined))) {
+      const body = text.slice(sec.end, next ? next.index : undefined);
+      requireChunks.push(body);
+      for (const item of splitItems(body)) {
         const key = canon(item);
         if (seenItem.has(key)) continue;
         seenItem.add(key);
@@ -120,12 +124,19 @@ export function extractRequirementContract(problem) {
     return {
       present: items.length > 0,
       items: items.slice(0, MAX_ITEMS),
+      requireText: requireChunks.join(String.fromCharCode(10)),
       expectedOutput,
       source: reqSections.map((s) => s.title).join('+'),
     };
   } catch (e) {
     // fail-open：抽取器自身异常绝不能阻断作答
-    return { present: false, items: [], expectedOutput: '', source: `error:${e?.message ?? e}` };
+    return {
+      present: false,
+      items: [],
+      expectedOutput: '',
+      source: `error:${e?.message ?? e}`,
+      requireText: '',
+    };
   }
 }
 
@@ -246,10 +257,60 @@ export function validateAlignment({ contract, rows, code, problemText = '' }) {
   }
 }
 
+/** 题面「编程要求」里出现这些词，说明该题确实要被测代码自己输出 → 守卫不启用 */
+const OUTPUT_VERBS = ['打印', '输出', '回显', '显示', 'print', 'echo', 'printf'];
+const PRINT_RE = /^\s*print\b/;
+
+/** 取 Begin/End 标记之间的区域（没有标记就按整段处理）；返回 [{start, lines}] */
+function markerRegions(code) {
+  const lines = code.split('\n');
+  const regions = [];
+  let open = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/#+\s*\**\s*Begin/i.test(lines[i])) open = i;
+    else if (/#+\s*\**\s*End/i.test(lines[i]) && open >= 0) {
+      regions.push({ start: open + 1, lines: lines.slice(open + 1, i) });
+      open = -1;
+    }
+  }
+  return regions.length ? regions : [{ start: 0, lines }];
+}
+
+/**
+ * 冗余 print 守卫（1.6.2）：题面「编程要求」从未要求输出，却在 Begin/End 里 print。
+ *
+ * 为什么值得拦（2026-09-22 真机，反向索引关）：预期输出里"当前全文编号 / 当前全文
+ * 详情 / 当前索引词 / 索引词: keyword:…"四组行是评测程序 step1/read.py 自己打印的
+ * （它的第 40 行就是那条 print，报错 traceback 直接坐实），模型看见预期输出有这些行
+ * 就以为是该自己输出的东西 → 复制进去 → 逐行比对必然多行不匹配。同一坑本项目已栽
+ * **三次**，守则文字证明拦不住，所以做成确定性判据。
+ *
+ * 保守边界（宁漏不误报）：只要「编程要求」段里出现过"打印/输出/print/…"任一措辞，
+ * 整题就不启用——真的要求打印的题永远不会被误伤。命中时只报区域里的 print 行。
+ * @returns {Array<{line: number, text: string}>}
+ */
+export function findRedundantPrints({ requireText = '', problemText = '', code = '' }) {
+  try {
+    const scope = requireText || problemText; // 要求段优先；缺切段时退回全文（更保守）
+    if (!scope || !String(code ?? '').trim()) return [];
+    const low = scope.toLowerCase();
+    if (OUTPUT_VERBS.some((w) => low.includes(w))) return [];
+    const out = [];
+    for (const region of markerRegions(String(code))) {
+      region.lines.forEach((l, i) => {
+        if (PRINT_RE.test(l)) out.push({ line: region.start + i + 1, text: l.trim().slice(0, 90) });
+      });
+    }
+    return out;
+  } catch {
+    return []; // fail-open
+  }
+}
+
 /** 校验结论渲染成打回给模型的说明（与 py2 守卫同一套"本地拦截、未提交评测"话术） */
 export function formatAlignmentProblems(problems, limit = 10) {
   return (problems ?? [])
     .slice(0, limit)
-    .map((p) => `- 第 ${p.no} 条｜${p.message}`)
+    .map((p) => `- ${p.label ?? `第 ${p.no} 条`}｜${p.message}`)
     .join('\n');
 }
