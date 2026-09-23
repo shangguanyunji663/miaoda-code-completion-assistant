@@ -63,7 +63,7 @@ import {
   stripNonCodeLines,
   findSquashedHeredocs,
   findDataFileOverwrites,
-  detectQuoteFormViolation,
+  detectSubmissionFormViolations,
   emptyMarkerBlocks,
   sanitizeShellSubmission,
   wrapDbCommandsInEcho,
@@ -909,6 +909,7 @@ async function solveOnceInner(page, probe) {
         } else {
           const why = diffSkipReason(lastEval);
           if (why) log(`本地差异定位未启用：${why}`);
+          lastEval = `${lastEval}\n\n=== 本地差异定位不可用 ===\n原因：${why || '未定位到可比的预期/实际两段'}。\n（本节由程序生成）本轮**没有**机器可判的差异结论：不得断言"实际输出与预期一致 / 逻辑正确只差格式"，差异未知就写未知，并换一条可验证的假设（先只读取证 / 按题面明文逐条自证）。`;
         }
         // 输入期报错优先呈现（键入/执行即报错的命令与回现行，键入时逐条检测）
         const inputErrors = formatInputErrors(r.termErrors);
@@ -1159,10 +1160,14 @@ async function solveOnceInner(page, probe) {
 
     // 题面明文提交形态的机器判据（1.6.15）：题面禁双引号而提交仍是 `echo "` ⇒ 结论随
     // sanitizeNote 进反思材料（prompt 规则在同一形态上已被证伪一次，不能再只靠规则）。
-    const quoteViolation = detectQuoteFormViolation(submitted, problem);
-    if (quoteViolation) {
-      log(`题面提交形态违约（已随反思材料下发）：${quoteViolation}`);
-      sanitizeNote = [sanitizeNote, `- ${quoteViolation}`].filter(Boolean).join('\n');
+    const formViolations = detectSubmissionFormViolations(submitted, problem);
+    if (formViolations.length) {
+      log(
+        `题面提交形态违约 ${formViolations.length} 处（已随反思材料下发）：${formViolations[0].slice(0, 90)}`,
+      );
+      sanitizeNote = [sanitizeNote, ...formViolations.map((v) => `- ${v}`)]
+        .filter(Boolean)
+        .join('\n');
     }
 
     // ---- 写入前本地 Python 2 语法守卫（1.5.0）----
@@ -1357,6 +1362,7 @@ async function solveOnceInner(page, probe) {
         // 静默失效必须可见：没启用就说清原因（真机见过明细里没有预期/实际标记）
         const why = diffSkipReason(lastEval);
         if (why) log(`本地差异定位未启用：${why}`);
+        lastEval = `${lastEval}\n\n=== 本地差异定位不可用 ===\n原因：${why || '未定位到可比的预期/实际两段'}。\n（本节由程序生成）本轮**没有**机器可判的差异结论：不得断言"实际输出与预期一致 / 逻辑正确只差格式"，差异未知就写未知，并换一条可验证的假设（先只读取证 / 按题面明文逐条自证）。`;
       }
 
       // ---- 实际输出指纹（1.5.1）：本轮改动到底有没有影响可观测行为 ----

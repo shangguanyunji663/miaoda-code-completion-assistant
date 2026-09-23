@@ -3,7 +3,12 @@
 // ② 题面明文禁双引号而提交仍是 `echo "` —— prompt 压不住（模型按"实测优先"选了双引号），改机器判。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findDataFileOverwrites, detectQuoteFormViolation } from '../src/ai.mjs';
+import {
+  findDataFileOverwrites,
+  detectQuoteFormViolation,
+  detectDbCollectionRefViolation,
+  detectEscapeViolation,
+} from '../src/ai.mjs';
 
 // 真机题干（节选）："现有 person.json 文件内容如下…将 /home/example/person.json 导入 mydb3"
 const PROBLEM = [
@@ -71,4 +76,33 @@ test('合规提交不误报：题面禁双引号 + 代码已用单引号/无 ech
 
 test('题面没说引号形态时不判（不越权）', () => {
   assert.equal(detectQuoteFormViolation('echo "\ndb.x.find();\n"', '本关任务：完成文档查询。'), '');
+});
+
+test('回归：`db.<库名>.<集合名>` 被机器判为非法形态（真机：8 条查询全空而看不出原因）', () => {
+  const code = '#*** Begin ***#\ndb.mydb3.test.find({age:20}).sort({_id:1})\n#*** End ***#';
+  const note = detectDbCollectionRefViolation(code);
+  assert.match(note, /db\.mydb3\./);
+  assert.match(note, /TypeError/);
+  assert.match(note, /db\.test\./, '应给出改写后的形态');
+});
+
+test('合法形态不误报：db.<集合> / getCollection / getSiblingDB / db.stats()', () => {
+  for (const ok of [
+    'db.test.find({age:20})',
+    "db.getCollection('test').find({})",
+    "db.getSiblingDB('mydb3').test.find({})",
+    'db.stats()',
+  ]) {
+    assert.equal(detectDbCollectionRefViolation(ok), '', ok);
+  }
+});
+
+test('题面要求 $ 前加转义而未转义 ⇒ 命中；已转义不误报', () => {
+  const problem = '注意：请在$前加\\（转义符），即使用\\$；不要使用双引号改用 单引号。';
+  assert.match(detectEscapeViolation("find({hobbies:{$all:['a']}})", problem), /\$all/);
+  assert.equal(detectEscapeViolation("find({hobbies:{\\$all:['a']}})", problem), '');
+});
+
+test('题面没要求转义时不判（不越权）', () => {
+  assert.equal(detectEscapeViolation('find({hobbies:{$all:[]}})', '完成文档查询。'), '');
 });

@@ -558,6 +558,60 @@ export function detectQuoteFormViolation(code, problem) {
   return '题面明文要求「不要使用双引号改用单引号」，而提交里仍有 `echo "` 形态（引号用了双引号 / 有 `\\"` 转义）。按题面改写成单引号形态，不要保留 echo 双引号包裹。';
 }
 
+/**
+ * `db.<库名>.<集合名>` 形态判据（零依赖纯函数，2026-09-23 真机）。
+ * 在数据库 shell 里 `db.<库名>` **已经是一个集合对象**，再往下一层取属性得到 undefined，
+ * `.find()` 必报 TypeError；而这类异常走 **stderr、不进评测输出** ⇒ 现象是"标签后什么都没有"，
+ * 极易被误读成"数据没导入"（2026-09-23 真机就这样烧了 8 轮）。
+ * 合法形态只有 `db.<集合名>`、`db.getCollection('x')`、`db.getSiblingDB('db').<集合名>`——
+ * 后两者中间不是"裸标识符.裸标识符."，本判据不误伤。
+ * @param {string} code
+ * @returns {string} 违规说明（空串 = 无违规）
+ */
+export function detectDbCollectionRefViolation(code) {
+  const c = String(code ?? '');
+  const re = /\bdb\s*\.\s*([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*\./g;
+  const bad = [...c.matchAll(re)].map((m) => m[0].trim());
+  if (!bad.length) return '';
+  const fix = bad[0].replace(/db\s*\.\s*[A-Za-z_$][\w$]*\s*\./, 'db.');
+  return `提交里出现 \`${bad[0]}\` —— **\`db.<库名>.<集合名>\` 不是合法形态**：在数据库 shell 里 \`db.<库名>\` 已经是一个**集合**，再往下一层取属性得到 undefined，\`.find()\` 必报 TypeError，而报错走 stderr、不进评测输出（表现为"标签后什么都没有"）。请写成 \`${fix}\`（只保留集合名；库由评测环境预选，无需 use / getSiblingDB）。`;
+}
+
+/**
+ * 题面要求「$ 前加 \」而提交里有未转义操作符 —— 机器判据（零依赖纯函数，2026-09-23）。
+ * 成因：平台把代码栏内容包进外层引号再交数据库 shell `eval`，`$` 会被外层展开，
+ * 所以题面才要求写成 `\$`。漏转义的后果是操作符被吃掉或提前展开（整轮白跑）。
+ * @param {string} code
+ * @param {string} problem
+ * @returns {string} 违规说明（空串 = 无违规 / 题面没这条要求）
+ */
+export function detectEscapeViolation(code, problem) {
+  const p = String(problem ?? '');
+  const c = String(code ?? '');
+  if (!p || !c) return '';
+  if (!/(?:\$\s*前加|即使用\s*\\\$|\$\s*写成\s*\\\$)/.test(p)) return '';
+  const OPS =
+    /(?<!\\)\$(?:or|and|not|nor|all|in|nin|mod|size|exists|type|regex|gt|gte|lt|lte|ne|eq|elemMatch|expr|slice|push|addToSet|inc|set|unset)\b/g;
+  const hits = [...c.matchAll(OPS)].map((m) => m[0]);
+  if (!hits.length) return '';
+  const uniq = [...new Set(hits)].slice(0, 5);
+  return `题面明文要求「$ 前加 \ 转义」，而提交里有未转义的操作符：${uniq.map((h) => '`' + h + '`').join('、')}。全部改写成 \$ 形态（如 \$all、\$or）——平台会以引号包裹代码再交数据库 eval，$ 不转义会被外层吃掉。`;
+}
+
+/**
+ * 提交形态的一次性机器体检（把上面几条汇总，供 loop 在提交点统一调用）。
+ * @param {string} code 实际提交文本
+ * @param {string} problem 当次题干
+ * @returns {string[]} 每条为一句可读的违约说明（空数组 = 无违规）
+ */
+export function detectSubmissionFormViolations(code, problem) {
+  return [
+    detectQuoteFormViolation(code, problem),
+    detectDbCollectionRefViolation(code),
+    detectEscapeViolation(code, problem),
+  ].filter(Boolean);
+}
+
 export function findSquashedHeredocs(cmds) {
   const out = [];
   (cmds ?? []).forEach((c, i) => {
