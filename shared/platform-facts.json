@@ -109,5 +109,14 @@
     "test_panel_has_two_bodies": true,
     "test_panel_has_two_bodies_evidence": "同上：面板标题行 `p.output-title-container` 的下一个兄弟 `div.diff-panel-container` 里有**两个并列 body**（预期 2492 字符 / 实际 267 字符）；实际输出因报错比预期短一个数量级，抓取侧曾按「两列量级比 > 0.3」拒绝对而误判成\"预期段为空\"",
     "date": "2026-09-23"
+  },
+  "task_env": {
+    "reset_entry": "命令行标签栏右侧的工具栏按钮（DOM: a[title=\"工具栏\"]，图标 icon-gongjuxiang）→ 弹出「功能」菜单 → 「重置环境」",
+    "reset_entry_evidence": "2026-09-23 用户截图指路 + 只读 DOM 探针确认（tabbar 行 action-bar 内 action-bar___bbigU 下有 a[title=\"工具栏\"] 与 a[title=\"全屏\"]；菜单项文本为「重置环境」，同级还有 上传文件/下载文件/服务预览/SSH直连）",
+    "reset_restores_environment": true,
+    "reset_restores_environment_evidence": "同上菜单标题为「功能」；「关卡配置信息」区显示 跳关=允许、测试集解锁=不允许，说明该入口属平台关卡级功能。用户原话：应当用它重置，\"而不是刷新页面\"",
+    "page_reload_does_not_restore_env": true,
+    "page_reload_does_not_restore_env_evidence": "2026-09-23 真机：重载题目页后编辑器仍是上一轮提交的草稿（平台持久化草稿、无「恢复初始代码」），且被覆盖的输入文件 /home/example/person.json 与数据库内容都不恢复",
+    "date": "2026-09-23"
   }
 }

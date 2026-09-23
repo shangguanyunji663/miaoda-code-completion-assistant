@@ -877,6 +877,43 @@ export async function probeTerminalClients(
  * @param {import('playwright-core').Page} page
  * @returns {Promise<{dismissed: boolean, way?: string, reason?: string}>}
  */
+/**
+ * 重置实验环境（2026-09-23，用户指路 + 只读 DOM 探针确认结构）。
+ * 入口：命令行标签栏右侧的**工具栏按钮**（`a[title="工具栏"]`，图标 `icon-gongjuxiang`，
+ * 用户口中的"公文包"）→ 弹出「功能」菜单 → 点「重置环境」→ 确认。
+ * **为什么必须有它**：平台会自动重置**实验环境**（文件系统 + 数据库 + 终端会话），
+ * 而"刷新题目页"只重载前端、**不恢复环境**——真机事故里 agent 把平台提供的
+ * `/home/example/person.json` 覆盖成自编数据、库也空了，靠刷新页面永远救不回来。
+ * 说明：重置会清掉容器内的数据与终端会话（已导入的数据会丢失），只在"环境确实坏了"时调用。
+ * @returns {Promise<{ok: boolean, reason?: string}>}
+ */
+export async function resetTaskEnv(page) {
+  if (!guard('重置实验环境')) return { ok: false, reason: 'dry-run' };
+  // ① 打开「功能」菜单（title 锚定，不用带 hash 的 CSS module 类名）
+  const trigger = page.locator('[title="工具栏"]').first();
+  if (!(await trigger.count().catch(() => 0))) return { ok: false, reason: 'no-toolbar-button' };
+  await trigger.click({ timeout: 6000 }).catch(() => {});
+  await page.waitForTimeout(600);
+  // ② 菜单项「重置环境」（文本锚定）
+  const item = page.getByText('重置环境', { exact: true }).first();
+  if (!(await item.isVisible().catch(() => false))) {
+    await page.keyboard.press('Escape').catch(() => {});
+    return { ok: false, reason: 'no-reset-menu-item' };
+  }
+  await item.click({ timeout: 6000 }).catch(() => {});
+  await page.waitForTimeout(600);
+  // ③ 确认弹窗（Ant Design Modal：确定 / 确认 / 重置）：有就点，没有就继续
+  for (const name of ['确定', '确认', '重置']) {
+    const btn = page.getByRole('button', { name, exact: true }).first();
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click({ timeout: 5000 }).catch(() => {});
+      break;
+    }
+  }
+  log('已触发「重置环境」——容器文件系统与数据库恢复初始状态（终端会话会重建）');
+  return { ok: true };
+}
+
 export async function dismissPassModal(page) {
   const marker = page.getByText('恭喜您通过', { exact: false }).first();
   if (!(await marker.isVisible().catch(() => false))) {

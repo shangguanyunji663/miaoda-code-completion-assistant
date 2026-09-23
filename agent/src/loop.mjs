@@ -46,6 +46,7 @@ import {
   clickContinueChallenge,
   clickStartLearning,
   switchTaskTab,
+  resetTaskEnv,
   runTerminalCommands,
   collectTestSetDetails,
   dismissPassModal,
@@ -783,6 +784,23 @@ async function solveOnceInner(page, probe) {
         if (landed.note) {
           log(landed.note);
           clientFact = [clientFact, landed.note].filter(Boolean).join('\n');
+        }
+        // 仍未落库 ⇒ 用平台自带「重置环境」恢复（刷新题目页不恢复环境：1.6.18），再重做一轮准备
+        if (landed.count === 0) {
+          const reset = await resetTaskEnv(page);
+          if (reset.ok) {
+            await settle(page);
+            const again = applyCommandGuards(prep, bannedCmds, problem);
+            if (again.cmds.length) {
+              log(`重置环境后重做数据准备（${again.cmds.length} 条）`);
+              await runTerminalCommands(page, again.cmds);
+            }
+            const re = await verifyDataLanded(page, problem);
+            if (re.note) log(`重置后复核：${re.note}`);
+            clientFact = [clientFact, re.note].filter(Boolean).join('\n');
+          } else {
+            log(`数据未落库，但「重置环境」未能执行（${reset.reason}）—— 按现状继续，不要自造数据`);
+          }
         }
       } else {
         log('混合题前置：命令行数据准备生成结果为空，跳过，直接代码栏作答');
