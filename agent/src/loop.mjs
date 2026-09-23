@@ -64,6 +64,7 @@ import {
   findSquashedHeredocs,
   findDataFileOverwrites,
   detectSubmissionFormViolations,
+  parseImportTarget,
   emptyMarkerBlocks,
   sanitizeShellSubmission,
   wrapDbCommandsInEcho,
@@ -450,6 +451,35 @@ function banNote(banned) {
 }
 
 /**
+ * 数据落地核对（2026-09-23，只读）：导入类题目的成败**只有这一条是硬事实**——目标集合里
+ * 到底有没有数据。真机教训：导入命令看着跑完了（无输入期报错）、查询却全空，实测 count() = 0
+ * ——数据根本没进去；而模型会去改查询语句（越改越远）。
+ * 探针：mongo --quiet <db> --eval 'print("DBCNT", db.<coll>.count())'（只读、不起事务）。
+ * @returns {Promise<{count?: number, note: string}>} note 为空串表示题面没给导入目标（不适用）
+ */
+async function verifyDataLanded(page, problem) {
+  const target = parseImportTarget(problem);
+  if (!target) return { note: '' };
+  const cmd = `mongo --quiet ${target.db} --eval 'print("DBCNT", db.${target.coll}.count())'`;
+  await runTerminalCommands(page, [cmd]).catch(() => null);
+  await page.waitForTimeout(800);
+  const text = await readTerminalText(page).catch(() => '');
+  const hits = [...String(text).matchAll(/DBCNT\s+(\d+)/g)];
+  const label = `${target.db}.${target.coll}`;
+  if (!hits.length) {
+    return { note: `【数据落地实测】未能读到 ${label} 的条数（探针未回显）——导入是否生效未知` };
+  }
+  const count = Number(hits[hits.length - 1][1]);
+  return {
+    count,
+    note:
+      count > 0
+        ? `【数据落地实测】${label} 当前 ${count} 条文档（导入已生效）。`
+        : `【数据落地实测】${label} 当前 **0 条文档 —— 导入没有生效**。查询结果必然全空：先解决导入（核对库名/集合名/文件路径与 --jsonArray 参数、确认文件真的存在且内容正确），**不要**去改查询语句；也**禁止**自己编造数据文件。`,
+  };
+}
+
+/**
  * 客户端可用性实测（cmdline 与 mixed 分支共用）。
  * bash 环境且题干涉及数据库时才探测：实测结论注入 prompt（clientFact），
  * 缺失客户端即刻入禁令（bannedCmds），供执行层别名替换与下一轮生成使用。
@@ -746,6 +776,13 @@ async function solveOnceInner(page, probe) {
           });
           if (!fixed.commands?.length) break;
           prep = fixed.commands;
+        }
+        // 数据落地核对（1.6.17）：导入跑完**必须实测**目标集合条数，否则「查询全空」会被误读成
+        // 查询写错（真机就是这么烧掉 8 轮的）。结论并进 clientFact：该通道已流向生成与反思两侧。
+        const landed = await verifyDataLanded(page, problem);
+        if (landed.note) {
+          log(landed.note);
+          clientFact = [clientFact, landed.note].filter(Boolean).join('\n');
         }
       } else {
         log('混合题前置：命令行数据准备生成结果为空，跳过，直接代码栏作答');

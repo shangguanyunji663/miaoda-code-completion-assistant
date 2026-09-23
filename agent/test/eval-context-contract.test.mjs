@@ -8,6 +8,7 @@ import {
   detectQuoteFormViolation,
   detectDbCollectionRefViolation,
   detectEscapeViolation,
+  parseImportTarget,
 } from '../src/ai.mjs';
 
 // 真机题干（节选）："现有 person.json 文件内容如下…将 /home/example/person.json 导入 mydb3"
@@ -82,7 +83,7 @@ test('回归：`db.<库名>.<集合名>` 被机器判为非法形态（真机：
   const code = '#*** Begin ***#\ndb.mydb3.test.find({age:20}).sort({_id:1})\n#*** End ***#';
   const note = detectDbCollectionRefViolation(code);
   assert.match(note, /db\.mydb3\./);
-  assert.match(note, /TypeError/);
+  assert.match(note, /静默/); // 实测：不报错，而是静默指向空集合
   assert.match(note, /db\.test\./, '应给出改写后的形态');
 });
 
@@ -105,4 +106,11 @@ test('题面要求 $ 前加转义而未转义 ⇒ 命中；已转义不误报', 
 
 test('题面没要求转义时不判（不越权）', () => {
   assert.equal(detectEscapeViolation('find({hobbies:{$all:[]}})', '完成文档查询。'), '');
+});
+
+test('从题面解析导入目标（用于导入后实测条数）', () => {
+  const t =
+    '在右侧命令行进行操作：\n将 /home/example/person.json 文件导入到数据库 mydb3 中的 test 集合中。';
+  assert.deepEqual(parseImportTarget(t), { db: 'mydb3', coll: 'test' });
+  assert.equal(parseImportTarget('本关任务：完成文档查询。'), null);
 });

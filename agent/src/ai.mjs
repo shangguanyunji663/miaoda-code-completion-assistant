@@ -574,7 +574,7 @@ export function detectDbCollectionRefViolation(code) {
   const bad = [...c.matchAll(re)].map((m) => m[0].trim());
   if (!bad.length) return '';
   const fix = bad[0].replace(/db\s*\.\s*[A-Za-z_$][\w$]*\s*\./, 'db.');
-  return `提交里出现 \`${bad[0]}\` —— **\`db.<库名>.<集合名>\` 不是合法形态**：在数据库 shell 里 \`db.<库名>\` 已经是一个**集合**，再往下一层取属性得到 undefined，\`.find()\` 必报 TypeError，而报错走 stderr、不进评测输出（表现为"标签后什么都没有"）。请写成 \`${fix}\`（只保留集合名；库由评测环境预选，无需 use / getSiblingDB）。`;
+  return `提交里出现 \`${bad[0]}\` —— **\`db.<库名>.<集合名>\` 不是合法形态**：在数据库 shell 里 \`db.<库名>\` 已经是一个**集合**，再往下一层取属性得到 undefined，\`.find()\` **不会报错，而是静默指向另一个（通常为空的）集合** —— 真机只读探针实测 typeof db.mydb3.test === object、db.test.count() = 0，所有查询因此「跟没有数据一样」，既不报错也无输出、最难查。请写成 \`${fix}\`（只保留集合名；库由评测环境预选，无需 use / getSiblingDB）。`;
 }
 
 /**
@@ -595,7 +595,7 @@ export function detectEscapeViolation(code, problem) {
   const hits = [...c.matchAll(OPS)].map((m) => m[0]);
   if (!hits.length) return '';
   const uniq = [...new Set(hits)].slice(0, 5);
-  return `题面明文要求「$ 前加 \ 转义」，而提交里有未转义的操作符：${uniq.map((h) => '`' + h + '`').join('、')}。全部改写成 \$ 形态（如 \$all、\$or）——平台会以引号包裹代码再交数据库 eval，$ 不转义会被外层吃掉。`;
+  return `题面明文要求「$ 前加反斜杠转义」，而提交里有未转义的操作符：${uniq.map((h) => `'` + h + `'`).join('、')}。全部改写成转义形态（操作符前加一个反斜杠：$all 写成 反斜杠+$all，$or 同理）——平台会以引号包裹代码再交数据库 eval，$ 不转义会被外层吃掉。`;
 }
 
 /**
@@ -610,6 +610,18 @@ export function detectSubmissionFormViolations(code, problem) {
     detectDbCollectionRefViolation(code),
     detectEscapeViolation(code, problem),
   ].filter(Boolean);
+}
+
+/**
+ * 从题面解析「导入到数据库 X 中的 Y 集合」的目标库/集合（零依赖纯函数，2026-09-23）。
+ * 用途：导入完成后**实测**该集合的条数，把「数据到底有没有落库」从猜测变成事实。
+ * @param {string} problem
+ * @returns {{db: string, coll: string}|null}
+ */
+export function parseImportTarget(problem) {
+  const t = String(problem ?? '');
+  const m = t.match(/数据库\s*([A-Za-z_][\w$]*)\s*中的?\s*([A-Za-z_][\w$]*)\s*集合/);
+  return m ? { db: m[1], coll: m[2] } : null;
 }
 
 export function findSquashedHeredocs(cmds) {

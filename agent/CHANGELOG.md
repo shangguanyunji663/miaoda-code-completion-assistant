@@ -2,6 +2,32 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.6.17] - 2026-09-23（分支 feat/2-c-web-service）
+
+**「跟没有数据一样」的两个真实原因（只读探针实测）+ 修正上一轮的一处错诊断。**
+
+### Fixed
+
+- **修正 1.6.16 的错诊断**：`detectDbCollectionRefViolation` 原写 `db.<库名>.<集合名>`「必报 TypeError」——**实测不是**。真机只读探针（借题目页「命令行」跑 `mongo --quiet mydb3 --eval '…'`，只读、不提交、跑完把标签切回「代码文件」）：
+  ```
+  P1 mydb3.test.count= 0
+  P2 typeof db.mydb3.test= object      ← 不是 undefined
+  P3 firstdoc= null
+  ```
+  即：**不报错，而是静默指向另一个（通常为空）的集合**——查询全部「无输出、无报错」，比抛异常更难查（异常至少会在终端回显里留痕）。判据文案已改为实测结论
+- **新增数据落地核对 `verifyDataLanded(page, problem)`**（只读，导入类题目在数据准备后调用）：用纯函数 `parseImportTarget` 从题面解析「数据库 X 中的 Y 集合」，跑一条 `print("DBCNT", db.<coll>.count())` 取**实测条数**，结论进日志并入 `clientFact`（该通道已流向生成与反思两侧）。条数为 0 时给出**指令性**结论：「导入没有生效，先解决导入、不要去改查询语句、更禁止自己编造数据文件」——真机正是"导入看着跑完（无输入期报错）+ 8 条查询全空"，模型于是去改查询，越改越远
+
+### Verified
+
+- `npm test` **186/186**（新增 1 项 `parseImportTarget`；既有断言改为匹配实测结论）、lint、format:check、caps-check 全绿
+- 本轮取证全部只读：读面板两个 body 原文 + 借终端跑 3 条只读查询
+
+### Notes
+
+- `parseImportTarget` 只认「数据库 X 中的 Y 集合」这一种措辞；题面换说法（"导入 mydb3 库的 test 表"）则不触发核对，属已知边界
+- `verifyDataLanded` 多花一条只读命令（~1 秒），且仅在题面含导入目标时执行
+- 教训：**上一轮的诊断结论也要拿真机验一次**——"`db.a.b` 会抛 TypeError"看着显然，实测是 `typeof === 'object'` 的静默空集合
+
 ## [1.6.16] - 2026-09-23（分支 feat/2-c-web-service）
 
 **把"能机器判定"的形态契约补齐**（用户问"现在的方法通用吗"，核代码发现三处仍只靠 prompt）。
