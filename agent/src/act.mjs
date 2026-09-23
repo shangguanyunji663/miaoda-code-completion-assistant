@@ -685,6 +685,47 @@ const XTERM_PASTE = (text) => {
 };
 
 /**
+ * 求「本次终端快照相对上次快照**新增**的行」（零依赖纯函数，2026-09-23 C-19）。
+ * 为什么不能拿行数当游标：xterm 的可见行是 `.xterm-rows` 里的**滑动窗口**——屏幕滚满后
+ * 行数不再增长，`lines.slice(prevCount)` 恒为空；而**首次调用** `prevCount = 0` 时它等于
+ * 整屏历史。两个方向都错：前者让第 2 条起的命令**从来没被检出过任何报错**，后者让上一轮
+ * 遗留在屏幕上的报错**冒充"命令 1 的报错"**。真机账单：全部日志 18 次「输入期报错」
+ * 无一例外归到"命令 1"（跨 mongo / redis / 服务启动 / python 多种错误），就是这条。
+ * 判据：终端内容只在尾部追加，滚动只是把窗口右移 ⇒ 上一次快照的**末 k 行**必然等于
+ * 本次快照的**开 k 行**（k 为重叠长度）；取最大的 k，其后即为新增行。
+ * 找不到任何重叠（整屏被一条命令刷掉，或终端被 clear）时保守返回本次全部行——
+ * 那种情况下可见内容确实主要由这条命令产生。
+ * @param {string[]} prev 上一次快照（两侧必须用同一种归一化）
+ * @param {string[]} now 本次快照
+ * @returns {string[]} 新增的行
+ */
+function overlapLen(p, n) {
+  for (let k = Math.min(p.length, n.length); k > 0; k--) {
+    let same = true;
+    for (let i = 0; i < k; i++) {
+      if (p[p.length - k + i] !== n[i]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return k;
+  }
+  return 0;
+}
+
+export function newTerminalLines(prev, now) {
+  const p = prev ?? [];
+  const n = now ?? [];
+  if (!p.length) return n.slice();
+  // 两种对法，取重叠更长的那个（重叠越长 ⇒ 判为"新增"的行越少 ⇒ 越保守，不会误报）：
+  // ① 连末行一起对——末行没被改写时（未滚动、或上一条命令的输出尚未落到提示符行）；
+  // ② 去掉 prev 的末行再对——**末行是光标行**，下一条命令的键入会就地改写它
+  //   （`root@a:~# ` → `root@a:~# ls`），此时它不再是平移关系，必须排除。
+  const k = Math.max(overlapLen(p, n), overlapLen(p.slice(0, -1), n));
+  return k > 0 ? n.slice(k) : n.slice();
+}
+
+/**
  * 向 xterm 终端逐条键入命令（每条后回车）。
  * 写入方式遵循项目约束：真实键盘输入（type 逐字符触发 xterm 的 keydown 捕获），
  * 不改 DOM。命令间隔为**自适应**：回车后轮询终端最后非空行，提示符返回
@@ -719,7 +760,10 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   // 新增回显行命中报错特征立即记录并打日志，随返回值交给反思材料
   const ERROR_PATTERN =
     /(command not found|not found|No such file|SyntaxError|Syntax error|Error:|error:|exception|Traceback|refused|timed? ?out|Unrecognized option|无法识别|错误|失败)/i;
-  let prevCount = 0;
+  // 输入期报错检测的游标：**不能拿行数当游标**（见 newTerminalLines 的说明）。
+  // 改为持有上一次的整份可见行快照，逐条按内容求差；基线必须在键入**之前**取——
+  // 否则第 1 条命令的窗口会包含整屏历史（2026-09-23 C-19）。
+  let prevLines = (await readTerminalLines(page)).map((s) => s.trimEnd());
   const termErrors = [];
   for (let ci = 0; ci < commands.length; ci++) {
     // 检查点放在命令边界：不在键入中途断，避免终端留下半条命令
@@ -745,17 +789,17 @@ export async function runTerminalCommands(page, commands, opts = {}) {
       if (await isTerminalAtPrompt(page)) break;
       await page.waitForTimeout(150);
     }
-    // 行级差分：只检查本条命令新增的回显行
-    const lines = await readTerminalLines(page);
-    const newLines = lines
-      .slice(prevCount)
-      .map((s) => s.trimEnd())
-      .filter(Boolean);
-    prevCount = lines.length;
+    // 行级差分：只检查本条命令**新增**的回显行
+    const nowLines = (await readTerminalLines(page)).map((s) => s.trimEnd());
+    const newLines = newTerminalLines(prevLines, nowLines).filter((s) => s.trim());
+    prevLines = nowLines;
     const errs = newLines.filter((l) => ERROR_PATTERN.test(l));
     if (errs.length) {
       termErrors.push({ no: ci + 1, cmd, errs });
-      log(`命令 ${ci + 1} 输入期报错（${errs.length} 行）：${errs[0].slice(0, 100)}`);
+      // 窗口行数一并打出来：它是"归因是否可信"的判据（窗口 ≫ 该条命令的输出量 = 可疑）
+      log(
+        `命令 ${ci + 1} 输入期报错（${errs.length} 行，本条窗口 ${newLines.length} 行）：${errs[0].slice(0, 100)}`,
+      );
     }
   }
   log(
