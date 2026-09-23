@@ -491,6 +491,73 @@ export function extractCodeFromMarkdown(markdown) {
  * @param {string[]} cmds 命令数组（一条命令一个元素）
  * @returns {number[]} 命中的下标（0 起）
  */
+/**
+ * 检出"覆盖题面声明为**现有输入**的文件"的命令（零依赖纯函数，2026-09-23 真机）。
+ * 背景：题面写「现有 person.json 文件内容如下…」时，该文件**由平台提供**；模型却用
+ * `cat > /home/example/person.json <<'EOF'` 重建了一份**自己编的数据**（6 条、hobbies 还是
+ * 字符串），随后 mongoimport 导入的是错数据 ⇒ 8 条查询全部落空，而且**平台的数据源被覆盖**
+ * （破坏性，且无法从题面文本复原——数据只在截图里）。这类动作没有"靠 prompt 自觉"的余地。
+ * 判据（两条同时成立才剔除，宁漏不误伤）：①题面里该路径出现在「现有/已有/内容如下」近旁；
+ * ②命令是写该路径的形态（`> path` / `>> path` / `tee path` / `sed -i … path`）。
+ * @param {string[]} cmds
+ * @param {string} problem 当次题干
+ * @returns {{kept: string[], dropped: Array<{cmd: string, path: string}>}}
+ */
+export function findDataFileOverwrites(cmds, problem) {
+  const text = String(problem ?? '');
+  if (!text || !Array.isArray(cmds) || !cmds.length) return { kept: cmds ?? [], dropped: [] };
+  // 题面把某个文件称作"现有输入"：①该路径近旁出现「现有/已有/内容如下」；②或题面出现
+  // 「现有 person.json 文件内容如下」这类**只给文件名**的措辞——此时按 basename 认路径
+  //（真机题面就是这么写的：文件名在"现有… 文件内容如下"里，完整路径在后面另一行）。
+  const namedFiles = [
+    ...text.matchAll(/(?:现有|已有|已存在)\s*([\w.-]+\.(?:json|csv|txt|dat|log|xml))/g),
+  ].map((m) => m[1]);
+  const protectedPaths = [];
+  const re = /[\w./-]*\/[\w./-]+\.(?:json|csv|txt|dat|log|xml)\b/g;
+  for (const m of text.matchAll(re)) {
+    const around = text.slice(Math.max(0, m.index - 80), m.index + m[0].length + 80);
+    const base = m[0].split('/').pop();
+    if (/现有|已有|已存在|内容如下|如下文件/.test(around) || namedFiles.includes(base)) {
+      protectedPaths.push(m[0]);
+    }
+  }
+  if (!protectedPaths.length) return { kept: cmds.slice(), dropped: [] };
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const kept = [];
+  const dropped = [];
+  for (const cmd of cmds) {
+    const hit = protectedPaths.find((p) => {
+      const P = esc(p);
+      const byRedirect = new RegExp('>>?\\s*[\'"]?' + P + '(?![\\w./-])').test(cmd);
+      const byTee = new RegExp('\\btee\\b[^;|]*[\'"]?' + P + '(?![\\w./-])').test(cmd);
+      const bySedInplace = /\bsed\b/.test(cmd) && /(^|\s)-i(\s|$)/.test(cmd) && cmd.includes(p);
+      return byRedirect || byTee || bySedInplace;
+    });
+    if (hit) dropped.push({ cmd, path: hit });
+    else kept.push(cmd);
+  }
+  return { kept, dropped };
+}
+
+/**
+ * 题面明文规定了提交形态、而提交违反了它 —— 机器判据（零依赖纯函数，2026-09-23 真机）。
+ * 为什么不能只靠 prompt：模型面对「题面明文（不要用双引号改用单引号）」与「平台实测通过格式
+ * （echo 双引号包裹）」两条互相矛盾的规则时，按项目自己的优先级链（平台实测 > 题面）选了实测——
+ * 即使 prompt 已写明"题面优先"仍照旧写 `echo "`（2026-09-23 15:48 真机，新 prompt 确已加载）。
+ * 能机器判定的不要再交给 prompt：命中就把结论直接喂给反思。
+ * @param {string} code 实际提交文本
+ * @param {string} problem 当次题干
+ * @returns {string} 违规说明（空串 = 无违规）
+ */
+export function detectQuoteFormViolation(code, problem) {
+  const p = String(problem ?? '');
+  const c = String(code ?? '');
+  if (!p || !c) return '';
+  if (!/不要使用双引号|改用\s*单引号|使用单引号/.test(p)) return '';
+  if (!/echo\s*"/.test(c) && !/\\"/.test(c)) return '';
+  return '题面明文要求「不要使用双引号改用单引号」，而提交里仍有 `echo "` 形态（引号用了双引号 / 有 `\\"` 转义）。按题面改写成单引号形态，不要保留 echo 双引号包裹。';
+}
+
 export function findSquashedHeredocs(cmds) {
   const out = [];
   (cmds ?? []).forEach((c, i) => {

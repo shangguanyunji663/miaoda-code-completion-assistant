@@ -62,6 +62,8 @@ import {
   spliceIntoTemplate,
   stripNonCodeLines,
   findSquashedHeredocs,
+  findDataFileOverwrites,
+  detectQuoteFormViolation,
   emptyMarkerBlocks,
   sanitizeShellSubmission,
   wrapDbCommandsInEcho,
@@ -478,7 +480,7 @@ async function probeDbClients(page, envGen, problem, bannedCmds) {
  * @param {Set<string>} bannedCmds 实测不存在的命令集
  * @returns {{cmds: string[], sanitizeNote: string}} sanitizeNote 为空串表示未清洗
  */
-function applyCommandGuards(cmds, bannedCmds) {
+function applyCommandGuards(cmds, bannedCmds, problem = '') {
   const replaced = cmds.map((c, i) => {
     const m = c.match(/^(\S+)([\s\S]*)$/);
     const alias = m && bannedCmds.has(m[1]) ? COMMAND_ALIASES[m[1]] : null;
@@ -495,7 +497,23 @@ function applyCommandGuards(cmds, bannedCmds) {
   if (changes.length) {
     log(`shell 护栏清洗 ${changes.length} 处：${changes.slice(0, 3).join('；')}`);
   }
-  return { cmds: cleaned, sanitizeNote: changes.map((n) => `- ${n}`).join('\n') };
+  // 覆盖"题面声明为现有输入"的文件：机器剔除（2026-09-23 真机 —— 模型 cat > 覆盖了平台
+  // 提供的 person.json，导入的是自编数据，8 条查询全落空）。剔除原因进 sanitizeNote，
+  // 让反思知道"有命令被拦下、以及为什么"，而不是静默少执行几条。
+  const ow = findDataFileOverwrites(cleaned, problem);
+  if (ow.dropped.length) {
+    log(
+      `执行层剔除 ${ow.dropped.length} 条命令：题面声明为「现有」的输入文件由平台提供，` +
+        `严禁自造/覆盖 —— ${ow.dropped.map((d) => d.path).join('、')}`,
+    );
+  }
+  return {
+    cmds: ow.kept,
+    sanitizeNote: [
+      ...changes.map((n) => `- ${n}`),
+      ...ow.dropped.map((d) => `- 已剔除（覆盖平台提供的输入文件）: ${d.cmd.slice(0, 80)}`),
+    ].join('\n'),
+  };
 }
 
 /** 把输入期报错结构化为反思材料文本（命令号 + 回现行） */
@@ -705,7 +723,7 @@ async function solveOnceInner(page, probe) {
         // bash 等），反思一轮自愈后重做，避免"插入失败 → 代码查询空结果"连锁失败
         for (let p = 1; p <= 2 && prep.length; p++) {
           checkStop(`混合题数据准备（第 ${p} 轮）`);
-          const guarded = applyCommandGuards(prep, bannedCmds);
+          const guarded = applyCommandGuards(prep, bannedCmds, problem);
           log(`混合题前置：向终端键入 ${guarded.cmds.length} 条数据准备命令（第 ${p} 轮）`);
           const r = await runTerminalCommands(page, guarded.cmds);
           if (r.executed) await settle(page);
@@ -806,7 +824,7 @@ async function solveOnceInner(page, probe) {
       // 执行层兜底（0.9.1 真机：模型无视【实测禁令】仍逐轮输出 mongosh）+ shell 护栏
       // 清洗（中文标签行/全角分号）。生成与反思产出的命令都经过这一处，
       // 替换/清洗后输入期报错检测照常生效。
-      const guarded = applyCommandGuards(cmds, bannedCmds);
+      const guarded = applyCommandGuards(cmds, bannedCmds, problem);
       cmds = guarded.cmds;
       sanitizeNote = guarded.sanitizeNote;
 
@@ -1138,6 +1156,14 @@ async function solveOnceInner(page, probe) {
     // 拼接 + 执行层护栏 → 实际提交评测的文本
     let submitted;
     ({ submitted, sanitizeNote } = finalizeSubmission(codeProbe.code, code));
+
+    // 题面明文提交形态的机器判据（1.6.15）：题面禁双引号而提交仍是 `echo "` ⇒ 结论随
+    // sanitizeNote 进反思材料（prompt 规则在同一形态上已被证伪一次，不能再只靠规则）。
+    const quoteViolation = detectQuoteFormViolation(submitted, problem);
+    if (quoteViolation) {
+      log(`题面提交形态违约（已随反思材料下发）：${quoteViolation}`);
+      sanitizeNote = [sanitizeNote, `- ${quoteViolation}`].filter(Boolean).join('\n');
+    }
 
     // ---- 写入前本地 Python 2 语法守卫（1.5.0）----
     // 平台运行时是 Python 2：一个 f-string / `f(*a, x)` / 类型注解 的代价是
