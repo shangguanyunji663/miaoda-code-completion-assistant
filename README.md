@@ -146,7 +146,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `CANDIDATES` | 首轮并行生成 K 份候选、本地闸门择优（含多数派投票）；`1` = 关闭 | `1` |
 | `FORMAT_PROBE` | 顺序类差异（哈希键序 / set 序）反思前借容器 Python 2 算出写入顺序再交给反思（`python -c` 纯计算，不碰 Redis / 不提交评测）；`0` = 关闭 | `1` |
 | `FORMAT_PROBE_GAP_MS` | 单条探针命令等提示符返回的上限（8! 穷举容器内约数秒） | `20000` |
-| `FORMAT_PROBE_PROMPT_WAIT_MS` / `_POLL_MS` | 切「命令行」后轮询等 shell 提示符的上限与间隔——评测刚结束时 xterm 可能仍在重建，只读一次会误判成"终端不可用"而放弃探针 | `15000` / `800` |
+| `TERMINAL_READY_WAIT_MS` / `_POLL_MS` | 切「命令行」后轮询等**终端内容就绪**的上限与间隔——xterm 容器可见 ≠ 提示符已打印，只读一次会把"还没连上"误判成终端不可用并丢掉【客户端实测】 | `15000` / `800` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果预算**下限**（面板自报「本关最大执行时间」更长时按平台值抬高，见 CHANGELOG 1.5.0） | `25000` |
 | `EVAL_GRACE_MS` / `EVAL_BUDGET_CAP_MS` | 平台自报执行时间之外的收尾余量 / 等待预算上限 | `15000` / `300000` |
 | `EVAL_UNCHANGED_MIN_MS` | 重交同一份代码时，"面板与点击前一致"要等多久才允许采信（代码变了则绝不采信遗留面板） | `10000` |
@@ -237,7 +237,7 @@ miaoda-code-completion-assistant/
 │   ├── eslint.config.js            # ESLint flat config
 │   ├── .prettierrc                 # 格式化规则
 │   ├── docs/
-│   │   └── TROUBLESHOOTING.md      # 22 个真实踩坑与排查方法论
+│   │   └── TROUBLESHOOTING.md      # 23 个真实踩坑与排查方法论
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
 │   ├── public/
 │   │   └── index.html              # 网页工作台前端（单文件原生，无构建链）
@@ -331,7 +331,7 @@ npm run lint      # ESLint 零问题
 |---|---|
 | [`同学使用指南.md`](同学使用指南.md) | **傻瓜式教程**：从零装环境到自动做题，给第一次用的同学 |
 | [`agent/README.md`](agent/README.md) | 完整文档：全部配置项、三种工作模式详解、设计要点、平台兼容性 |
-| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 22 个真实踩坑（环境级 + 代码级）与排查方法论 |
+| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 23 个真实踩坑（环境级 + 代码级）与排查方法论 |
 | [`agent/CHANGELOG.md`](agent/CHANGELOG.md) | 变更日志 |
 | [`shared/capabilities/README.md`](shared/capabilities/README.md) | AI 能力配置说明 |
 | [`AGENTS.md`](AGENTS.md) | 面向 AI 开发代理的项目说明与硬约束 |

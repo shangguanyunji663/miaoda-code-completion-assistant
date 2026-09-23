@@ -145,11 +145,6 @@ export const cfg = {
     formatProbe: pick('FORMAT_PROBE', '1') === '1',
     // 单条探针命令等提示符返回的上限（8! = 40320 次构造，容器内约数秒）
     formatProbeGapMs: pickNum('FORMAT_PROBE_GAP_MS', 20000),
-    // 切到「命令行」后**轮询等 shell 提示符**的上限与间隔（2026-09-23 真机）：评测刚结束时
-    // xterm 的 DOM 渲染器可能正在重建，而 waitForTerminal 只保证 .xterm-screen **可见**、
-    // 不保证内容就绪 ⇒ "读一次 → 空行 → 判 unknown → 放弃"是探针最隐蔽的空转路径。
-    formatProbePromptWaitMs: pickNum('FORMAT_PROBE_PROMPT_WAIT_MS', 15000),
-    formatProbePromptPollMs: pickNum('FORMAT_PROBE_PROMPT_POLL_MS', 800),
     // 等待评测结果的最长时间（毫秒）。1.5.0 起这是**下限**：面板自报「本关最大执行
     // 时间」更长时按平台值抬高（见 evalGraceMs / evalBudgetCapMs）
     evalTimeoutMs: pickNum('EVAL_TIMEOUT_MS', 25000),
@@ -174,6 +169,13 @@ export const cfg = {
   },
   // ---- 终端键入（命令行题） ----
   terminal: {
+    // 切到「命令行」后**轮询等待终端内容就绪**的上限与间隔（命令行题 / 混合题 / 格式反解探针
+    // 共用）。`waitForTerminal` 只保证 `.xterm-screen` **可见**，而 xterm 容器先挂载、容器侧
+    // shell 后连上——可见与"打印出提示符"之间隔 1~5 秒，期间 `.xterm-rows` 存在但每行皆空。
+    // 2026-09-23 真机：切标签后 2 秒识别 → `unknown`；同一题不换标签的识别点 → 稳定 `bash`。
+    // 首个采样点已就绪即返回（零额外开销），超时按最后一次判定降级、如实报 unknown。
+    readyWaitMs: pickNum('TERMINAL_READY_WAIT_MS', 15000),
+    readyPollMs: pickNum('TERMINAL_READY_POLL_MS', 800),
     // 每字符键入延迟：xterm 真实键盘输入，10ms 对逐字符处理已足够稳
     typeDelayMs: pickNum('TERMINAL_TYPE_DELAY_MS', 10),
     // 自适应命令间隔：回车后轮询终端提示符返回即下一条（快命令 ~200ms 放行）；

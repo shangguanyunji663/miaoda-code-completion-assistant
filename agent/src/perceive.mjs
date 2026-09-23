@@ -1,7 +1,8 @@
 // EXPORTS: probePage, writeEditorCode, dumpProbe,
 //          collectCards, collectSections, collectCardCandidates, readEvalPanel, dumpCourseProbe,
 //          waitForTerminal, waitForEditor, readTerminalText, isTerminalAtPrompt, readTerminalLines,
-//          detectTerminalEnv, looksLikeTaskPage
+//          detectTerminalEnv, waitForTerminalEnv, unknownEnvDesc, describeTerminalWait,
+//          looksLikeTaskPage
 // 页面感知层。
 //
 // 设计原则：**不硬编码任何站点 selector**。所有识别走启发式——
@@ -759,6 +760,28 @@ export async function isTerminalAtPrompt(page) {
 }
 
 /**
+ * 组装 `detectTerminalEnv` 命中 unknown 时的描述文本（纯函数）。
+ * 抽出来的两个理由：① unknown 现有三个出口（识别失败、等待超时、读终端异常兜底），
+ * 三处措辞必须一致；② 这段文字会**注入 prompt**，属于"事实 + 动作建议"，值得单测钉住。
+ * 末行有内容时补一条判据与一条禁令（2026-09-23）：末行非空却不是提示符，最常见的原因是
+ * 上一条命令仍在跑、或输入未闭合（shell 还等在续行）——此时 `exit` 在 bash 里会**关掉整个
+ * 终端会话**，比"环境不明"更糟，必须显性禁止。
+ * @param {string} last 终端末行原文
+ * @returns {string} 注入 prompt 的中文说明
+ */
+export function unknownEnvDesc(last) {
+  if (!last) {
+    return '终端暂无回显（尚未出现提示符），按 bash 基线处理：数据库操作需先执行进入命令（mongosh / mysql / redis-cli）建立会话，再逐条执行其子命令。';
+  }
+  return (
+    `当前终端提示符无法识别（最后一行："${String(last).slice(-40)}"）。` +
+    '可能是上一条命令仍在执行、或输入未闭合（shell 还等在续行），也可能是提示符形态不常见。' +
+    '请依据任务自行判断目标环境，从 bash 基线出发（数据库操作先建立会话再执行子命令，' +
+    '严禁混用两种环境的语法）；「不要贸然执行 exit」——在 bash 里 exit 会关闭整个终端会话。'
+  );
+}
+
+/**
  * 探测 xterm 终端当前所处的 shell 环境（命令行题的环境感知）。
  * 背景（2026-09-10 用户反馈）：AI 老是搞错环境——终端已在 mongosh 里却输出
  * bash 命令，或在 bash 里直接执行 use xxx / db.xxx 等 REPL 子命令；反思重试
@@ -837,10 +860,67 @@ export async function detectTerminalEnv(page) {
     // last：末行原文。探针放弃时把它打进日志——"unknown" 本身说不出是"终端没内容"
     // 还是"提示符形态没认出来"，有末行才能一眼分开（2026-09-23 加）
     last,
-    desc: last
-      ? `当前终端提示符无法识别（最后一行："${last.slice(-40)}"）。请依据任务自行判断目标环境；如需数据库操作，从 bash 基线先建立会话再执行子命令，严禁混用两种环境的语法。`
-      : '终端暂无回显（尚未出现提示符），按 bash 基线处理：数据库操作需先执行进入命令（mongosh / mysql / redis-cli）建立会话，再逐条执行其子命令。',
+    desc: unknownEnvDesc(last),
   };
+}
+
+/**
+ * 轮询等待终端**内容就绪**（2026-09-23）。
+ * 与 `waitForTerminal` 的分工：后者只保证 `.xterm-screen` **可见**，而切到「命令行」标签时
+ * xterm 容器先挂载、容器侧 shell 后连上——可见与"打印出提示符"之间隔 1~5 秒，期间
+ * `.xterm-rows` 存在但每行皆空，`detectTerminalEnv` 读到空内容 ⇒ 一律 `unknown`。
+ * 真机账单（2026-09-23，同一天两次）：`已切换到「命令行」标签` 后 2~3 秒识别 → **unknown**；
+ * 而同一题内不换标签的识别点（14:39:01 / 14:40:46 / 14:48:01）→ 稳定 `bash`。
+ * unknown 的代价不止一行日志：`probeDbClients` 的闸门是 `kind === 'bash'`，于是
+ * 【客户端实测】硬事实整题拿不到，模型退回按记忆写 `mongosh`（C-8 的老路）。
+ * **用法限定**：只在"首次接触终端"处等（刚切完标签、还没跑过任何命令）。终端已在用却仍
+ * 认不出提示符时，等下去不会变——那是真实状态，该如实报给模型而不是等掉。一个采样点的
+ * 迭代成本只有一次 DOM 读取，且已就绪的终端在**第一个采样点**就返回，零额外开销。
+ * @param {import('playwright-core').Page} page
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs] 等待上限；超时返回最后一次判定，由调用方降级
+ * @param {number} [opts.pollMs] 轮询间隔
+ * @param {(env: object) => boolean} [opts.accept] 就绪判据，默认"认得出环境（非 unknown）"
+ * @param {() => void} [opts.onTick] 每轮钩子（调用方挂 checkStop，保证等待可被打断）
+ * @returns {Promise<{env: object, waitedMs: number, attempts: number, timedOut: boolean}>}
+ *   env 永不为 null：连 xterm 都读不到时也返回同形的 unknown 对象
+ */
+export async function waitForTerminalEnv(page, opts = {}) {
+  const timeoutMs = Math.max(0, Number(opts.timeoutMs) || 0);
+  const pollMs = Math.max(50, Number(opts.pollMs) || 800);
+  const accept = opts.accept ?? ((e) => !!e && e.kind !== 'unknown');
+  const start = Date.now();
+  let env = null;
+  let attempts = 0;
+  for (;;) {
+    if (opts.onTick) opts.onTick();
+    attempts += 1;
+    env = await detectTerminalEnv(page).catch(() => null);
+    if (accept(env)) return { env, waitedMs: Date.now() - start, attempts, timedOut: false };
+    if (Date.now() - start >= timeoutMs) break;
+    await page.waitForTimeout(pollMs);
+  }
+  if (!env) env = { kind: 'unknown', db: '', last: '', desc: unknownEnvDesc('') };
+  return { env, waitedMs: Date.now() - start, attempts, timedOut: true };
+}
+
+/**
+ * 渲染「终端环境识别」日志的后缀（纯函数）。
+ * 存在理由（2026-09-23）：这条日志原先只打 `kind`，于是 `unknown` 说不出是"终端还没内容"
+ * 还是"有回显但提示符不认"——而 `detectTerminalEnv` 明明已经把末行读出来了。同一个教训
+ * 在探针侧已付过一次账（C-16：静默失效必须可见），这次是主路径没跟上。
+ * @param {string} kind 识别结果
+ * @param {string} last 末行原文
+ * @param {{waitedMs?: number, attempts?: number}} [stats] 等待统计（未等待时传默认值）
+ * @returns {string} 空串表示"首次采样即识别成功"，日志不需要任何修饰
+ */
+export function describeTerminalWait(kind, last, stats = {}) {
+  const waitedMs = Math.max(0, Number(stats.waitedMs) || 0);
+  const attempts = Math.max(1, Number(stats.attempts) || 1);
+  const waited = `等待 ${(waitedMs / 1000).toFixed(1)}s / ${attempts} 次采样`;
+  if (kind !== 'unknown') return attempts > 1 ? `（${waited}后识别）` : '';
+  const tail = last ? `有回显但提示符形态不认（末行 "${String(last).slice(-40)}"）` : '无回显';
+  return `｜未识别：${tail}，${attempts > 1 ? waited : '单次采样'}`;
 }
 
 /**

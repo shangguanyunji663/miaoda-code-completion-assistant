@@ -28,6 +28,8 @@ import {
   waitForEditor,
   readTerminalText,
   detectTerminalEnv,
+  waitForTerminalEnv,
+  describeTerminalWait,
 } from './perceive.mjs';
 import {
   clickEval,
@@ -183,21 +185,26 @@ function stuckNote(fp, lessons) {
 }
 
 /**
- * 轮询等待终端出现 shell 提示符（探针专用，2026-09-23）：每 pollMs 读一次，
- * 直到识别出**具体终端类型**（含数据库 REPL——是否接受由调用方判定）或超时。
- * @returns {Promise<{kind:string, last?:string}|null>} 最后一次判定（超时可能仍是 unknown）
+ * 终端「内容就绪」等待参数——命令行题 / 混合题 / 格式反解探针**共用同一对旋钮**
+ * （`waitForTerminalEnv` 的重试语义在 perceive.mjs，这里只给参数与停止检查）。
+ * 首轮接触终端时必须等（切标签后 xterm 可见 ≠ 提示符已打印，见 perceive.mjs 的说明）。
  */
-async function waitForShellPrompt(page, timeoutMs) {
-  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
-  let last = null;
-  for (;;) {
-    checkStop('等待终端提示符');
-    const env = await detectTerminalEnv(page).catch(() => null);
-    if (env && env.kind !== 'unknown') return env;
-    last = env ?? last;
-    if (Date.now() >= deadline) return last;
-    await page.waitForTimeout(cfg.loop.formatProbePromptPollMs);
-  }
+const terminalReadyOpts = (accept) => ({
+  timeoutMs: cfg.terminal.readyWaitMs,
+  pollMs: cfg.terminal.readyPollMs,
+  accept,
+  onTick: () => checkStop('等待终端就绪'),
+});
+
+/**
+ * 首次接触终端时的环境识别（命令行 / 混合两分支同源）：先轮询等**内容就绪**，再判定；
+ * 把"等了多久 / 为什么仍认不出"一并返回，供调用方原样打进日志。
+ * 2026-09-23：此前这里直接读一次，切标签后 2 秒必得 `unknown`，日志还只说得出 unknown。
+ * @returns {Promise<{env: object, note: string}>}
+ */
+async function perceiveTerminalEnvReady(page) {
+  const w = await waitForTerminalEnv(page, terminalReadyOpts());
+  return { env: w.env, note: describeTerminalWait(w.env.kind, w.env.last, w) };
 }
 
 /**
@@ -251,11 +258,15 @@ async function probeFormatOrder(page, evalText) {
     // 真机代价实拍：定位器已判出 3 处 DICT_ORDER，探针却在 unknown 处静默空转，模型随即
     // 写出"通过计算确定正确写入序 = ['id','login_name',…]"这种**编造**结论（它算不出 py2
     // 的哈希表落位）。等待几秒是探针全部代价里最便宜的一项，不该省。
-    const env = await waitForShellPrompt(page, cfg.loop.formatProbePromptWaitMs);
-    if (!env || env.kind !== 'bash') {
+    const waited = await waitForTerminalEnv(
+      page,
+      terminalReadyOpts((e) => e.kind === 'bash'),
+    );
+    const env = waited.env;
+    if (env.kind !== 'bash') {
       log(
-        `格式反解探针跳过：等待 ${cfg.loop.formatProbePromptWaitMs}ms 后终端仍不在 bash 提示符` +
-          `（实测=${env?.kind ?? '未知'}，末行=${JSON.stringify(env?.last ?? '')}）——` +
+        `格式反解探针跳过：等待 ${cfg.terminal.readyWaitMs}ms 后终端仍不在 bash 提示符` +
+          `（实测=${env.kind}，末行=${JSON.stringify(env.last ?? '')}）——` +
           'REPL 里敲 python -c 只会变成一条报错',
       );
       return '';
@@ -673,8 +684,8 @@ async function solveOnceInner(page, probe) {
     const tab = await switchTaskTab(page, '命令行');
     if (tab.found && tab.clicked) await settle(page);
     if (await waitForTerminal(page)) {
-      const envGen = await detectTerminalEnv(page);
-      log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}`);
+      const { env: envGen, note: envNote } = await perceiveTerminalEnvReady(page);
+      log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}${envNote}`);
       // 与 cmdline 分支同装备：客户端实测（mongosh 是否存在这类硬事实）+ 禁令。
       // 真机事故（2026-09-10）：旧版此处裸调 generateCommands，AI 在无事实依据下
       // 输出不存在的 mongosh，后续 use/db.xxx 子命令被逐条敲进 bash 全部报错，
@@ -768,8 +779,8 @@ async function solveOnceInner(page, probe) {
         const t0 = Date.now();
         // 环境感知：生成前先探测终端当前 shell（bash / mongosh / …），
         // 把事实与该环境的书写约束注入 prompt，防止 AI 搞错环境
-        const envGen = await detectTerminalEnv(page);
-        log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}`);
+        const { env: envGen, note: envNote } = await perceiveTerminalEnvReady(page);
+        log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}${envNote}`);
         // 客户端实测：bash 环境且题干涉及数据库时，实测本机有哪些客户端
         //（mongosh 不存在只有 mongo 这类事实，靠实测不靠模型记忆）
         if (!clientFact) {
@@ -938,9 +949,22 @@ async function solveOnceInner(page, probe) {
       );
       const rt0 = Date.now();
       // 环境感知：反思前重新探测——上一轮序列执行完终端可能已在某个 REPL
-      // 内部，重出的命令必须从这个真实状态出发（不重复进入、不混写语法）
+      // 内部，重出的命令必须从这个真实状态出发（不重复进入、不混写语法）。
+      // 这里**刻意不等**提示符（2026-09-23）：终端已经用过，内容一定出现过；认不出提示符
+      // 是**真实状态**（上一条命令仍在跑 / 输入未闭合在等续行），等下去不会变，如实报给模型
+      // 才是对的——真机同题内见过 bash 与 unknown 交替（14:48:01 bash → 14:48:51 unknown）。
       const envNow = await detectTerminalEnv(page);
-      log(`终端环境识别：${envNow.kind}${envNow.db ? `（当前库 ${envNow.db}）` : ''}`);
+      log(
+        `终端环境识别：${envNow.kind}${envNow.db ? `（当前库 ${envNow.db}）` : ''}${describeTerminalWait(envNow.kind, envNow.last)}`,
+      );
+      // 首轮识别为 unknown 时 `probeDbClients` 的 `kind === 'bash'` 闸门没打开，
+      // 【客户端实测】硬事实整题缺失（C-8 的老路：模型按记忆写 mongosh，本机可能只有 mongo）。
+      // 到这里环境已重新识别，补探测一次——非 bash 时 probeDbClients 自身会拒绝（REPL 里
+      // 敲探测命令只会变成一条报错）
+      if (!clientFact) {
+        const pr = await probeDbClients(page, envNow, problem, bannedCmds);
+        if (pr.clientFact) clientFact = pr.clientFact;
+      }
       const fixed = await reflectCommands({
         problem: slimForReflection(problem),
         previousCommands: cmds,
