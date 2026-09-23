@@ -207,7 +207,7 @@ miaoda-code-completion-assistant/
 │   │   ├── requirement-contract.mjs # 题面契约：切条 + 对齐表 + 冗余 print 守卫（漏要求 / 幻觉引用 / 复制评测程序输出当场打回）
 │   │   ├── format-probe.mjs        # 容器格式反解探针：借平台的 Python 2 算"该按什么顺序写"（FORMAT_PROBE）
 │   │   ├── candidate-rank.mjs      # 多候选择优：四道闸门当评分器 + 多数派投票（CANDIDATES，默认关）
-│   │   ├── output-diff.mjs         # 输出差异定位器：差异分类（顺序/键序/空白/缺行/值差）+ 排序假设排除
+│   │   ├── output-diff.mjs         # 输出差异定位器：差异分类（顺序/键序/空白/缺行/值差）+ 排序假设排除 + 服务端报错解读
 │   │   ├── capability-schema.mjs   # 能力 JSON 加载前校验（fail-fast）
 │   │   ├── platform-facts-schema.mjs  # 平台事实档案结构校验
 │   │   ├── control.mjs             # 运行控制层：停止请求 + 运行态快照
@@ -237,7 +237,7 @@ miaoda-code-completion-assistant/
 │   ├── eslint.config.js            # ESLint flat config
 │   ├── .prettierrc                 # 格式化规则
 │   ├── docs/
-│   │   └── TROUBLESHOOTING.md      # 19 个真实踩坑与排查方法论
+│   │   └── TROUBLESHOOTING.md      # 22 个真实踩坑与排查方法论
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
 │   ├── public/
 │   │   └── index.html              # 网页工作台前端（单文件原生，无构建链）
@@ -331,7 +331,7 @@ npm run lint      # ESLint 零问题
 |---|---|
 | [`同学使用指南.md`](同学使用指南.md) | **傻瓜式教程**：从零装环境到自动做题，给第一次用的同学 |
 | [`agent/README.md`](agent/README.md) | 完整文档：全部配置项、三种工作模式详解、设计要点、平台兼容性 |
-| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 19 个真实踩坑（环境级 + 代码级）与排查方法论 |
+| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 22 个真实踩坑（环境级 + 代码级）与排查方法论 |
 | [`agent/CHANGELOG.md`](agent/CHANGELOG.md) | 变更日志 |
 | [`shared/capabilities/README.md`](shared/capabilities/README.md) | AI 能力配置说明 |
 | [`AGENTS.md`](AGENTS.md) | 面向 AI 开发代理的项目说明与硬约束 |
