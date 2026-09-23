@@ -274,3 +274,22 @@ test('摘录只要真是题面原文就该放过（判据真值是题干全文�
     '题面里确实有的原文不得判成幻觉',
   );
 });
+
+test('对齐表被误写进代码块内时仍能解析出来（2026-09-23 真机：16 行表格进 Begin-End）', () => {
+  const submitted = [
+    '#-*- coding:utf-8 -*-',
+    'def create_user(login_name, real_name):',
+    '#********* Begin *********#',
+    '编号 | 题面原文摘录 | 实现行号 | 一句话说明',
+    '1 | 在Begin-End区域编写 create_user(login_name, real_name) 函数 | 11-20 | 函数入口',
+    '2 | 方法参数login_name为用户登录名，real_name为用户真名 | 12 | 参数接收',
+    '#********* End *********#',
+  ].join('\n');
+  const rows = parseAlignmentTable(submitted);
+  assert.equal(rows.length, 2, '回退解析必须能在提交文本里找到对齐表');
+  assert.equal(rows[0].no, 1);
+  assert.match(rows[0].quote, /在Begin-End区域编写/);
+  assert.match(rows[0].where, /11-20/);
+  // 纯代码零误报：位或表达式与赋值不会被当成对齐表行
+  assert.deepEqual(parseAlignmentTable('x = a | b\ny = 1\n'), []);
+});

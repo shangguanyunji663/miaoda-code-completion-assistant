@@ -1,7 +1,7 @@
 // EXPORTS: chat, generateCode, reflectAndFix, extractCodeFromMarkdown,
 //          splitAnalysisAndCode, detectVerdict, listChatModels,
 //          classifyProblemIntent, generateCommands, reflectCommands, parseCommandLines,
-//          sanitizeShellSubmission, buildPlatformFactsBlock, readCapability
+//          sanitizeShellSubmission, stripNonCodeLines, buildPlatformFactsBlock, readCapability
 // AI 调用层。
 // 设计要点：
 //   1. prompt 单一数据源 —— 直接读取仓库根 shared/capabilities/*.json 中的 prompt 模板，
@@ -473,6 +473,48 @@ export function extractCodeFromMarkdown(markdown) {
  * @param {string} aiOutput AI 返回的完整输出（可能含标记，也可能仅含代码体）
  * @returns {string} 可直接写入编辑器的最终代码
  */
+/**
+ * 剔除"必定不是 Python 语法"的说明性整行（1.6.9）。
+ *
+ * 由来（2026-09-23 真机，微博用户/动态关）：模型把 16 行「题面对齐表」连同表头一起写进了
+ * Begin-End 区域，`spliceIntoTemplate` 原样拼进模板后提交 → `SyntaxError: invalid syntax`
+ * 落在表格行上，白烧一轮评测（该轮反思才自己诊断回来："代码中混入了表格性质的说明文字"）。
+ * 表格行不以 `#` 开头、含 `|` 与中文，在 Python 2 里**必定**编译失败——属"能机器判定"的一类，
+ * 不该交给模型自觉，也不该用一轮 120 秒的评测去发现。
+ *
+ * 判据收得很紧（宁漏不误报，与 py2-guard 同纪律）：
+ *   · **一律保留 `#` 开头的行**——`#` 注释在 Python 2 里合法（`### 小标题` 同样是注释，
+ *     模板自带的中文注释也在这里被保住）；
+ *   · 只认五类形态：Markdown 表格行、表格分隔行、「编号 | …」表头、
+ *     「N | … | …」数据行、代码围栏。
+ * 合法 Python 的位或表达式（`x = a | b`）既不以 `|`/数字开头、也不成表格形态，不会命中。
+ *
+ * @returns {{text: string, dropped: number, samples: string[]}} samples 供日志留痕（最多 2 条）
+ */
+export function stripNonCodeLines(text) {
+  const lines = String(text ?? '').split('\n');
+  const kept = [];
+  const samples = [];
+  for (const l of lines) {
+    if (isNonCodeLine(l)) {
+      if (samples.length < 2 && l.trim()) samples.push(l.trim().slice(0, 60));
+      continue;
+    }
+    kept.push(l);
+  }
+  return { text: kept.join('\n'), dropped: lines.length - kept.length, samples };
+}
+
+function isNonCodeLine(l) {
+  if (/^\s*#/.test(l)) return false; // 注释合法，保留
+  if (/^\s*```/.test(l)) return true; // 代码围栏
+  if (/^\s*\|.*\|\s*$/.test(l)) return true; // | a | b |
+  if (/^\s*[|｜]\s*[-:\s|｜]+[|｜]\s*$/.test(l)) return true; // |---|---|
+  if (/^\s*编号\s*[|｜]/.test(l)) return true; // 编号 | 题面原文摘录 | …
+  if (/^\s*\d+\s*[|｜]\s*\S+.*[|｜]/.test(l)) return true; // 1 | … | … |
+  return false;
+}
+
 export function spliceIntoTemplate(originalTemplate, aiOutput) {
   const orig = String(originalTemplate ?? '');
   const ai = String(aiOutput ?? '');

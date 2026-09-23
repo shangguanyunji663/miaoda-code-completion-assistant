@@ -59,7 +59,7 @@ npm run probe
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流，见下方「网页工作台」） |
 | `npm run caps-check` | 校验配置类 JSON：能力文件（必填字段、prompt 占位符与 `paramsSchema` 声明一致性）+ 平台事实档案（事实段必须带 evidence/date、待验证项必须隔离在 `unknowns`）——编辑 `shared/capabilities/` 或 `shared/platform-facts.json` 后先跑 |
-| `npm test` | 运行单测（136 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 能力配置/事实档案校验 + 运行控制，Node 内置 `node:test`，零新增依赖） |
+| `npm test` | 运行单测（153 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 能力配置/事实档案校验 + 运行控制，Node 内置 `node:test`，零新增依赖） |
 | `npm run lint` | ESLint 静态检查（`eslint.config.js`） |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 | `npm run format:check` | 只检查格式不写入，适合放进 CI |
@@ -117,6 +117,9 @@ npm run probe
 | `READY_TIMEOUT_MS` | 等题目区渲染完成的超时 | `15000` |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
 | `CANDIDATES` | 首轮并行 K 份候选择优（四道本地闸门打分 + 多数派投票），`1` = 关闭 | `1` |
+| `FORMAT_PROBE` | 顺序类差异（哈希键序 / set 序）反思前用容器 Python 2 算出该按什么顺序写（纯计算，不碰 Redis、不提交评测）；`0` = 关闭 | `1` |
+| `FORMAT_PROBE_GAP_MS` | 单条探针命令等提示符返回的上限（8! 穷举容器内约数秒） | `20000` |
+| `FORMAT_PROBE_PROMPT_WAIT_MS` / `_POLL_MS` | 切「命令行」后轮询等 shell 提示符的上限与间隔（只读一次会误判成"终端不可用"） | `15000` / `800` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果预算**下限**：结果面板自报「本关最大执行时间 N 秒」更长时自动抬高（1.5.0，实测 Redis 阻塞类题 120 秒） | `25000` |
 | `EVAL_GRACE_MS` / `EVAL_BUDGET_CAP_MS` | 平台自报执行时间之外的收尾余量 / 预算上限 | `15000` / `300000` |
 | `EVAL_UNCHANGED_MIN_MS` | 重交**同一份**代码时，"面板与点击前一致"要等多久才允许采信；代码变了则绝不采信遗留面板 | `10000` |

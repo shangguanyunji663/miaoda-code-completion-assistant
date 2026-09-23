@@ -1,25 +1,34 @@
-// EXPORTS: splitExpectedActual, diffOutputs, describeOutputDiff, diffSkipReason
-// 输出差异定位器（1.6.4 / 1.6.5）：把"预期 vs 实际"的实质差异**算出来**再交给反思，
-// 而不是丢两坨几千字符的文本让模型自己找不同。
+// EXPORTS: splitExpectedActual, diffOutputs, describeOutputDiff, diffSkipReason,
+//          analyzeOutputDiff, dictKeyOrder, innerLists
+// 输出差异定位器（1.6.4 / 1.6.5 / 1.6.7）：把"预期 vs 实际"的实质差异**算出来**再交给
+// 反思，而不是丢两坨几千字符的文本让模型自己找不同。
 //
-// 两次于同一处失分催生本模块（2026-09-22 真机）：
+// 两次于同一处失分催生本模块（2026-09-22 真机），两处成因已在同一天的容器只读实测中定案
+// （事实正文见 shared/platform-facts.json 的 python_stdlib / redis_py / evaluation 段）：
 //  ① 检索式解析关（16:58–17:07，5 轮未过）：唯一实质差异是 list 里两个元素的顺序，
 //     预期 `['refactoring', 'refactor']`、实现 `['refactor', 'refactoring']`。模型依次
 //     猜"剥 + 前缀""分组条件""加 sort() 字典序"——第 4 轮加 sort 后输出逐字节相同
 //     （refactor < refactoring 本就升序，sort 是空操作）。真相可机械排除：同关预期里
 //     `['code','coding']` 要升序、`['refactoring','refactor']` 要降序，两种排序策略不
-//     可能同时成立 → 既非插入序也非字典序 → Python 2 的 **set 迭代顺序**被 list() 转出
-//     （题面通篇用「集合」二字，相关知识还专门教了 set/add/list()）。
+//     可能同时成立 → 既非插入序也非字典序 → Python 2 的 **set 迭代顺序**被 list() 转出。
+//     实测确证（非推测）：容器内 `list(set(['code','coding']))` → `['code','coding']`、
+//     `list(set(['refactor','refactoring']))` → `['refactoring','refactor']`，三组顺序与
+//     该关预期逐字吻合。
 //  ② 微博用户/动态关（18:10–18:16，4 轮未过）：差异是**字典键的打印顺序**。模型第 2、
-//     3 轮都在"调整 hmset 里字典字面量的键顺序"，两轮输出**逐字节相同**（指纹抓到）——
-//     因为 redis-py 2.10 的 hmset(name, mapping) 按 Python 2 字典哈希序展开 items()，
-//     字面量怎么写都无效；而 Redis 小哈希按**写入顺序**返回。正解是 OrderedDict 或逐
-//     字段 hset。这一类必须与 ① 分开定性，否则会把"该用 set()"的错误结论喂给模型。
+//     3 轮都在"调整 hmset 里字典字面量的键顺序"，两轮输出逐字节相同。真实链路是评测程序
+//     一侧：`str(conn.hgetall(k))` → redis-py 按 Redis 回包序（= 写入序）构造**普通 py2
+//     dict** → 打印时再按 py2 哈希表序输出。所以打印序 = f(键集合, 写入序)，两次打乱。
+//     实测：6 键的 720 种写入序只落在 4 种打印结果上，预期序占其中 120 种，而"按题面示意
+//     顺序写入"恰好打印成真机那版乱序——纯 Python 模拟预测的键序与实际输出逐字吻合。
+//     教训（1.6.6 的错误结论由此产生）：字面量书写序确实是空操作，但由"改 OrderedDict 后
+//     输出仍相同"推不出"代码改不了键序"——两种写法**恰好落在同一格**。方向可修、结果不可
+//     凭推理算出，这类要**算**不要猜：容器一条 `python -c` 就能反解出该按什么顺序写。
+//     这一类必须与 ① 分开定性，否则会把"该用 set()"的错误结论喂给模型。
 //
 // 能力边界（如实）：只处理"逐行比对"型反馈里能定位到的差异；排序假设只覆盖"整体升序 /
-// 整体降序"两种全局策略，都不自洽时给出"疑似 set 迭代顺序"的**提示**而非断言（真值要靠
-// 改一次提交验证）。识别不出预期/实际结构时整层静默（fail-open），但会经 diffSkipReason
-// 把"为什么没启用"打进日志——静默失效必须可见。
+// 整体降序"两种全局策略，都不自洽时给出"set 迭代顺序"的结论（① 已实测确证）。识别不出
+// 预期/实际结构时整层静默（fail-open），但会经 diffSkipReason 把"为什么没启用"打进日志
+// ——静默失效必须可见。
 
 const TOKEN_RE = /'[^']*'|"[^"]*"|[A-Za-z0-9_.]+/g;
 /** 字典 repr 的键值对：`'login_name': 'testuser'`（值可为带引号串或裸数字/词） */
@@ -31,6 +40,22 @@ const ACTUAL_MARKERS = [/实际输出/g, /实验输出/g, /【实际】/g, /^\s*
 
 const tokensOf = (line) => line.match(TOKEN_RE) ?? [];
 const pairsOf = (line) => [...String(line).matchAll(PAIR_RE)].map((m) => [m[1], m[2]]);
+
+/**
+ * 一行 Python 字典 repr 里的**键顺序**（非字典行返回空数组）。
+ * 供容器反解（format-probe）取"要把哈希打印成这个顺序"的目标序列。
+ */
+export const dictKeyOrder = (line) => pairsOf(line).map((p) => p[0]);
+
+/**
+ * 一行里所有**最内层** `[...]` 组的字符串元素（用于逐组验证 set 假设）。
+ * 例：`(['a','b'], ['c']), ['d']` → [['a','b'], ['c'], ['d']]
+ */
+export function innerLists(line) {
+  return [...String(line).matchAll(/\[([^[\]]*)\]/g)]
+    .map((m) => [...m[1].matchAll(/'([^']*)'|"([^"]*)"/g)].map((x) => x[1] ?? x[2]))
+    .filter((a) => a.length);
+}
 const sameMultiset = (a, b) =>
   a.length === b.length && [...a].sort().join('\u0000') === [...b].sort().join('\u0000');
 /** 同一批键值对、只有键的先后不同 → 键顺序问题（不是内容问题） */
@@ -171,18 +196,26 @@ function summarize(pairs) {
   let summary = `定位到 ${pairs.length} 处实质差异`;
   if (dictPairs.length) {
     summary +=
-      '；其中字典键顺序差异**不是被测代码能修的方向**——2026-09-22 真机实测：普通 dict 字面量与 ' +
-      'OrderedDict 两种写法先后提交，连续三轮实际输出逐字节相同（含键序），说明打印顺序由评测程序一侧决定。' +
-      '处置：不要在这一行上反复重交同类改动；先逐个值排除真正的值差，或在容器终端实测写入顺序是否影响回显，' +
-      '确认代码无法影响时按"需要人工判定"上报';
+      '；其中字典键顺序差异的成因已实测确定：打印顺序 = 评测程序 `str(conn.hgetall(k))` 一侧的 ' +
+      'Python 2 哈希表序，链路为「被测代码写入字段的先后 → Redis 按写入序回包 → redis-py 构造普通 ' +
+      'dict → 按表序打印」，即打印序是 f(键集合, 写入序) 的两次打乱结果。所以：**改字典字面量的书写' +
+      '顺序基本是空操作**（送进 hmset 前已被打乱一次），**改逐字段 hset / OrderedDict 的写入先后才真的换结果**' +
+      '——但不是"按预期顺序写就按预期顺序打印"，实测 6 个键的 720 种写入顺序只落在 4 种打印结果上。' +
+      '处置：① 每轮只换一种写入顺序并写清预期；② 同一键序连续两轮不变 = 上次改动是空操作，别再重交同类；' +
+      '③ 该按什么顺序写要**算**不要猜：容器终端跑 `python -c "print dict([(k,i) for k,i in ' +
+      'zip(顺序,range(n))]).keys()" 反解；④ 键集合须与参考实现一致（评测程序 `pop(x, "404")` 掉的字段' +
+      '就是参考写了而预期输出里看不到的字段，漏写会连带改变其余字段落位）';
   }
   if (orderPairs.length) {
     const asc = orderPairs.every((p) => isSorted(tokensOf(p.expected)));
     const desc = orderPairs.every((p) => isSorted(tokensOf(p.expected).slice().reverse()));
     if (!asc && !desc) {
       summary +=
-        '；列表元素顺序无法用任何统一的排序策略解释（部分行要升序、部分行要降序）' +
-        '——最可能是 Python 2 的 set 迭代顺序被 list() 转出（题面用「集合」字样的收集处就该用 set()）';
+        '；列表元素顺序无法用任何统一的排序策略解释（部分行要升序、部分行要降序）——这是 Python 2 的 ' +
+        '**set 迭代顺序**被 list() 转出（2026-09-22 容器实测：`list(set(["code","coding"]))` → ' +
+        '`["code","coding"]`、`list(set(["refactor","refactoring"]))` → `["refactoring","refactor"]`，' +
+        '与该关预期逐字吻合）。正解：题面用「集合」字样的收集处真用 set() 再 list() 转换，' +
+        '**绝不要加 sort()/sorted()**（两组顺序不可能同时由排序得到）';
     } else if (asc && !desc) {
       summary += '；列表顺序符合字典升序（实现用插入序时改为 sorted()）';
     } else if (desc && !asc) {
@@ -198,7 +231,7 @@ function isSorted(t) {
 }
 
 /** 内部：解析 + 比对，返回 {status:'diff'|'same'|'no-structure', reason, pairs, summary} */
-function analyze(detailText) {
+export function analyzeOutputDiff(detailText) {
   const sa = splitExpectedActual(detailText);
   if (!sa) {
     return {
@@ -218,7 +251,7 @@ function analyze(detailText) {
 /** 注入反思材料的中文段；未定位到差异时返回空串（零打扰） */
 export function describeOutputDiff(detailText) {
   try {
-    const a = analyze(detailText);
+    const a = analyzeOutputDiff(detailText);
     if (a.status !== 'diff') return '';
     const lines = a.pairs
       .slice(0, 6)
@@ -230,8 +263,9 @@ export function describeOutputDiff(detailText) {
       `=== 本地差异定位（程序逐行比对所得，非平台输出）===\n${a.summary}\n` +
       `${lines.join('\n')}\n` +
       '要求：① 只针对上面定位到的差异改实现，不要顺手改其它已被证明一致的部分；' +
-      '② DICT_ORDER = 键的打印顺序问题：本平台实测改字面量顺序与改用 OrderedDict **都不改变实际输出**，不要在这一方向反复重交；' +
-      '③ ORDER_ONLY = 元素顺序问题：按 summary 的假设检验容器类型（题面用「集合」字样处应真用 set() 再 list()），而不是给 list 加 sort()；' +
+      '② DICT_ORDER = 键的打印顺序问题：能改，但**改字典字面量的书写顺序是空操作**，要改就改**写入顺序**（逐字段 hset 或 OrderedDict 的元素先后）；' +
+      '目标顺序按 summary 给的办法算出来再写，算不出就明确说明"这是 4 选 1 的哈希落位、本轮换了另一种写入顺序"，禁止在同方向重复重交；' +
+      '③ ORDER_ONLY = 元素顺序问题：按 summary 的假设检验容器类型（题面用「集合」字样处应真用 set() 再 list()，已实测确证），而不是给 list 加 sort()；' +
       '④ WHITESPACE = 逐字符照抄预期那一行的空白，不要改逻辑；' +
       '⑤ 同一处顺序问题已改过一次仍不变时，说明当前假设是错的，换假设而不是再调一次参数。'
     );
@@ -243,7 +277,7 @@ export function describeOutputDiff(detailText) {
 /** 未启用差异定位时的原因（供 loop 打日志——静默失效必须可见）；已定位到差异则返回空串 */
 export function diffSkipReason(detailText) {
   try {
-    const a = analyze(detailText);
+    const a = analyzeOutputDiff(detailText);
     return a.status === 'diff' ? '' : a.reason;
   } catch {
     return '';

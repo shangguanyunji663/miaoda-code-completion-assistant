@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import {
   detectVerdict,
   sanitizeShellSubmission,
+  stripNonCodeLines,
   spliceIntoTemplate,
   emptyMarkerBlocks,
   renderTemplate,
@@ -202,7 +203,7 @@ test('spliceIntoTemplate：函数体内的代码缩进必须保留（2026-09-15 
     '    #*** End ***#',
   ].join('\n');
   const out = spliceIntoTemplate(tpl, ai);
-  assert.match(out, /\n    return conn\.hget\('login', token\)\n/); // 保留 4 空格
+  assert.match(out, /\n {4}return conn\.hget\('login', token\)\n/); // 保留 4 空格
   assert.doesNotMatch(out, /\nreturn conn\.hget/); // 禁止顶格
 });
 
@@ -323,4 +324,43 @@ test('sanitizeShellSubmission：剥不出命令的裸中文行整行剔除', () 
 test('sanitizeShellSubmission：注释行不受影响', () => {
   const r = sanitizeShellSubmission('// 中文注释说明\ndb.c.find()');
   assert.match(r.code, /\/\/ 中文注释说明/);
+});
+
+test('stripNonCodeLines：把误写进代码区的题面对齐表剔除（2026-09-23 真机 SyntaxError）', () => {
+  const src = [
+    '#********* Begin *********#',
+    '编号 | 题面原文摘录 | 实现行号 | 一句话说明',
+    '1 | 在Begin-End区域编写 create_user(login_name, real_name) 函数 | 13-42 | 函数定义完整实现',
+    '16 | 返回创建结果的实现：返回新创建动态的编号。 | 64 | return post_id',
+    '|---|---|---|',
+    '| 表头 | 值 |',
+    '```python',
+    'def create_post(uid, content):',
+    '    return 1',
+    '# 合法注释：请在下面完成要求的功能',
+    '### 小标题也是注释，必须保留',
+    '#********* End *********#',
+  ].join('\n');
+  const r = stripNonCodeLines(src);
+  assert.equal(r.dropped, 6);
+  assert.match(r.text, /def create_post\(uid, content\):/);
+  assert.match(r.text, /# 合法注释：请在下面完成要求的功能/);
+  assert.match(r.text, /### 小标题也是注释，必须保留/);
+  assert.ok(!r.text.includes('编号 | 题面原文摘录'));
+  assert.ok(!r.text.includes('1 | 在Begin-End区域'));
+  assert.ok(!r.text.includes('```'));
+  assert.equal(r.samples.length, 2, '留痕最多 2 条');
+});
+
+test('stripNonCodeLines：合法 Python 的位或表达式与普通代码零触发（宁漏不误报）', () => {
+  const src = [
+    'import redis',
+    'x = a | b',
+    'y = 1 | 2 | 3',
+    'FLAGS = redis.REDIS_READ | redis.REDIS_WRITE',
+    'print "|"',
+  ].join('\n');
+  const r = stripNonCodeLines(src);
+  assert.equal(r.dropped, 0);
+  assert.equal(r.text, src);
 });

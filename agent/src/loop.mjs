@@ -58,6 +58,7 @@ import {
   answerBatch,
   detectVerdict,
   spliceIntoTemplate,
+  stripNonCodeLines,
   emptyMarkerBlocks,
   sanitizeShellSubmission,
   wrapDbCommandsInEcho,
@@ -75,7 +76,22 @@ import {
   findRedundantPrints,
 } from './requirement-contract.mjs';
 import { rankCandidates } from './candidate-rank.mjs';
-import { describeOutputDiff, diffSkipReason } from './output-diff.mjs';
+import {
+  describeOutputDiff,
+  diffSkipReason,
+  analyzeOutputDiff,
+  innerLists,
+} from './output-diff.mjs';
+import {
+  planFormatProbe,
+  probeCommands,
+  parseProbeOutput,
+  renderProbeFindings,
+  POP_FIELDS_COMMAND,
+  parsePoppedFields,
+  paddedProbeCommands,
+  parsePaddedOutput,
+} from './format-probe.mjs';
 
 const log = createLogger('loop');
 
@@ -148,6 +164,139 @@ function stuckNote(fp, lessons) {
 }
 
 /**
+ * 轮询等待终端出现 shell 提示符（探针专用，2026-09-23）：每 pollMs 读一次，
+ * 直到识别出**具体终端类型**（含数据库 REPL——是否接受由调用方判定）或超时。
+ * @returns {Promise<{kind:string, last?:string}|null>} 最后一次判定（超时可能仍是 unknown）
+ */
+async function waitForShellPrompt(page, timeoutMs) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  let last = null;
+  for (;;) {
+    checkStop('等待终端提示符');
+    const env = await detectTerminalEnv(page).catch(() => null);
+    if (env && env.kind !== 'unknown') return env;
+    last = env ?? last;
+    if (Date.now() >= deadline) return last;
+    await page.waitForTimeout(cfg.loop.formatProbePromptPollMs);
+  }
+}
+
+/**
+ * 容器格式反解（1.6.8）：顺序类差异（哈希键序、set 转出来的列表序）的解**只能由平台的
+ * Python 2 算出来**——本地 Node 算不出 py2 的哈希表序，而"试一次"的代价是一轮评测（≈120s）
+ * 加一轮反思（20~110s）。故在反思前借题目页「命令行」跑几条 `python -c` **纯计算**
+ * （不碰 Redis、不写键、不起服务、不提交评测），把结论算出来再交给反思。
+ * 定位与纪律：这是「能机器判定的不要交给 prompt」的延伸——但只在**本地判不了、平台判得起**
+ * 的那一小类差异上用；任何一步不满足（无标签/无终端/不在 bash 提示符/回显解析不到/名字不
+ * 过白名单）都放弃并记日志。探针是增益，绝不能变成主流程的失败点。
+ * @returns {Promise<string>} 注入反思材料的中文段；无结论返回空串
+ */
+async function probeFormatOrder(page, evalText) {
+  if (!cfg.loop.formatProbe) return '';
+  const a = analyzeOutputDiff(evalText);
+  // 这两条原本是静默 return。2026-09-23 事故复盘时看不出"探针也被同一个上游卡死"——
+  // 探针的输入**完全来自差异分类**，定位不到就无可探项，必须把原因说出来（本模块头注
+  // 自己写着"任何一步不满足都放弃并记日志"，此前首两步并未遵守）。
+  if (a.status !== 'diff') {
+    log(
+      `格式反解探针未启用：差异未定位（${a.reason}）——探针的输入来自差异分类，定位不到即无可探项`,
+    );
+    return '';
+  }
+  if (!a.pairs.some((p) => p.kind === 'DICT_ORDER' || p.kind === 'ORDER_ONLY')) {
+    log('格式反解探针未启用：本轮差异里没有顺序类条目（DICT_ORDER / ORDER_ONLY），无项可探');
+    return '';
+  }
+  const plan = planFormatProbe(a.pairs, {
+    setGroups: a.pairs
+      .filter((p) => p.kind === 'ORDER_ONLY')
+      .flatMap((p) => innerLists(p.expected)),
+  });
+  const cmds = probeCommands(plan);
+  if (!cmds.length) {
+    log(`格式反解探针未启用：${plan.skipped.join('；') || '无可探项'}`);
+    return '';
+  }
+  let tabSwitched = false;
+  try {
+    checkStop('格式反解探针');
+    const tab = await switchTaskTab(page, '命令行');
+    if (!tab.found) {
+      log('格式反解探针跳过：页面没有「命令行」标签');
+      return '';
+    }
+    tabSwitched = true;
+    await waitForTerminal(page, 6000).catch(() => {});
+    // 轮询等待 shell 提示符（2026-09-23 真机教训）：`waitForTerminal` 只保证 .xterm-screen
+    // **可见**，不保证内容就绪——评测刚结束时读一次会拿到空行、被判成 unknown 而放弃。
+    // 真机代价实拍：定位器已判出 3 处 DICT_ORDER，探针却在 unknown 处静默空转，模型随即
+    // 写出"通过计算确定正确写入序 = ['id','login_name',…]"这种**编造**结论（它算不出 py2
+    // 的哈希表落位）。等待几秒是探针全部代价里最便宜的一项，不该省。
+    const env = await waitForShellPrompt(page, cfg.loop.formatProbePromptWaitMs);
+    if (!env || env.kind !== 'bash') {
+      log(
+        `格式反解探针跳过：等待 ${cfg.loop.formatProbePromptWaitMs}ms 后终端仍不在 bash 提示符` +
+          `（实测=${env?.kind ?? '未知'}，末行=${JSON.stringify(env?.last ?? '')}）——` +
+          'REPL 里敲 python -c 只会变成一条报错',
+      );
+      return '';
+    }
+    const r = await runTerminalCommands(page, ['clear', ...cmds.map((c) => c.cmd)], {
+      gapMin: 300,
+      gapMax: cfg.loop.formatProbeGapMs,
+    });
+    if (!r.executed) {
+      log('格式反解探针跳过：命令没能键进终端（未找到可见 xterm）');
+      return '';
+    }
+    const text = await readTerminalText(page);
+    const parsed = parseProbeOutput(text);
+    // 0 解 ⇒ 字段集合与参考实现不同（1.6.9）：参考实现多写的那个字段**不在题面里**（本平台
+    // 的"示意"是图片，文本层为空），只存在于评测脚本的 pop 调用里。所以补一轮：先只读 grep
+    // 出被 pop 的字段名，再把它并进键集合重算（模拟 hgetall → pop → 打印）。
+    const zeroItems = plan.hashKeys
+      .map((keys, i) => ({ no: i + 1, keys }))
+      .filter((it) => parsed.get(it.no)?.count === 0);
+    let padded = null;
+    if (zeroItems.length) {
+      await runTerminalCommands(page, ['clear', POP_FIELDS_COMMAND], {
+        gapMin: 300,
+        gapMax: cfg.loop.formatProbeGapMs,
+      }).catch(() => {});
+      await page.waitForTimeout(1200);
+      const fields = parsePoppedFields(await readTerminalText(page));
+      const dq = paddedProbeCommands(zeroItems, fields);
+      if (dq.length) {
+        await runTerminalCommands(page, ['clear', ...dq.map((c) => c.cmd)], {
+          gapMin: 300,
+          gapMax: cfg.loop.formatProbeGapMs,
+        }).catch(() => {});
+        padded = parsePaddedOutput(await readTerminalText(page));
+      }
+      log(
+        `格式反解探针：${zeroItems.length} 项按可见键集合 0 解 → 读评测脚本 pop 字段` +
+          `${fields.length ? `（${fields.join(', ')}）` : '（未取到）'}，补字段重算 ` +
+          `${padded?.size ? `${padded.size} 项有回显` : '无回显'}`,
+      );
+    }
+    const rendered = renderProbeFindings(plan, parsed, { padded });
+    log(
+      rendered
+        ? `格式反解探针：算出 ${rendered.split('\n').filter((l) => l.startsWith('· ')).length} 条实测结论`
+        : '格式反解探针：回显里没解析到标记行，不注入结论（宁缺勿猜）',
+    );
+    return rendered;
+  } catch (e) {
+    if (e instanceof StopRequested) throw e;
+    log.warn(`格式反解探针异常，跳过：${String(e?.message ?? e).slice(0, 140)}`);
+    return '';
+  } finally {
+    // 代码题的写入都在「代码文件」侧，探针完必须切回去（失败也不影响主流程）
+    if (tabSwitched) await switchTaskTab(page, '代码文件').catch(() => {});
+  }
+}
+
+/**
  * 评测文本 → 判定。陈旧面板（本轮未观测到结果）单独短路：遗留文本里可能有
  * 「全部通过」，绝不能据此判过（2026-09-22 事故的误判方向）。
  */
@@ -173,6 +322,18 @@ function finalizeSubmission(template, code) {
   log(
     `拼接方式：模板 ${(String(template ?? '').match(/\bbegin\b/gi) || []).length} 对标记 / AI 输出 ${(String(code ?? '').match(/\bbegin\b/gi) || []).length} 对标记 / 拼后 ${submitted.length} 字符`,
   );
+  // ---- 代码区说明性行净化（1.6.9）----
+  // 模型的「题面对齐表」有时被写进 Begin-End 之间（2026-09-23 真机：16 行表格进代码区
+  // → SyntaxError，白烧一轮评测）。表格行在 Python 2 里必定编译失败，写入前确定性剔除。
+  // 放在 emptyMarkerBlocks 之前：若整段代码被表格挤掉，净化后应被"空区域打点"看见。
+  const strip = stripNonCodeLines(submitted);
+  if (strip.dropped) {
+    submitted = strip.text;
+    log(
+      `已剔除 ${strip.dropped} 行非代码行（题面对齐表/表格混入 Begin-End 的形态）：` +
+        `${strip.samples.join(' ／ ')}`,
+    );
+  }
   // 多标记模板校验（2026-09-15）：模板含多处 Begin/End 区域时，AI 漏补全的
   // 空区域会让评测直接 IndentationError——拼完立即打点，让反思轮感知
   const emptyBlocks = emptyMarkerBlocks(submitted);
@@ -921,7 +1082,20 @@ async function solveOnceInner(page, probe) {
     // 整体偏移，当硬判据会误伤）。打回上限 CONTRACT_MAX 次后放行提交，不阻断主流程。
     for (let c = 0; c < CONTRACT_MAX; c++) {
       if (!contract.present || contractRepairs >= CONTRACT_TOTAL_MAX) break;
-      const rows = parseAlignmentTable(pendingAlignment);
+      // 表格被误写进代码块内时（2026-09-23 真机：16 行表格进了 Begin-End），"代码块之前"
+      // 的 analysis 里自然一行都解析不到 → 会被判成"漏答全部条目"并打回重生成（白烧一轮），
+      // 而真相是"答了但放错位置"。这里补一次回退解析：能解析出就按位置错误处理、不拦——
+      // 表格随后由 stripNonCodeLines 从提交文本里剔除；只有两处都解析不到才按漏答打回。
+      let rows = parseAlignmentTable(pendingAlignment);
+      if (!rows.length) {
+        rows = parseAlignmentTable(submitted);
+        if (rows.length) {
+          log(
+            `题面对齐表被写在代码块内（解析出 ${rows.length} 行）——按"位置错误"处理，` +
+              '不再按漏答打回；表格行由提交前净化剔除，本轮照常提交',
+          );
+        }
+      }
       // 摘录的真值传**原始题干**（不是切条清单），否则切条不完美时正确抄写会被判成幻觉
       const chkA = validateAlignment({ contract, rows, code: submitted, problemText: problem });
       // Begin/End 空区域 = 评测必报 IndentationError 的确定缺陷，与对齐问题同一门槛打回
@@ -1071,6 +1245,15 @@ async function solveOnceInner(page, probe) {
         );
       } else if (fp) {
         log(`实际输出指纹 ${fp}（与上一轮不同）`);
+      }
+
+      // 容器格式反解（1.6.8）：顺序类差异交给平台的 Python 2 算，不算就只能拿评测去试。
+      // 放在指纹之后：探针结论也要拼进 lastEval，若在之前会污染"改了等于没改"的比对基准。
+      // 「本轮改动等于没改」时**照做**——那正是最该算而不是再猜的时刻。
+      // 只跳过遗留面板（stale）：那一轮的差异本身就不可信。
+      if (!stale) {
+        const probeNote = await probeFormatOrder(page, lastEval);
+        if (probeNote) lastEval = `${lastEval}\n\n${probeNote}`;
       }
 
       // 连续同类报错重载兜底（2026-09-15 方案，仅代码题）：同一 Python 异常

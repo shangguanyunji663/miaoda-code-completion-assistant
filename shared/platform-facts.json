@@ -33,8 +33,8 @@
     "counters_are_strings_evidence": "2026-09-22 真机（反向索引关）：index_document 里写 conn.hincrby(\"content:id\", \"num\", 1)，评测回显 Traceback (most recent call last): File \"step1/read.py\", line 40, in <module> print \"当前全文编号: %s\"%(conn.get('content:id')) … redis.exceptions.ResponseError: WRONGTYPE Operation against a key holding the wrong kind of value；题面「相关知识」另给出 conn.incr(\"testcount\") → 执行后 testcount '1'",
     "harness_prints_are_not_ours": "同关实测：评测程序 step1/read.py 自己打印「当前全文编号 / 当前全文详情 / 当前索引词 / 索引词: keyword:…」全部四组行（第 40 行即其中一条 print）。被测函数里再打一遍 → 实际输出里这些行按调用次数成倍出现，逐行比对必然不匹配。「编程要求」里没有打印要求时，一个字都不要输出",
     "harness_prints_are_not_ours_evidence": "2026-09-22 真机（反向索引关）：index_document 内自带 4 行 print，实际输出里「索引词: keyword:…」整段重复出现 3 次（每题面输入行调用一次），而 step1/read.py 自己那份因 WRONGTYPE 未打出",
-    "hash_field_print_order_not_code_controllable": "面板上的哈希字段打印顺序**不随被测代码的写入顺序改变**：普通 dict 字面量与 collections.OrderedDict 两种写法先后提交，实际输出（含键序）逐字节相同。因此\"预期与实际的键顺序不同\"这类差异不是被测代码能修的方向，需要终端实测取证或人工判定",
-    "hash_field_print_order_not_code_controllable_evidence": "2026-09-22 真机（微博用户/动态关，18:44–18:46）：第 1 轮 hmset 传 dict 字面量，第 2、3 轮改传 OrderedDict 按题面示意顺序写入 login_name/posts/real_name/followers/following/id，三轮实际输出的本地指纹同为 83878eee25（逐字节相同），键序恒为 {'posts','login_name','followers','following','real_name','id'}；面板预期为 {'login_name','posts','real_name','followers','following','id'}"
+    "hash_field_print_order_is_py2_dict_table": "面板里 `str(conn.hgetall(key))` 的键顺序 = **Python 2 dict 的哈希表序**，链路：被测代码写入字段的先后 → 小哈希按写入序回包 → redis-py 按回包序构造**普通 dict** → 按表序打印，即打印序 = f(键集合, 写入序)。三条推论：① **改字典字面量的书写顺序基本是空操作**（送进 hmset 前已被 py2 打乱一次）；② **OrderedDict / 逐字段 hset 能改键序**，但只是在有限的几种落位之间换一格，不是「按示意写就按示意打印」；③ 键集合本身也参与决定结果（多写/少写一个字段会整体改变其余字段落位）。目标顺序要**算**不要猜：容器里跑 `python -c \"print dict([(k,i) for k,i in zip(顺序,range(n))]).keys()\"`，取打印出来等于预期键序的那个写入序（无需 Redis、无需评测）",
+    "hash_field_print_order_is_py2_dict_table_evidence": "2026-09-22 容器内只读实测（微博用户/动态关 tasks/XBLSCWNL/4868，命令行标签执行 python -c）：6 键 login_name/posts/real_name/followers/following/id 的 720 种插入顺序只产生 4 种 `.keys()` 结果，其中 120 种等于面板预期序 `login_name, posts, real_name, followers, following, id`；按题面示意顺序插入得到 `posts, login_name, followers, following, real_name, id`，与该关真机实际输出逐字吻合（存档 code.py 第 18 行确为按示意顺序的 OrderedDict）；另测「7 键（含 read.py 会 pop 掉的 last_signup）按示意插入后 pop」得到第三种结果 `id, posts, real_name, followers, following, login_name`"
   },
   "python2_syntax": {
     "note": "以下形态在平台运行时（Python 2，见 runtime 段）会**直接 SyntaxError 使整轮评测失败**——不是风格问题，是能否编译的问题。由 runtime 段的实测结论（平台为 Python 2）加语言规范推导，agent 侧另有提交前的本地静态守卫（agent/src/py2-guard.mjs）在写入前拦这些形态",
@@ -55,7 +55,10 @@
   "python_stdlib": {
     "open_encoding_param": false,
     "evidence": "TypeError: 'encoding' is an invalid keyword argument for this function",
-    "date": "2026-09-20"
+    "date": "2026-09-20",
+    "set_iteration_order": "Python 2 的 `set` 迭代顺序由元素哈希决定——**既不是插入序也不是字典序**，但对同一元素集合稳定可复现。题面用「集合」二字描述收集方式的地方，参考实现就是真用 set 再 `list()` 转换，所以预期输出会出现「这组要升序、那组要降序」这种任何排序策略都自相矛盾的形态。正解：照题面用 set 收集后 list() 转换；**不要给 list 加 sort()/sorted()**（两组顺序不可能同时由排序得到，加了必然错一组）。要哪一组的确切顺序不必猜，容器里一条命令算得出：`python -c \"print list(set(['refactor','refactoring']))\"`",
+    "set_iteration_order_evidence": "2026-09-22 容器内只读实测（root@coder 的 bash 提示符）：`python -c \"print list(set(['code','coding'])); print list(set(['refactor','refactoring'])); print list(set(['test','testing']))\"` → ['code', 'coding'] / ['refactoring', 'refactor'] / ['test', 'testing']，与检索式解析关（tasks/XBLSCWNL/4869）面板预期 `([['software'], ['code', 'coding'], ['refactoring', 'refactor']], ['test', 'testing'])` 三处顺序逐字吻合。该关此前 5 轮反思依次改过「剥 + 前缀」「分组触发条件」「加 sort() 按字典序」，第 4、5 轮实际输出逐字节相同（指纹 8327b08638）",
+    "set_iteration_order_date": "2026-09-22"
   },
   "evaluation": {
     "stdout_comparison": "line-by-line",
@@ -68,7 +71,16 @@
     "return_shape_matters": "题面预期输出形如 (\"wg{\", \"wh{\")，说明该函数须返回 **tuple**（若返回 list 会打印成 [...]，与预期不符）",
     "harness_owns_all_prints": "评测程序的 stdout 全部由评测程序（read.py 之类）自己打印——包括 \"Test autocomplete, prefix: 'wh'\"、\"The start/end range of 'wh' is:  ('wg{', 'wh{')\"（注意 is: 后有**两个空格**，是 print(a, b) 逗号形式）、\"Add keyword: who\" 等。**被测代码绝对不能自己 print 这些行**，否则输出重复 → 逐行比对必然不匹配。实测（2026-09-20 自动补全题）：函数里自加这两行 print 的版本反复失败；去掉全部 print 后**一次提交即通过**",
     "return_bytes_not_unicode": "Python 2：zrange 等命令返回 bytes（即 str），直接返回/打印得到 ['what', ...]；若 decode 成 unicode 再打印会变成 [u'what', ...] —— **文本不同即判不匹配**。实测：\"不 decode、原样返回\" 通过；此前带 u 前缀的版本失败",
-    "no_selftest_block_needed": "无需在提交文件里写 if __name__ == \"__main__\" 自测块：评测程序会 import code.py 并直接调用函数（该块在 import 时不会执行），写了属无害噪声，但常见的两类副作用是\"自加 print\"与\"自加 conn.delete\""
+    "no_selftest_block_needed": "无需在提交文件里写 if __name__ == \"__main__\" 自测块：评测程序会 import code.py 并直接调用函数（该块在 import 时不会执行），写了属无害噪声，但常见的两类副作用是\"自加 print\"与\"自加 conn.delete\"",
+    "harness_script_path_and_reset": "每关的评测程序是容器内的 `/data/workspace/myshixun/stepN/read.py`：`from code import *` 引入被测代码，自己 print 全部结果行，评测前后各做一次重置（只删它列出的那些键）。对被测代码三条后果：① 脚本里 `pop(\"字段\", \"404\")` 掉、预期输出里却看不到的字段，是参考实现**写了**的字段——**键集合要与参考一致**，漏写会连带改变其余字段的打印落位；② 被测函数只需 return，打印归脚本（见 harness_owns_all_prints）；③ 容器内 redis **不常驻**（命令行里 `redis-cli ping` = Connection refused），需要在终端连 Redis 时自己 `redis-server > /dev/null 2>&1 &` 起一个，评测脚本本身也是这么起的",
+    "harness_script_path_and_reset_evidence": "2026-09-22 容器内只读实测（微博用户/动态关 tasks/XBLSCWNL/4868 的「命令行」标签，bash 提示符 root@coder）：`find /data -maxdepth 4 -name read.py` → step1/2/3；`sed -n` 通读 step1/read.py 全文 67 行；`grep -c create_user step*/read.py` 定位本关为 step1；`redis-cli ping` → Connection refused；`tail -12 /data/workspace/eva.log` → 空",
+    "harness_script_path_and_reset_date": "2026-09-22",
+    "detail_panel_two_column_layout": "评测明细里「—— 预期输出 ——」与「—— 实际输出 ——」是**并排渲染在同一行的两个栏目标记**，两份正文并不跟在各自标记之后，而是**整块挂在标题行的下一个兄弟元素**里、且是**两个并列子元素**（顺序：第 1 个=预期、第 2 个=实际）。按 innerText 位置切分会把预期段切成两个标记之间的「——」（被清空），两份正文被「实际输出」一并吞掉 → `expected` 为空 → 差异定位与容器格式反解**同时失效**。取法：文本锚定同时含两个栏目名的**最小元素** → 取 `nextElementSibling` 的子元素（≥2 个且量级相当才认）；**不要写死带 hash 的 CSS module 类名**（实测形如 `output-title-container___P2NjC`，随构建变）",
+    "detail_panel_two_column_layout_evidence": "2026-09-23 只读 DOM 取证（微博用户/动态关 tasks/XBLSCWNL/4868）：`LI.test-case-item` > `DIV.item-desc` 的两个子元素为 `P.output-title-container`（innerHTML = `<span>—— 预期输出 ——</span><span class=\"output-title___ZQJkv\"><span>—— 实际输出 ——</span><span class=\"c-blue current\">展示原始输出</span></span>`）与 `DIV.diff-panel-container___IpXsK`；后者含 2 个子 div、各 552 字符：第 1 个 dict 序为预期序 `login_name,posts,real_name,...`、第 2 个为实际序 `posts,login_name,...`。旧切分产出的明细恒为 1117 字符且 `expected` 为空，与 09-22 18:44–18:46 三次逐字相同",
+    "detail_panel_two_column_layout_date": "2026-09-23",
+    "popped_fields_are_auto_probeable": "「评测脚本会 pop 掉参考实现写了而预期输出看不到的字段」这一条**可由 agent 只读自动取证**：`grep -ho 'pop(\"[^\"]*\"' /data/workspace/myshixun/step*/read.py` 取字段名，再把候选字段并进键集合枚举、构造 dict 后**剔除该字段**比对预期序（即模拟 `hgetall → pop → 打印`）。**0 解正是「字段集合与参考不同」的判据**——只按可见键集合怎么排都到不了预期序时，补上被 pop 的字段立刻有解",
+    "popped_fields_are_auto_probeable_evidence": "2026-09-23 容器内 python -c 纯计算 + 真机一次通过：`DP 1 120 184`（6 键 720 种中 120 解）/ `DP 2 0 -1`（4 键 24 种**全不可行**）；`grep` read.py → `pop(\"last_signup\"` 与 `pop(\"posted\"`（step1 第 36/52 行）；补字段重算 → `RES6 1200 873`（7 键 5040 种中 1200 解）/ `RES4 24 9`（5 键 120 种中 24 解）；agent 自动执行该链路后模型补 `posted` 并按 `content → user_name → id → posted → uid` 写入，第 4 次尝试命中「恭喜您通过本关」",
+    "popped_fields_are_auto_probeable_date": "2026-09-23"
   },
   "editor": {
     "draft_persisted_by_platform": true,
@@ -82,7 +94,8 @@
     "题面「预期输出」是否为字节级精确（本次已用实测判定 u 前缀问题，但其他空白差异未逐一验证）",
     "python2_syntax 段各形态的 SyntaxError 原文（依据是 runtime 段实测的 Python 2 + 语言规范，尚未拿到本平台的报错回显逐条留证）",
     "本关最大执行时间的实际值是否总是出现在结果面板文本里（1.5.0 的等待预算按该栏动态抬高，读不到时回落到 EVAL_TIMEOUT_MS）",
-    "检索式解析关预期输出里 `['refactoring', 'refactor']` 的顺序既非插入序也非字典序（同关另一组 `['code', 'coding']` 却要升序）——推测参考实现用 set 收集同义词后 list() 转换（Python 2 哈希迭代序），待按此改法提交一次验证",
-    "面板上 hgetall 的字段打印顺序究竟由什么决定（Redis 服务端编码 / redis-py 构造 dict 的哈希序 / 评测程序自己的排序）——需容器内实测：起 redis-server 后分别用 dict 字面量与 OrderedDict 写入同一哈希，再 hgetall 比对回显顺序"
+    "检索式解析关改成「用 set 收集同义词后 list() 转换」之后整题能否通过：三组顺序已实测定案为 py2 set 迭代序，但从未按该写法真机提交过一次（该关 5 轮额度当时已烧完）",
+    "大哈希（字段数或值长度超过 Redis ziplist 阈值）时 hgetall 回包顺序是否仍等于写入顺序——本档案的链路结论来自「纯 Python 2 模拟预测的键序与真机实际输出逐字吻合」这一间接印证，未在 Redis 侧直接观测（容器内 redis-server 评测时才起，起服务属改动环境，未做）",
+    "微博关参考实现究竟按哪种写入顺序（**已不构成卡点**：该关 2026-09-23 真机通过——`user:{id}` 按可见 6 键的某个解、`post:{id}` 补 posted 字段后即匹配；参考实现的具体写法仍未直接取证，也不需要了）"
   ]
 }

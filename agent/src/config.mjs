@@ -138,6 +138,18 @@ export const cfg = {
     // K>1 时 token 成本≈×K；首轮默认关思考且请求并发发出，墙钟时间≈单次，真正的代价是
     // token 与端点并发数，故上限收在 5。
     candidates: Math.min(5, Math.max(1, pickNum('CANDIDATES', 1))),
+    // 容器格式反解探针（1.6.8）：顺序类差异（哈希键序 / set 转出来的列表序）本地算不出、
+    // 模型又必然猜不对，反思前借题目页「命令行」跑几条 `python -c` **纯计算**把答案算出来
+    //（不碰 Redis、不写键、不起服务、不提交评测）。代价 ≈2~10 秒 + 一次标签切换，且只在
+    // 差异定位器真的报出顺序类差异时才发生；置 0 退回"只给静态指引、靠评测试"。
+    formatProbe: pick('FORMAT_PROBE', '1') === '1',
+    // 单条探针命令等提示符返回的上限（8! = 40320 次构造，容器内约数秒）
+    formatProbeGapMs: pickNum('FORMAT_PROBE_GAP_MS', 20000),
+    // 切到「命令行」后**轮询等 shell 提示符**的上限与间隔（2026-09-23 真机）：评测刚结束时
+    // xterm 的 DOM 渲染器可能正在重建，而 waitForTerminal 只保证 .xterm-screen **可见**、
+    // 不保证内容就绪 ⇒ "读一次 → 空行 → 判 unknown → 放弃"是探针最隐蔽的空转路径。
+    formatProbePromptWaitMs: pickNum('FORMAT_PROBE_PROMPT_WAIT_MS', 15000),
+    formatProbePromptPollMs: pickNum('FORMAT_PROBE_PROMPT_POLL_MS', 800),
     // 等待评测结果的最长时间（毫秒）。1.5.0 起这是**下限**：面板自报「本关最大执行
     // 时间」更长时按平台值抬高（见 evalGraceMs / evalBudgetCapMs）
     evalTimeoutMs: pickNum('EVAL_TIMEOUT_MS', 25000),

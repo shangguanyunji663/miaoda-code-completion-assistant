@@ -118,7 +118,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
-| `npm test` | 运行单测（136 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
+| `npm test` | 运行单测（153 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -139,6 +139,9 @@ Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-brows
 | `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。题目页 URL 不是 `/tasks/` 形状的平台在此改 | 留空自动按 `TASK_URL_PATTERN` 识别 |
 | `MAX_RETRY` | 单题最大反思重试次数 | `10` |
 | `CANDIDATES` | 首轮并行生成 K 份候选、本地闸门择优（含多数派投票）；`1` = 关闭 | `1` |
+| `FORMAT_PROBE` | 顺序类差异（哈希键序 / set 序）反思前借容器 Python 2 算出写入顺序再交给反思（`python -c` 纯计算，不碰 Redis / 不提交评测）；`0` = 关闭 | `1` |
+| `FORMAT_PROBE_GAP_MS` | 单条探针命令等提示符返回的上限（8! 穷举容器内约数秒） | `20000` |
+| `FORMAT_PROBE_PROMPT_WAIT_MS` / `_POLL_MS` | 切「命令行」后轮询等 shell 提示符的上限与间隔——评测刚结束时 xterm 可能仍在重建，只读一次会误判成"终端不可用"而放弃探针 | `15000` / `800` |
 | `EVAL_TIMEOUT_MS` | 等待评测结果预算**下限**（面板自报「本关最大执行时间」更长时按平台值抬高，见 CHANGELOG 1.5.0） | `25000` |
 | `EVAL_GRACE_MS` / `EVAL_BUDGET_CAP_MS` | 平台自报执行时间之外的收尾余量 / 等待预算上限 | `15000` / `300000` |
 | `EVAL_UNCHANGED_MIN_MS` | 重交同一份代码时，"面板与点击前一致"要等多久才允许采信（代码变了则绝不采信遗留面板） | `10000` |
@@ -197,6 +200,7 @@ miaoda-code-completion-assistant/
 │   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定 + 平台事实注入
 │   │   ├── py2-guard.mjs           # 写入前本地守卫：检出 Python 2 下必定 SyntaxError 的 py3 语法
 │   │   ├── requirement-contract.mjs # 题面契约：切条 + 对齐表 + 冗余 print 守卫（漏要求 / 幻觉引用 / 复制评测程序输出当场打回）
+│   │   ├── format-probe.mjs        # 容器格式反解探针：借平台的 Python 2 算"该按什么顺序写"（FORMAT_PROBE）
 │   │   ├── candidate-rank.mjs      # 多候选择优：四道闸门当评分器 + 多数派投票（CANDIDATES，默认关）
 │   │   ├── output-diff.mjs         # 输出差异定位器：差异分类（顺序/键序/空白/缺行/值差）+ 排序假设排除
 │   │   ├── capability-schema.mjs   # 能力 JSON 加载前校验（fail-fast）
@@ -211,7 +215,7 @@ miaoda-code-completion-assistant/
 │   │   ├── port-check.mjs          # 启动自检 CDP 调试端口
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
-│   ├── test/                       # 单测：16 个文件 / 136 项（node:test，零新增依赖）
+│   ├── test/                       # 单测：17 个文件 / 153 项（node:test，零新增依赖）
 │   │   ├── ai.test.mjs             # 核心纯函数（判定 / 拼接 / 渲染 / 解析）
 │   │   ├── pick-target.test.mjs    # 四级挑页链
 │   │   ├── click-fallback.test.mjs # 按钮点击有界重扫 + exists 语义
@@ -278,7 +282,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 136 项单测必须全绿
+npm test          # 153 项单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 

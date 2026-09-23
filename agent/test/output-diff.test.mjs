@@ -45,6 +45,8 @@ test('顺序差异被定位为 ORDER_ONLY，且 summary 判出"任何排序策�
   );
   assert.match(r.summary, /set 迭代顺序/);
   assert.match(r.summary, /无法用任何统一的排序策略解释/);
+  assert.match(r.summary, /容器实测/, 'set 结论已由实测确证，不得再写成推测');
+  assert.match(r.summary, /绝不要加 sort\(\)\/sorted\(\)/);
 });
 
 test('预期整体就是字典升序时，summary 直接给出"改 sorted()"的可执行结论', () => {
@@ -99,23 +101,27 @@ const USER_LINE_EXP =
 const USER_LINE_ACT =
   "创建的用户信息为: {'posts': '0', 'login_name': 'testuser', 'followers': '0', 'following': '0', 'real_name': 'Test User', 'id': '1'}";
 
-test('DICT_ORDER：键值一一对应只有键序不同 → 判为"代码改不了"的方向，不再推荐被证伪的写法', () => {
+test('DICT_ORDER：键值一一对应只有键序不同 → 成因是读侧 py2 哈希表序，该改写入顺序且要算不要猜', () => {
   const r = diffOutputs(USER_LINE_EXP, USER_LINE_ACT);
   assert.deepEqual(
     r.pairs.map((p) => p.kind),
     ['DICT_ORDER'],
   );
   assert.match(r.pairs[0].note, /预期 login_name → posts → real_name/);
-  assert.match(r.summary, /不是被测代码能修的方向/);
-  assert.match(r.summary, /逐字节相同/);
+  assert.match(r.summary, /Python 2 哈希表序/);
+  assert.match(r.summary, /字面量的书写\s*\n?顺序基本是空操作/);
+  assert.match(r.summary, /逐字段 hset \/ OrderedDict 的写入先后才真的换结果/);
+  assert.match(r.summary, /720 种写入顺序只落在 4 种打印结果/);
+  assert.match(r.summary, /pop\(x, "404"\)/, '要提示参考实现含预期里看不到的字段');
   assert.ok(
-    !/改用 OrderedDict|必须用 collections\.OrderedDict|或逐字段 hset/.test(r.summary),
-    '不得再把已被真机证伪的写法当建议给出',
+    !/不是被测代码能修的方向/.test(r.summary),
+    '1.6.6 那个由错误观测推出的"改不了"结论已撤，不得回流',
   );
   assert.ok(!/set\(\)/.test(r.summary), '字典键序问题不该给出 set 假设');
   const note = describeOutputDiff(`预期输出：\n${USER_LINE_EXP}\n实际输出：\n${USER_LINE_ACT}`);
   assert.match(note, /DICT_ORDER = 键的打印顺序问题/);
-  assert.match(note, /都不改变实际输出/);
+  assert.match(note, /改字典字面量的书写顺序是空操作/);
+  assert.match(note, /禁止在同方向重复重交/);
 });
 
 test('标记写法兼容：「预期：/实际：」与「预期输出：」都要能识别', () => {

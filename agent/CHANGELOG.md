@@ -2,6 +2,87 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.6.9] - 2026-09-23（分支 feat/2-c-web-service）
+
+**一次真机复现挖出三个各自独立的缺陷**：微博用户/动态关（`tasks/XBLSCWNL/4868`）连续三轮实际输出逐字节相同被指纹止损，表面像"模型算不出 Python 2 的哈希落位"，实际是**两套确定性工具在同一个上游卡死了**——差异定位器解析不出预期/实际正文，容器格式反解探针因此拿不到可探项，而它连"我没探"都没说。修完之后该关真机通过。
+
+### Fixed
+
+- **`act.mjs` 明细抓取（根因）**：`COLLECT_TEST_SETS` 假设"标记后紧跟本栏正文"，而本平台把两个栏目标记**并排渲染在标题行**，两份正文整块挂在标题行的**下一个兄弟元素**里、且是**两个并列子元素**。旧实现把预期段切成两个标记之间的「——」（5 字符，被 `cleanBlock` 清空），两份正文被"实际输出"一并吞掉 ⇒ `expected` 为空 ⇒ 差异定位与格式探针**同时失效**（1.6.6 修的"同行标记"并未覆盖这一形态；09-23 与 09-22 18:44 三次的明细字符数**都是 1117**）。现改为**文本锚定**（不写死带 hash 的 CSS module 类名）：含两个栏目名的**最小元素** → `nextElementSibling` 的**两个量级相当子元素** = 预期/实际；结构不符回退旧切分
+- **`loop.mjs` 探针：轮询等待 shell 提示符**：`waitForTerminal` 只保证 `.xterm-screen` **可见**、不保证内容就绪，评测刚结束时读一次会拿到空行 → 判 `unknown` → 探针空转放弃（真机实拍：定位器已判出 3 处 `DICT_ORDER`，探针一声不响地跳过，模型随即写出"**通过计算确定正确写入序 = ['id','login_name',…]**"这种编造结论）。改为轮询等待（`FORMAT_PROBE_PROMPT_WAIT_MS` 默认 15000 / `…_POLL_MS` 默认 800），失败日志带上**末行原文**
+- **探针两处静默 `return` 补上原因**（本模块头注自己写着"任何一步不满足都放弃并记日志"，前两步并未遵守）
+- **题面对齐表「放错位置」改判 + prompt 补硬约束**：模型把表格写进代码块内时，`pendingAlignment`（代码块之前的部分）一行都解析不到 → 被判成「漏答全部条目」并**打回重生成（白烧一轮）**，真相却是「答了但放错位置」（2026-09-23 真机：16 行表格进 Begin-End，同时触发 SyntaxError 与 16 条 `missing_item`）。现补一次**回退解析**（`parseAlignmentTable(submitted)`），命中即按位置错误处理、不拦——表格随后由 `stripNonCodeLines` 剔除；两个 prompt 的对齐表段落补上第 ⑤ 条硬约束：「**表格只能出现在代码块之外**，Begin/End 之间只能有可执行的代码」。**根因是 prompt 表述，所以两处一起改**（1.6.9 首版只做了净化兜底）
+- **`ai.mjs` 新增 `stripNonCodeLines`**：模型的「题面对齐表」有时被写进 Begin-End 之间 → 拼接后提交 → `SyntaxError: invalid syntax` 落在表格行上，**白烧一轮评测**（该轮反思才自己诊断回来："代码中混入了表格性质的说明文字"）。写入前确定性剔除五类形态（Markdown 表格行 / 表格分隔行 / 「编号 | …」表头 / 「N | … | …」数据行 / 代码围栏），**一律保留 `#` 开头的行**（注释在 Python 2 里合法，模板自带的中文注释不能被误伤）；接在 `finalizeSubmission` 里、`emptyMarkerBlocks` 之前
+
+### Added
+
+- **探针的"0 解 → 补字段"闭环**：`DICT_ORDER` 项按可见键集合穷举得到 **0 解**时，说明**字段集合**与参考实现不同——参考实现多写的字段名**不在题面里**（本平台的"示意"是图片，文本层实测只有空行），只存在于评测脚本 `X.pop("字段","404")` 调用里。新链路：只读 `grep` 出被 pop 的字段名（`POP_FIELDS_COMMAND`，路径为平台实测常量、不含用户输入）→ 并进键集合重算（枚举 → 构造 dict → 剔除该字段 → 比对预期序，即模拟 `hgetall → pop → 打印`）→ 给出"补哪个字段 + 按什么顺序写"（新标记行 `DQ <编号> <命中数> <首解序号> <字段>`）
+- 新旋钮 `FORMAT_PROBE_PROMPT_WAIT_MS` / `FORMAT_PROBE_PROMPT_POLL_MS`（`.env.example` 同步收录）
+- `perceive.mjs` 的 `detectTerminalEnv` 在 `unknown` 分支带上 `last`（末行原文），供探针日志区分"终端没内容"与"提示符形态没认出来"
+- 事实档案新增两条实测（`evaluation.detail_panel_two_column_layout`、`evaluation.popped_fields_are_auto_probeable`，均带 evidence + date）
+
+### Verified
+
+- `npm test` **153/153**（`stripNonCodeLines` 2 项 + 补字段链路 3 项 + 对齐表回退解析 1 项）、`npm run lint`、`npm run caps-check`、`npm run format:check` 全绿
+- **真机端到端通过**（2026-09-23，`tasks/XBLSCWNL/4868`，`npm run once` → `共 1 题，通过 1 题`，第 4 次尝试命中「恭喜您通过本关」）。关键日志：第 1 轮「格式反解探针：算出 1 条实测结论」（6 键 120 解 → `posts → followers → following → id → login_name → real_name`）；第 3 轮「1 项按可见键集合 0 解 → 读评测脚本 pop 字段（last_signup, posted），补字段重算 1 项有回显」，模型据此补 `posted` 并按 `content → user_name → id → posted → uid` 写入后通过
+- 容器内实测（`python -c` 纯计算，未起 Redis）：`user:{id}` 可见 6 键 720 种写入序中 120 种可行（首解 rank 184）；补 `last_signup` 的 7 键 5040 种中 1200 种可行（rank 873）；`post:{id}` 可见 4 键 24 种**全部不可行**，补 `posted` 的 5 键 120 种中 24 种可行（rank 9）
+
+### Notes
+
+- **教训（第三次同类，见 TROUBLESHOOTING C-16）**：检测/定位类工具的**第一步**失效时必须让它自己喊出来——两个下游各自静默，复盘时看着像两处独立故障，实际是同一个上游。与 C-14（改了等于没改）、C-15（撤换错误结论）同源：**静默失效比错误结论更难查**
+- 明确未做：探针仍不覆盖命令行/混合分支（那条路径的终端回显本身就是反思材料，塞进探针结论会互相污染）
+
+## [1.6.8] - 2026-09-22（分支 feat/2-c-web-service）
+
+**把 1.6.7 定案的机制变成能自己算的探针**：顺序类差异（`DICT_ORDER` / `ORDER_ONLY`）本地算不出、模型必然猜不对，而"试一次"的代价是一轮评测（≈120s）+ 一轮反思（20~110s）。既然容器里就有平台的 Python 2，反思前让它**替我们算一次**——只花几秒，且完全不碰评测。
+
+### Added
+
+- **`agent/src/format-probe.mjs`（格式反解探针，零依赖纯函数）**：`planFormatProbe` 把差异对折成待探项（哈希键序 / 词组集合序），`probeCommands` 生成 `python -c` **纯计算**命令，`parseProbeOutput` 只认回显里的 `DP <编号> <命中数> <首解序号>` / `SP <编号> <是否一致> [实测序]` 标记行，`renderProbeFindings` 出注入反思的中文段，`unrankPermutation` 把"首解序号"还原成可照抄的写入顺序
+  - 输出只回编号与序号、不回整条顺序：**xterm 是按列硬换行的**，长回显会把键名从中间劈开（取证时亲眼见过），逐行正则当场废掉——写入序改由 JS 端按同一字典序规则反排，两侧规则一致
+  - **键名白名单 `/^[A-Za-z0-9_.-]+$/`**：这些串是从网页文本里抠出来、要被打进真实 shell 的，不过滤等于开命令注入面；非 ASCII 还有独立原因（py2 的 `python -c` 里裸非 ASCII 直接 SyntaxError）
+  - 三条硬约束写进模块头注与单测：只生成 `python -c` 纯计算（不含任何 Redis 操作/不起服务）、单次最多 2 组、键数 ≤ 8（8! 穷举容器内约数秒）
+- **`loop.mjs` 的 `probeFormatOrder(page, evalText)`**：反思前切「命令行」→ 确认在 **bash 提示符**（REPL 里敲 `python -c` 只会变成一条报错）→ `clear` + 逐条键入 → 读回显 → **finally 里切回「代码文件」**。定位到顺序差异才触发；无标签 / 无终端 / 非 bash / 解析不到标记 → 放弃并记日志，**探针永不成为主流程的失败点**
+  - 放在输出指纹**之后**：探针结论也要拼进反思材料，拼在之前会污染"改了等于没改"的比对基准
+  - 「本轮改动等于没改」时照做——那正是最该算而不是再猜的时刻
+- 新旋钮 `FORMAT_PROBE`（默认 1）与 `FORMAT_PROBE_GAP_MS`（默认 20000，容 8! 穷举）；`output-diff.mjs` 导出 `analyzeOutputDiff` / `dictKeyOrder` / `innerLists` 供探针复用（一处口径，防两份漂移）
+
+### Notes
+
+- 验证：`npm test` **147/147**（新增 `test/format-probe.test.mjs` 11 项）、`npm run lint`、`caps-check`、`format:check` 全绿
+- **换算规则有真机三证**（同一容器、三条独立命令）：① 探针命令给出 `DP 1 120 184`；② 1.6.7 取证时穷举枚举直接打印的解列表，首元素即 `('posts','followers','following','id','login_name','real_name')`；③ 专项复核 `print list(itertools.permutations(ks))[184]` → `posts,followers,following,id,login_name,real_name`。三者与 `unrankPermutation(keys, 184)` 完全一致 → JS 反排与 `itertools.permutations` 产出序等价，已钉进单测（`rank 184` 用例）。命中数 120 也与 1.6.7 的实测一致
+- 探针的止损方向：**无解（0 种写入顺序能打印成预期）时结论自动翻成"这不是顺序问题，是键集合问题"**，并指向评测脚本 `pop(x, "404")` 掉的字段——避免模型在不可能正确的方向上继续调顺序
+- 未做（明确留着）：命令行/混合分支不接探针（那条路径终端回显本身就是反思材料，塞进探针结论会互相污染）；探针不写键、不起 redis-server，因此 1.6.7 那条"大哈希是否仍按写入序回包"的未知仍在 `unknowns` 里
+
+
+
+**容器内只读取证，把两处长达数轮的"格式玄学"变成实测事实**（用户批准的只读勘查：借题目页「命令行」标签读平台自己的评测脚本 + 跑纯计算 `python -c`，全程不改代码、不提交评测、不启服务）。
+
+关键收获是一条方法论：**1.6.6 的撤回到错了方向**。那轮观测（dict 字面量与 OrderedDict 三轮输出逐字节相同）是真的，结论（"键序不是被测代码能修的方向"）是错的——两种写法**恰好落在同一个哈希落位**上，看起来像"改了没用"，实际是"两次抽签抽到了同一格"。这类"观测对、推断错"只能靠读真值源（评测脚本本身）破除，靠日志再多也推不出来。
+
+### Added
+
+- **事实档案新增评测程序解剖（`evaluation.harness_script_path_and_reset`）**：评测脚本确切在 `/data/workspace/myshixun/stepN/read.py`，`from code import *` 后自己 `print` 全部结果行 → 题面「预期输出」就是它的 stdout 录制；redis 未起时它自己 `redis-server … &` 拉起（平时不常驻，`redis-cli ping` = Connection refused）；评测前后各重置一次但**只删它列出的键**；读哈希是 `str(conn.hgetall(k))` 且先 `pop(字段, "404")` → **被 pop 掉的字段就是参考实现写了、预期输出里看不到的字段**（本关 last_signup / posted）
+- **事实档案新增 Python 2 set 迭代顺序（`python_stdlib.set_iteration_order`），并把它从推测升级为实测**：容器内 `list(set(['code','coding']))` → `['code','coding']`、`list(set(['refactor','refactoring']))` → `['refactoring','refactor']`，与检索式解析关（1.6.4 立项的那次事故）预期三处顺序**逐字吻合** → 该关"部分升序部分降序"的差异唯一正解是真用 `set()` 收集再 `list()`，加 `sort()` 必然错其中一组
+- **事实档案改写字典键序条目（`redis_py.hash_field_print_order_is_py2_dict_table`，取代 1.6.6 的 `…_not_code_controllable`）**：打印序 = 评测程序一侧的 py2 哈希表序，链路「写入序 → Redis 按写入序回包 → redis-py 构造普通 dict → 按表序打印」，即两次打乱。容器实测：6 键的 720 种写入序只产生 4 种打印结果，预期序占 120 种，"按题面示意序写入"恰好打印成真机那版乱序——**纯 Python 模拟预测的键序与真机实际输出逐字吻合**，整条链路无需起 Redis 即被间接验证
+
+### Changed
+
+- **`output-diff.mjs` 的 DICT_ORDER 结论与处置全部反转重写**：由"不是被测代码能修的方向 → 按需要人工判定上报"改为"能改：改字面量书写序是空操作，要改**写入序**（逐字段 hset / OrderedDict 元素先后）；且它是 4 选 1 的哈希落位，**要算不要猜**（容器 `python -c` 反解），每轮只换一种并声明预期；键集合还须与参考一致（漏掉 read.py 会 pop 的字段会连带改变其余字段落位）"。反思注入的处置第②条同步改写
+- **ORDER_ONLY 的 set 假设从"最可能是"升级为"已实测确证"**，并补上"绝不要加 sort()/sorted()"的硬禁止与实测出处
+- 模块头注重写（两处事故的定案过程 + "为什么 OrderedDict 那轮看起来没变化"），`unknowns` 相应收窄：删掉"打印顺序由什么决定"，留下两条真未知（大哈希超过 ziplist 阈值时回包序是否仍等于写入序；检索式关改用 set 后整题能否通过——顺序问题定案，但从未按该写法真机提交过一次）
+
+### Fixed
+
+- `test/ai.test.mjs:205` 的 `no-regex-spaces`（1.6.x 期间引入、`npm run lint` 覆盖 test/ 却漏跑过）：`\n    return` → `\n {4}return`
+
+### Notes
+
+- 验证：`npm test` **136/136**、`npm run lint`（src/ + test/）零告警、`caps-check`、`format:check` 全绿
+- 取证过程本身是**只读**的：`find/ls/cat/sed/awk/grep/wc/tail/redis-cli ping` + 纯计算 `python -c`。没有写入编辑器、没有点评测、没有启动 redis-server（那属改动环境，仍待单独许可；本轮结论也不需要它）
+- 顺带确认一处无害噪声：`runTerminalCommands` 的输入期报错正则会把 Python 源码里的 `except …ConnectionError:` 判成报错行——只在"用终端读源码"这种勘查场景出现，不影响评测，暂不改判据
+
+
 ## [1.6.6] - 2026-09-22（分支 feat/2-c-web-service）
 
 **一次自我证伪**（微博用户/动态关第二次复跑，18:44–18:46）。用户重启工作台后重跑，两件新事同时发生：

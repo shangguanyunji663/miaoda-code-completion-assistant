@@ -1028,7 +1028,34 @@ const COLLECT_TEST_SETS = () => {
     // 左右栏 DOM 顺序一般 预期在前，但按实际出现位置切分以兼容颠倒的渲染顺序
     let expected = '';
     let actual = '';
-    if (iE < iA) {
+    // ① 首选：**DOM 结构锚定**（2026-09-23 真机实测）。本平台把两个栏目标记并排渲染在同一
+    //    行（`<p><span>—— 预期输出 ——</span><span>—— 实际输出 ——</span></p>`），两份正文
+    //    既不跟在各自标记之后、也不分列两栏，而是**整块挂在标题行的下一个兄弟元素**里，
+    //    且是**两个并列子元素**（实测：两个 div 各 552 字符，第 1 个=预期、第 2 个=实际）。
+    //    此时按 innerText 位置切分会把"预期段"切成两个标记之间的「——」并被清空，而两份
+    //    正文被 actual 一并吞掉 ⇒ expected 空 ⇒ 差异定位与容器格式反解**同时失效**
+    //    （2026-09-23 事故根因，1.6.6 的"同行标记"修复并未覆盖这一形态）。
+    //    锚点只用文本（带 hash 的 CSS module 类名会变，不可写死），结构不符则回退 ②。
+    const titleEl = Array.from(el.querySelectorAll('*'))
+      .filter((x) => {
+        const s = x.innerText ?? '';
+        return s.includes('预期输出') && s.includes('实际输出');
+      })
+      .sort((a, b) => (a.innerText?.length ?? 0) - (b.innerText?.length ?? 0))[0];
+    const cols = titleEl?.nextElementSibling
+      ? Array.from(titleEl.nextElementSibling.children)
+          .map((c) => (c.innerText ?? '').trim())
+          .filter(Boolean)
+      : [];
+    // 两列文本量级相当才认：防止把"标题行 + 单块正文"的普通结构误判成并列双栏
+    const colsOk =
+      cols.length >= 2 &&
+      Math.min(cols[0].length, cols[1].length) / Math.max(cols[0].length, cols[1].length) > 0.3;
+    // ② 回退：标记与正文相邻的旧写法（按出现位置切分，兼容颠倒的渲染顺序）
+    if (colsOk) {
+      expected = cut(cols[0].replace(/展示原始输出/g, '')).slice(0, 2000);
+      actual = cut(cols[1].replace(/展示原始输出/g, '')).slice(0, 2000);
+    } else if (iE < iA) {
       expected = cut(t.slice(iE + 4, iA)).slice(0, 2000);
       actual = cut(t.slice(iA + 4).replace(/展示原始输出/g, '')).slice(0, 2000);
     } else {
@@ -1157,5 +1184,15 @@ export async function collectTestSetDetails(page, opts = {}) {
     )
     .join('\n\n');
   log(`已展开 ${clicked} 个折叠块，抓取 ${sets.length} 组预期/实际输出明细（${text.length} 字符）`);
+  // 预期段为空是"面板渲染方式与抓取假设不符"的上游征兆：它会让**本地差异定位与容器格式
+  // 反解同时失效**（两者都以差异分类为输入），而下游只会各报一句"未启用"。这里直接点出
+  // 是抓取侧的问题，避免复盘时把两处失效当成两个独立故障（2026-09-23 事故审计结论）。
+  const emptyExp = sets.filter((s) => !s.expected.trim()).length;
+  if (emptyExp) {
+    log.warn(
+      `${emptyExp}/${sets.length} 组明细的「预期输出」段为空——面板渲染方式可能与抓取假设` +
+        '不符，本地差异定位与容器格式反解都会因此失效，请核对页面结构',
+    );
+  }
   return text.slice(0, totalCap);
 }

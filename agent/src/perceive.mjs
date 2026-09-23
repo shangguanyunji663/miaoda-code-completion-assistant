@@ -834,6 +834,9 @@ export async function detectTerminalEnv(page) {
   return {
     kind: 'unknown',
     db: '',
+    // last：末行原文。探针放弃时把它打进日志——"unknown" 本身说不出是"终端没内容"
+    // 还是"提示符形态没认出来"，有末行才能一眼分开（2026-09-23 加）
+    last,
     desc: last
       ? `当前终端提示符无法识别（最后一行："${last.slice(-40)}"）。请依据任务自行判断目标环境；如需数据库操作，从 bash 基线先建立会话再执行子命令，严禁混用两种环境的语法。`
       : '终端暂无回显（尚未出现提示符），按 bash 基线处理：数据库操作需先执行进入命令（mongosh / mysql / redis-cli）建立会话，再逐条执行其子命令。',
