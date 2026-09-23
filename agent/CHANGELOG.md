@@ -2,6 +2,26 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.6.10] - 2026-09-23（分支 feat/2-c-web-service）
+
+**可移植性修正：让 clone 下来的人在别人的机器上也能跑通。** 查出的三处都是"只在本机成立"的假设——代码本身一直是跨平台的（`launch-browser.mjs` 早就有 win32 / 非 win32 双分支、浏览器路径以环境变量优先），缺的一直是**引导**。
+
+### Fixed
+
+- **`npm test` 不再依赖 shell 展开通配符**：`node --test test/*.test.mjs` → `node --test`（无参数，由 Node 自己发现测试文件）。Windows 的 cmd / PowerShell **不展开 glob**，而 npm 在 Windows 上默认用 cmd 执行脚本，字面量 `test/*.test.mjs` 会直接交给 Node；Node 21+ 才认 glob 模式，而 `engines` 写的是 `>=18` ⇒ **Node 18 / 20 的 Windows 用户跑不了测试**。改后三个平台、各种 shell 行为一致（实测 153/153）
+- 顺带排除一个更隐蔽的写法：`node --test test/` 同样不可用——Node 会把目录当模块去 `require`，报 `Cannot find module '.../test'`（本机实测）
+
+### Docs
+
+- **根 README 的「前置条件 / 第 1 步」不再假设 Windows**：启动浏览器改为按平台分列（`npm run browser` 全平台可用；`my-edge` 与 `*.bat` 标注 Windows 专用），并写明 **macOS / Linux 需自行设置 `BROWSER_PATH`**——自动探测的候选路径全是 Windows 默认安装位置；`cp .env.example .env.local` 补注 Windows 纯 cmd 下的 `copy` 写法
+- 说明 `agent/*.bat` 只是 Windows 的便捷入口，内容等价于 `npm run <命令>`（脚本内部用 `%~dp0` 定位自身，无绝对路径依赖）
+- `agent/README.md` 同步：命令表标注 `my-edge` 为 Windows 专用，配置表标明 `EDGE_PATH` / `BROWSER_PATH` 在非 Windows 上**必填**
+
+### Notes
+
+- 本轮只动**可运行性与引导**，未改任何解题行为。`npm test` 153/153、`lint`、`format:check`、`caps-check` 全绿
+- 顺带核对仓库卫生（这些本来就没问题，记下来备查）：`.workbuddy/`（本地记忆笔记）、`agent/.env.local`、`logs/`、`dumps/`、`.browser-profile*/` 均在 `.gitignore` 内；全仓无 `D:\` / `C:\Users` / 本机内网 IP 等绝对路径与个人信息（`git grep` 复核为空）；`start-*.bat` 全部用 `%~dp0` 定位并带 node / node_modules 前置检查
+
 ## [1.6.9] - 2026-09-23（分支 feat/2-c-web-service）
 
 **一次真机复现挖出三个各自独立的缺陷**：微博用户/动态关（`tasks/XBLSCWNL/4868`）连续三轮实际输出逐字节相同被指纹止损，表面像"模型算不出 Python 2 的哈希落位"，实际是**两套确定性工具在同一个上游卡死了**——差异定位器解析不出预期/实际正文，容器格式反解探针因此拿不到可探项，而它连"我没探"都没说。修完之后该关真机通过。

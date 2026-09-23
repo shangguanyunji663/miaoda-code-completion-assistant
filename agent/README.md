@@ -47,7 +47,7 @@ npm run probe
 | 命令 | 作用 |
 |---|---|
 | `npm run browser` | 启动带调试端口的浏览器（独立 profile） |
-| `npm run my-edge` | **重启"你自己的 Edge"并带调试端口**：junction 绕过 136+ 默认目录限制，账号/历史全保留（会先关闭正在运行的 Edge，3 秒倒计时） |
+| `npm run my-edge` | **（Windows 专用）重启"你自己的 Edge"并带调试端口**：junction 绕过 136+ 默认目录限制，账号/历史全保留（会先关闭正在运行的 Edge，3 秒倒计时）。**macOS / Linux 用 `npm run browser`** |
 | `npm run probe` | 检查配置 + 页面识别情况（**首次必跑**，用于确认题目和编辑器被正确识别） |
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/*.json`，用于针对具体站点精调识别规则 |
 | `npm run once` | 只解当前这一题 |
@@ -109,7 +109,7 @@ npm run probe
 | `DEBUG_PORT` | 调试端口 | `9333` |
 | `CDP_ENDPOINT` | CDP 连接地址，留空由 `DEBUG_PORT` 拼出 | `http://127.0.0.1:9333` |
 | `USER_DATA_DIR` | 独立 profile 目录（须与日常使用 profile 隔离，否则调试端口不生效） | `agent/.browser-profile` |
-| `EDGE_PATH` / `BROWSER_PATH` | 浏览器路径，留空自动探测 | 自动 |
+| `EDGE_PATH` / `BROWSER_PATH` | 浏览器可执行文件路径。Windows 留空可自动探测（默认安装位置）；**macOS / Linux 必须显式设置**（自动探测候选只有 Windows 路径） | 自动（仅 Windows） |
 | `TARGET_URL_HINT` | 题目页 URL 特征片段（挑页第一优先；多命中报错防解错页）。平台题目页 URL 不是 `/tasks/` 形状时在此改特征片段 | 留空自动按 `TASK_URL_PATTERN` 识别 |
 | `AUTO_LAUNCH` | 连不上调试端口时自动拉起浏览器（独立 profile） | `1` |
 | `WATCH_POLL_MS` | watch/lite：标签页轮询间隔 | `2000` |

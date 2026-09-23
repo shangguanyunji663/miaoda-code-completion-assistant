@@ -71,8 +71,11 @@ flowchart LR
 
 ### 前置条件
 
-- **Node.js 18+**（依赖内置 `fetch`）
-- **Edge 或 Chrome**（Edge 已实测可用，路径自动探测）
+- **Node.js 18+**（依赖内置 `fetch`；测试用内置 `node:test`，零新增依赖）
+- **Edge 或 Chrome**（项目**不下载浏览器**，而是通过 CDP 连接你自己那个，登录态天然可用）
+  - Windows：浏览器装在默认位置即可，路径自动探测
+  - **macOS / Linux：把 `BROWSER_PATH` 设为浏览器可执行文件路径**（自动探测的候选只有 Windows 默认安装位置），例如
+    `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`、`/usr/bin/google-chrome`
 - 一个 OpenAI 兼容的大模型端点
 
 ### 三步跑起来
@@ -81,15 +84,17 @@ flowchart LR
 cd agent
 npm install                      # 唯一依赖：playwright-core
 cp .env.example .env.local       # 编辑 .env.local，填入 AI_BASE_URL / AI_API_KEY / AI_MODEL
+                                 # （Windows 纯 cmd 下用 copy .env.example .env.local）
 ```
 
 **第 1 步 · 启动受控浏览器**（三选一）
 
-| 方式 | 说明 |
-|---|---|
-| 双击 `agent/start-my-edge.bat` | **推荐**。重启你自己的 Edge 并带调试端口，账号 / 历史 / 插件全部保留（会有 3 秒倒计时先关闭运行中的 Edge） |
-| 双击 `agent/start-browser.bat` | 全新独立 profile，首次需在该窗口重新登录各平台，之后登录态持久保存 |
-| 不做任何事 | `watch` / `course` 连不上调试端口时会自动拉起独立 profile 浏览器兜底 |
+| 方式 | 平台 | 说明 |
+|---|---|---|
+| `npm run browser` | **全平台** | 启动一个独立 profile 的浏览器并带上调试端口；首次需在该窗口登录各平台，之后登录态持久保存 |
+| 双击 `agent/start-browser.bat` | Windows | 与上一行等价，只是替你敲好了命令 |
+| `npm run my-edge`（或双击 `agent/start-my-edge.bat`） | **Windows 专用** | 重启**你自己的** Edge 并带调试端口，账号 / 历史 / 插件全保留（3 秒倒计时先关闭运行中的 Edge）；依赖 Windows 的目录联接（junction）绕过 Chromium 136+ 对默认用户目录的限制 |
+| 不做任何事 | 全平台 | `watch` / `course` 连不上调试端口时会自动拉起独立 profile 浏览器兜底（`AUTO_LAUNCH=0` 可关） |
 
 **第 2 步 · 在浏览器中登录评测平台，打开一道题目页**
 
@@ -113,16 +118,16 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run run` | 连续解题，通过后自动翻页 |
 | `npm run course` | 课程自动驾驶：遍历板块逐关完成 |
 | `npm run course-probe` | 只读诊断课程列表页识别（`course` 卡住时先跑这个） |
-| `npm run my-edge` | 重启「你自己的 Edge」并带调试端口（保留登录态） |
+| `npm run my-edge` | **（Windows 专用）**重启「你自己的 Edge」并带调试端口（保留登录态）；非 Windows 用 `npm run browser` |
 | `npm run browser` | 命令行启动带调试端口的浏览器（独立 profile） |
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
-| `npm test` | 运行单测（153 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
+| `npm test` | 跨平台（`node --test` 无参数，不依赖 shell 展开通配符）。运行单测（153 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
-Windows 用户可直接双击 `agent/` 下的 `start-my-edge.bat`、`start-browser.bat`、`start-watch.bat`、`start-lite.bat`、`start-course.bat`、`start-web.bat`（网页工作台）。
+> **关于 `agent/*.bat`**：它们只是 Windows 的**便捷入口**，内容等价于对应的 `npm run <命令>`（脚本内部用 `%~dp0` 定位自身目录，无绝对路径依赖）。**macOS / Linux 用户直接使用上表的 `npm run` 命令即可**，能力完全一致；`my-edge` 是唯一的 Windows 专有命令。
 
 <details>
 <summary><b>关键配置项</b>（完整列表见 <a href="agent/README.md">agent/README.md</a>）</summary>
