@@ -1,7 +1,8 @@
 // EXPORTS: chat, generateCode, reflectAndFix, extractCodeFromMarkdown,
 //          splitAnalysisAndCode, detectVerdict, listChatModels,
 //          classifyProblemIntent, generateCommands, reflectCommands, parseCommandLines,
-//          sanitizeShellSubmission, stripNonCodeLines, buildPlatformFactsBlock, readCapability
+//          sanitizeShellSubmission, stripNonCodeLines, findSquashedHeredocs,
+//          buildPlatformFactsBlock, readCapability
 // AI 调用层。
 // 设计要点：
 //   1. prompt 单一数据源 —— 直接读取仓库根 shared/capabilities/*.json 中的 prompt 模板，
@@ -473,6 +474,32 @@ export function extractCodeFromMarkdown(markdown) {
  * @param {string} aiOutput AI 返回的完整输出（可能含标记，也可能仅含代码体）
  * @returns {string} 可直接写入编辑器的最终代码
  */
+/**
+ * 检出"被压成一行的 heredoc"（1.6.11）。
+ *
+ * 由来（2026-09-23 真机，MongoDB 复制集搭建关）：模型把配置文件写成
+ *   `cat > /etc/test/mongod1.conf <<'EOF' ; port=20001 ; dbpath=… ; EOF`
+ * 但 heredoc 的正文**必须另起行**、以独占一行的结束标记收尾。用 `;` 连接时，shell 会把
+ * **后续所有命令**都当作 heredoc 正文一直吞到遇见一行 `EOF`——配置文件写不全、后面的
+ * `mongod -f` / `rs.initiate` 全都没执行，最后却表现为"评测连主节点报 not master"，
+ * 复盘时极易被误诊成"终端连错了节点"（该关连续 12 轮都栽在这个误诊上）。
+ *
+ * 判据收得很紧（宁漏不误报）：同一行里既有 heredoc 起始（`<<TAG` / `<<'TAG'` / `<<"TAG"`），
+ * **又**出现 `;`。正常的 heredoc 首行只有 `cat > f <<'EOF'`（不含分号），不会命中；
+ * `<<<`（here-string）也不会命中（`<<` 后面紧跟 `<`，不匹配标识符首字符）。
+ * 这里只**检出**、不改写——正文自身可能含分号，硬拆会误伤。
+ * @param {string[]} cmds 命令数组（一条命令一个元素）
+ * @returns {number[]} 命中的下标（0 起）
+ */
+export function findSquashedHeredocs(cmds) {
+  const out = [];
+  (cmds ?? []).forEach((c, i) => {
+    const s = String(c ?? '');
+    if (/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(s) && s.includes(';')) out.push(i);
+  });
+  return out;
+}
+
 /**
  * 剔除"必定不是 Python 语法"的说明性整行（1.6.9）。
  *

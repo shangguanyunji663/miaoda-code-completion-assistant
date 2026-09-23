@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-const { splitExpectedActual, diffOutputs, describeOutputDiff, diffSkipReason } =
+const { splitExpectedActual, diffOutputs, describeOutputDiff, diffSkipReason, serverErrorHints } =
   await import('../src/output-diff.mjs');
 
 const EXPECTED = `—— 预期输出 ——
@@ -134,4 +134,23 @@ test('标记写法兼容：「预期：/实际：」与「预期输出：」都�
 test('未启用时必须给出原因（静默失效要能在日志里看见）', () => {
   assert.match(diffSkipReason('一段没有任何标记的面板文本'), /找不到「预期输出 \/ 实际输出」标记/);
   assert.equal(diffSkipReason(`${EXPECTED}\n${ACTUAL}`), '');
+});
+
+test('serverErrorHints：识别"服务端拒绝写"这类报错并纠正方向（2026-09-23 12 轮误诊）', () => {
+  const real = [
+    '在主端口20001的test数据库插入文档：',
+    'Error: error: {',
+    '"ok" : 0,',
+    '"errmsg" : "not master and slaveOk=false",',
+    '"codeName" : "NotMasterNoSlaveOk"',
+    '}',
+  ].join('\n');
+  const hint = serverErrorHints(real);
+  assert.match(hint, /被评测的那个端口当前不是主节点/);
+  assert.match(hint, /反复 exit 重连/, '必须明确否定"我连错了节点"这个误诊');
+  assert.equal(serverErrorHints('一切正常'), '', '未命中返回空串（零打扰）');
+  assert.match(
+    serverErrorHints('ERROR: child process failed, exited with error number 100'),
+    /启动失败/,
+  );
 });

@@ -45,3 +45,40 @@ test('空文本 / 非字符串 → 空指纹（不参与"相同"判定）', () =
   assert.equal(outputFingerprint(undefined), '');
   assert.equal(outputFingerprint('   \n  \n'), '');
 });
+
+test('pickEvalEvidence 不把「终端回显 / 输入期报错」算进指纹（2026-09-23 命令行题 12 轮盲试的根因）', () => {
+  const mk = (echo) =>
+    [
+      '（面板文本）',
+      '=== 测试集明细 ===',
+      '【测试集1】',
+      '预期输出：A',
+      '实际输出：B',
+      '',
+      '=== 本地差异定位（程序逐行比对所得，非平台输出）===',
+      '定位到 1 处实质差异',
+      '',
+      '=== 输入期报错 ===',
+      'command not found: mongosh',
+      '',
+      '=== 终端回显（本轮全部显示内容） ===',
+      '…' + echo,
+    ].join('\n');
+  // ① 每轮都变的终端回显绝不能影响指纹（旧实现从"测试集明细"一路切到文本末尾 ⇒ 永不重复）
+  assert.equal(
+    outputFingerprint(mk('第 1 轮回显')),
+    outputFingerprint(mk('第 2 轮回显，完全不同')),
+  );
+  const seg = pickEvalEvidence(mk('x'));
+  assert.ok(!seg.includes('终端回显'), '证据段不得含终端回显');
+  assert.ok(!seg.includes('输入期报错'), '证据段不得含输入期报错');
+  assert.ok(seg.includes('实际输出：B'), '证据段必须保留真正的评测证据');
+  // ② 证据本身变了 → 指纹必须变（止损不能被修得"永不触发"）
+  assert.notEqual(
+    outputFingerprint(mk('x')),
+    outputFingerprint(mk('x').replace('实际输出：B', '实际输出：C')),
+  );
+  // ③ 无明细时也不许把动态段带进来
+  const noDetail = '（面板）\n=== 终端回显（本轮全部显示内容） ===\n…abc';
+  assert.ok(!pickEvalEvidence(noDetail).includes('终端回显'));
+});

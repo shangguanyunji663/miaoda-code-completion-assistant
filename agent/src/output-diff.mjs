@@ -1,5 +1,5 @@
 // EXPORTS: splitExpectedActual, diffOutputs, describeOutputDiff, diffSkipReason,
-//          analyzeOutputDiff, dictKeyOrder, innerLists
+//          analyzeOutputDiff, dictKeyOrder, innerLists, serverErrorHints
 // 输出差异定位器（1.6.4 / 1.6.5 / 1.6.7）：把"预期 vs 实际"的实质差异**算出来**再交给
 // 反思，而不是丢两坨几千字符的文本让模型自己找不同。
 //
@@ -248,6 +248,41 @@ export function analyzeOutputDiff(detailText) {
   return { status: 'diff', reason: '', pairs, summary };
 }
 
+/**
+ * 服务端报错的解读（1.6.11）。
+ *
+ * 这些报错指向"**被测服务**没搭成题面要求的形态"，而不是"你终端连错了对象"——
+ * 2026-09-23 真机（MongoDB 复制集搭建关）连续 12 轮都栽在后一个误诊上：评测输出里的
+ * `not master and slaveOk=false` 是**评测程序连的那个端口**拒绝写，反思却一直在
+ * `exit` + 重连自己的会话（改的只是自己的终端，改不动被评测的服务）。
+ * 判据是确定性的（报错原文即可匹配），所以做成代码而不是 prompt 守则。
+ */
+const SERVER_ERROR_HINTS = [
+  [
+    /not master and slaveOk=false|NotMasterNoSlaveOk/i,
+    '· 实际输出里的 `not master and slaveOk=false`（NotMasterNoSlaveOk）是**服务端**在从节点上拒绝写操作。' +
+      '评测程序连的是**你搭建的服务**，所以它出现说明**被评测的那个端口当前不是主节点**：' +
+      '优先查「服务有没有起来 / 复制集有没有初始化成功 / 配置文件写没写对 / 端口与 replSet 名称是否一致」，' +
+      '**不要**把它当成"我终端连错了节点"而反复 exit 重连——那样改的只是你自己的会话，改不动被评测的服务。',
+  ],
+  [
+    /child process failed, exited with error number/i,
+    '· `child process failed, exited with error number …` 是 mongod 进程**启动失败**（配置路径、数据目录、端口被占用）。' +
+      '先读题面指定的 logpath 日志末尾定位，而不是继续调整客户端命令。',
+  ],
+  [
+    /Connection refused|ECONNREFUSED/i,
+    '· `Connection refused` 说明目标服务根本没在监听——先确认服务启动成功（进程 / 日志），再谈后面的操作。',
+  ],
+];
+
+/** 命中即返回解读段（未命中返回空串，零打扰） */
+export function serverErrorHints(text) {
+  const s = String(text ?? '');
+  const hit = SERVER_ERROR_HINTS.filter(([re]) => re.test(s)).map(([, msg]) => msg);
+  return hit.length ? `${hit.join('\n')}\n` : '';
+}
+
 /** 注入反思材料的中文段；未定位到差异时返回空串（零打扰） */
 export function describeOutputDiff(detailText) {
   try {
@@ -262,6 +297,7 @@ export function describeOutputDiff(detailText) {
     return (
       `=== 本地差异定位（程序逐行比对所得，非平台输出）===\n${a.summary}\n` +
       `${lines.join('\n')}\n` +
+      serverErrorHints(detailText) +
       '要求：① 只针对上面定位到的差异改实现，不要顺手改其它已被证明一致的部分；' +
       '② DICT_ORDER = 键的打印顺序问题：能改，但**改字典字面量的书写顺序是空操作**，要改就改**写入顺序**（逐字段 hset 或 OrderedDict 的元素先后）；' +
       '目标顺序按 summary 给的办法算出来再写，算不出就明确说明"这是 4 选 1 的哈希落位、本轮换了另一种写入顺序"，禁止在同方向重复重交；' +

@@ -14,6 +14,7 @@ import {
   detectVerdict,
   sanitizeShellSubmission,
   stripNonCodeLines,
+  findSquashedHeredocs,
   spliceIntoTemplate,
   emptyMarkerBlocks,
   renderTemplate,
@@ -363,4 +364,19 @@ test('stripNonCodeLines：合法 Python 的位或表达式与普通代码零触�
   const r = stripNonCodeLines(src);
   assert.equal(r.dropped, 0);
   assert.equal(r.text, src);
+});
+
+test('findSquashedHeredocs：只认"被压成一行的 heredoc"，正常 heredoc 与 here-string 不误报', () => {
+  const cmds = [
+    "cat > /etc/test/mongod1.conf <<'EOF' ; port=20001 ; dbpath=/data/test/db1 ; EOF",
+    'cat > /etc/test/mongod1.conf <<EOF',
+    'port=20001',
+    'EOF',
+    'mongod -f /etc/test/mongod1.conf',
+    'grep -q x <<< "abc"',
+    'echo a; echo b',
+  ];
+  assert.deepEqual(findSquashedHeredocs(cmds), [0], '只有压成一行的那条命中');
+  assert.deepEqual(findSquashedHeredocs([]), []);
+  assert.deepEqual(findSquashedHeredocs(['printf "port=20001" > /etc/test/mongod1.conf']), []);
 });

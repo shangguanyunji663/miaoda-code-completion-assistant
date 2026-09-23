@@ -59,6 +59,7 @@ import {
   detectVerdict,
   spliceIntoTemplate,
   stripNonCodeLines,
+  findSquashedHeredocs,
   emptyMarkerBlocks,
   sanitizeShellSubmission,
   wrapDbCommandsInEcho,
@@ -120,11 +121,29 @@ const CONTRACT_TOTAL_MAX = 3;
 const STUCK_LIMIT = 2;
 
 /** 从评测文本里挑出「可观测行为」那一段做指纹：优先测试集明细（预期/实际输出），
- *  它不含面板上的耗时/进度噪音。无明细时退回全文。 */
+ *  它不含面板上的耗时/进度噪音。
+ *
+ *  1.6.11 修两处会让指纹彻底失效的问题（2026-09-23 真机：命令行题 12 轮盲试）：
+ *  ① 原实现从「测试集明细」一直切到**文本末尾**，而 loop 在其后还会追加
+ *     「=== 输入期报错 ===」与「=== 终端回显（本轮全部显示内容） ===」——
+ *     这两段**每轮必变**，指纹于是永不重复，"改了等于没改"的止损形同不存在。
+ *     现在只取该段本身：到下一个 `=== ` 段落标题为止。
+ *  ② 无明细时不再退回全文（同样会带进上述动态段），改为剔除已知识别的动态段。
+ */
 export function pickEvalEvidence(text) {
   const s = String(text ?? '');
   const i = s.indexOf('=== 测试集明细 ===');
-  return i >= 0 ? s.slice(i) : s;
+  if (i >= 0) {
+    const rest = s.slice(i);
+    const j = rest.indexOf('=== ', 1); // 跳过本段标题自身
+    return j > 0 ? rest.slice(0, j) : rest;
+  }
+  let out = s;
+  for (const m of ['=== 终端回显', '=== 输入期报错']) {
+    const k = out.indexOf(m);
+    if (k >= 0) out = out.slice(0, k);
+  }
+  return out;
 }
 
 /**
@@ -728,6 +747,16 @@ async function solveOnceInner(page, probe) {
     // 上一次送进评测的命令序列：与代码题的 lastEvaluatedCode 同义
     // （1.5.0，只有重交同一份内容才允许采信"面板没变化"）
     let lastEvaluatedCommands = '';
+    // 实际输出指纹（1.6.11）：命令行分支此前**完全没有**这道闸门——代码分支有
+    // outputFingerprint + STUCK_LIMIT，命令行分支没有，于是 2026-09-23 真机（复制集搭建关）
+    // 12 轮反思全在"当前不是主节点 → 退出重连 20001"同一方向打转，把 MAX_RETRY 烧光。
+    // 判据取"评测证据段"（pickEvalEvidence 已排除每轮必变的终端回显/输入期报错），
+    // 否则指纹被冲散、止损永不触发。
+    let cmdLastFp = '';
+    let cmdSameStreak = 0;
+    let cmdSameOutput = false;
+    // 命令形态问题留痕（喂反思）：如 heredoc 被压成一行——这类命令会吞掉后续命令
+    let shapeNote = '';
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
       checkStop(`命令行第 ${attempt}/${cfg.loop.maxRetry} 轮`);
       if (cmds === null) {
@@ -769,6 +798,26 @@ async function solveOnceInner(page, probe) {
       const guarded = applyCommandGuards(cmds, bannedCmds);
       cmds = guarded.cmds;
       sanitizeNote = guarded.sanitizeNote;
+
+      // 形态护栏（1.6.11）：`cat > f <<'EOF' ; a ; b ; EOF` 这种"heredoc 被压成一行"的命令
+      // **必然吞掉后续所有命令**（heredoc 正文必须另起行、以独占一行的结束标记收尾），
+      // 于是配置文件写不全、后面的 mongod/rs.initiate 全没执行——最终却表现为"评测报
+      // not master"，把反思带向"终端连错节点"的误诊。检出即**剔除不执行**（改写有误伤
+      // 风险：正文自身可能含分号），并把正确形态讲清楚喂给反思。
+      const squashed = findSquashedHeredocs(cmds);
+      if (squashed.length) {
+        const dropped = squashed.map((i) => cmds[i]);
+        cmds = cmds.filter((_, i) => !squashed.includes(i));
+        shapeNote =
+          `\n\n=== 命令形态问题（本地确定性检出，这些命令**未执行**） ===\n` +
+          `共 ${squashed.length} 条把 heredoc 压成了一行：\n` +
+          dropped.map((c) => `- ${String(c).slice(0, 140)}`).join('\n') +
+          `\nheredoc 的正文**必须另起行**、以独占一行的结束标记收尾；用 \`;\` 连接时 shell 会把` +
+          `**后续所有命令**当作 heredoc 正文吞掉，直到遇见一行结束标记。正确形态：\n` +
+          `cat > /etc/test/mongod1.conf <<'EOF'\nport=20001\ndbpath=/data/test/db1\nEOF\n` +
+          `（不想用 heredoc 就逐行写：printf '%s\\n' 'port=20001' 'dbpath=/data/test/db1' > /etc/test/mongod1.conf）`;
+        log(`已剔除 ${squashed.length} 条"heredoc 被压成一行"的命令（它们会吞掉后续命令），不执行`);
+      }
 
       const r = await runTerminalCommands(page, cmds);
       if (!r.executed) {
@@ -845,11 +894,41 @@ async function solveOnceInner(page, probe) {
         if (termEcho) {
           lastEval = `${lastEval || '（评测输出未捕获，以下为终端回显）'}\n\n=== 终端回显（本轮全部显示内容） ===\n…${termEcho.slice(-2000)}`;
         }
+        // ---- 实际输出指纹（1.6.11，与代码分支同一判据）----
+        // 命令行题一轮评测 ≈240s，同方向盲试的代价比代码题还高一倍，此前却没有任何闸门。
+        const cfp = outputFingerprint(lastEval);
+        cmdSameOutput = !!cfp && cfp === cmdLastFp;
+        cmdSameStreak = cmdSameOutput ? cmdSameStreak + 1 : 0;
+        cmdLastFp = cfp;
+        if (cmdSameOutput) {
+          log(
+            `实际输出与上一轮逐字节相同（指纹 ${cfp}，已是连续第 ${cmdSameStreak + 1} 轮）` +
+              '——历轮命令改动未影响可观测行为，反思材料已注入换方向要求',
+          );
+        } else if (cfp) {
+          log(`实际输出指纹 ${cfp}（与上一轮不同）`);
+        }
       }
       if (v.passed) {
         // 通过收尾：关闭庆祝弹窗（如有），返回等待用户操作
         await dismissPassModal(page);
         return { ok: true, kind: 'cmdline', attempts: attempt, verdict: v, commands: cmds };
+      }
+      // 同一份实际输出连续多轮 = 在同一个错误方向上盲试（与代码分支同一判据）。
+      if (cmdSameStreak >= STUCK_LIMIT) {
+        log(
+          `实际输出已连续 ${cmdSameStreak + 1} 轮逐字节相同——历轮命令均未影响可观测行为，` +
+            '停止本题盲试。若卡点是环境事实（服务有没有起来 / 客户端形态 / 复制集状态），' +
+            '须实测取证后再继续',
+        );
+        return {
+          ok: false,
+          kind: 'cmdline',
+          reason: 'output-unchanged',
+          attempts: attempt,
+          evalText: lastEval,
+          commands: cmds,
+        };
       }
       if (attempt === cfg.loop.maxRetry) break;
 
@@ -865,7 +944,7 @@ async function solveOnceInner(page, probe) {
       const fixed = await reflectCommands({
         problem: slimForReflection(problem),
         previousCommands: cmds,
-        evalResult: `${lastEval || '（未捕获到评测输出，请对照任务要求自查命令）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际执行的命令） ===\n${sanitizeNote}` : ''}`,
+        evalResult: `${lastEval || '（未捕获到评测输出，请对照任务要求自查命令）'}${sanitizeNote ? `\n\n=== 提交前自动清洗记录（已生效于上一轮实际执行的命令） ===\n${sanitizeNote}` : ''}${shapeNote}${cmdSameOutput ? stuckNote(cmdLastFp, lessons.slice(-6)) : ''}`,
         terminalState: `${envNow.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
         lessons: lessons.slice(-6),
       });

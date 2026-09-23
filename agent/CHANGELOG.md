@@ -2,6 +2,27 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.6.11] - 2026-09-23（分支 feat/2-c-web-service）
+
+**命令行题 12 轮盲试的根治**：用户在 MongoDB 复制集搭建关看着 agent 连续 12 轮反思都在同一方向上打转，手动停止。复盘查出**四个各自独立的缺陷**，其中一个让止损机制形同不存在。
+
+### Fixed
+
+- **命令行分支从来没有"改了等于没改"的闸门（决定性）**：`outputFingerprint` + `STUCK_LIMIT` 只接在**代码分支**上，命令行分支一次都没调用过 ⇒ 12 轮同方向盲试无人叫停（`MAX_RETRY` 默认 10，全靠用户手动止损）。现按代码分支同一判据接上：每轮评测后算指纹，连续 `STUCK_LIMIT` 轮相同即 `return { reason: 'output-unchanged' }`，并把"换方向"要求注入反思材料
+- **`pickEvalEvidence` 让指纹永不重复（上游缺陷，必须一起修，否则止损接了也不触发）**：原实现从「测试集明细」**一直切到文本末尾**，而 loop 在其后还会追加「=== 输入期报错 ===」与「=== 终端回显（本轮全部显示内容） ===」——这两段**每轮必变**。现在只取该段本身（到下一个 `=== ` 段落标题为止）；无明细时也剔除这两个已知识别的动态段
+- **"heredoc 被压成一行"必然吞掉后续命令**：模型把配置文件写成 `cat > /etc/test/mongod1.conf <<'EOF' ; port=20001 ; dbpath=… ; EOF`。heredoc 的正文必须**另起行**、以独占一行的结束标记收尾；用 `;` 连接时 shell 会把**后续所有命令**当作正文一直吞到遇见一行 `EOF`，于是配置文件写不全、`mongod -f` / `rs.initiate` 全没执行。新增 `ai.mjs` 的 `findSquashedHeredocs`（零依赖纯函数）在执行前检出并**剔除这些命令**（不改写：正文自身可能含分号，硬拆会误伤），并把正确形态与 `printf` 替代写法作为材料喂给反思
+- **`not master and slaveOk=false` 的方向性误导**：它是**服务端**在从节点拒绝写操作，而评测程序连的是**被测服务**——出现它说明"被评测的那个端口当前不是主节点"。但 12 轮反思全部解读成"我终端连错了节点"并反复 `exit` 重连（改的只是自己的会话，改不动被评测的服务）。`output-diff.mjs` 新增 `serverErrorHints`：报错原文命中即给出解读段（`not master` / `child process failed` / `Connection refused` 三类），**明确否定**那个误诊方向
+
+### Verified
+
+- `npm test` **156/156**（新增 3 项：指纹不再被终端回显污染、`findSquashedHeredocs` 的误报边界、`serverErrorHints` 的解读）、`npm run lint`、`npm run caps-check`、`npm run format:check` 全绿
+- 本次是**复盘式修复**（用户手动停止后按日志定位），未重跑该关
+
+### Notes
+
+- **教训（值得推广的排查口径）**：同一套机制分散在按分支分流的两个循环里时，必须核对**两边都接上了**。本项目此前已积累多处"代码分支有、命令行分支没有"的落差（`outputFingerprint`、`py2-guard`、`requirement-contract`、容器格式探针），本次是代价最大的一处——12 轮 × 评测 ≈240s。凡 `if (intent === 'cmdline')` 这类分流，逐一核对闸门是否同源
+- 未做：`shapeNote`（命令形态留痕）只在当轮生效，未沉淀进 `lessons`；命令行分支仍不接容器格式探针（1.6.8 的既定边界）
+
 ## [1.6.10] - 2026-09-23（分支 feat/2-c-web-service）
 
 **可移植性修正：让 clone 下来的人在别人的机器上也能跑通。** 查出的三处都是"只在本机成立"的假设——代码本身一直是跨平台的（`launch-browser.mjs` 早就有 win32 / 非 win32 双分支、浏览器路径以环境变量优先），缺的一直是**引导**。
