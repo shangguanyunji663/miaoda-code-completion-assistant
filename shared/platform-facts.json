@@ -97,5 +97,17 @@
     "检索式解析关改成「用 set 收集同义词后 list() 转换」之后整题能否通过：三组顺序已实测定案为 py2 set 迭代序，但从未按该写法真机提交过一次（该关 5 轮额度当时已烧完）",
     "大哈希（字段数或值长度超过 Redis ziplist 阈值）时 hgetall 回包顺序是否仍等于写入顺序——本档案的链路结论来自「纯 Python 2 模拟预测的键序与真机实际输出逐字吻合」这一间接印证，未在 Redis 侧直接观测（容器内 redis-server 评测时才起，起服务属改动环境，未做）",
     "微博关参考实现究竟按哪种写入顺序（**已不构成卡点**：该关 2026-09-23 真机通过——`user:{id}` 按可见 6 键的某个解、`post:{id}` 补 posted 字段后即匹配；参考实现的具体写法仍未直接取证，也不需要了）"
-  ]
+  ],
+  "code_block_db_task": {
+    "note": "代码栏（Begin-End）写数据库操作命令的题：代码栏内容被平台以数据库 shell 的 --eval 执行（错误回显带 @(shell eval):1:N）。另有一类旧关卡把代码栏当 bash 脚本执行（回显 step2/query.sh: line N: syntax error）。两种形态的提交写法不同，**判据是题面明文**：题面写了引号/转义要求就照题面，未写才用 echo 包裹形态。",
+    "exec_via_db_eval": true,
+    "exec_via_db_eval_evidence": "2026-09-23 15:20 真机 /tasks/XBLSCWNL/4883：实际输出回显 `E QUERY [js] SyntaxError: missing ; before statement @(shell eval):1:14`",
+    "shell_cmds_must_not_be_in_code_block": true,
+    "shell_cmds_must_not_be_in_code_block_evidence": "同上：代码栏混入 `mongoimport --db mydb2 --collection test --file …`（shell 命令）后整份 eval 解析失败，面板 7 个查询标签后全部为空",
+    "quote_form_follows_statement_text": true,
+    "quote_form_follows_statement_text_evidence": "同上关卡题面明文：「每条命令以；号隔开（由于测试需要，请在 $ 前加\\（转义符），即使用 \\$，平时在命令窗口练习不需要加\\；不要使用双引号改用 单引号）」——该形态与「echo 双引号包裹」互斥，题面明文优先",
+    "test_panel_has_two_bodies": true,
+    "test_panel_has_two_bodies_evidence": "同上：面板标题行 `p.output-title-container` 的下一个兄弟 `div.diff-panel-container` 里有**两个并列 body**（预期 2492 字符 / 实际 267 字符）；实际输出因报错比预期短一个数量级，抓取侧曾按「两列量级比 > 0.3」拒绝对而误判成\"预期段为空\"",
+    "date": "2026-09-23"
+  }
 }

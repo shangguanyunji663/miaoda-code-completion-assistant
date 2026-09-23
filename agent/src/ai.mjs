@@ -805,9 +805,16 @@ export async function classifyProblemIntent({ problem, codeTemplate = '' }) {
  * @returns {string[]}
  */
 export function parseCommandLines(text) {
-  let t = String(text ?? '').trim();
-  // 剥 ``` 围栏（宽容处理不配对的围栏）
-  t = t.replace(/^```(?:sh|shell|bash|console)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+  // 剥 ``` 围栏：**逐行**剥，不能只剥首尾（2026-09-23 真机）。模型按小节输出时会给
+  // 多组围栏，首尾剥法留下的段间围栏被当成命令**键入真实终端**——日志实录「命令 5: ```」
+  // 「命令 6: ```bash」，随后 mongo 报 `SyntaxError: unterminated string literal @(shell):1:2`，
+  // 混合题的数据准备两轮全灭（导入因此从未成功）。
+  // 判据：整行只有围栏 + 可选语言名；任何真实 shell 命令都不可能只是一行围栏。
+  const t = String(text ?? '')
+    .split(/\r?\n/)
+    .filter((l) => !/^\s*```[A-Za-z0-9_+-]*\s*$/.test(l))
+    .join('\n')
+    .trim();
   return (
     t
       .split(/\r?\n/)
