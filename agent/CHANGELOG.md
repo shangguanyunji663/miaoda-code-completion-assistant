@@ -2,6 +2,25 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.7.0] - 2026-09-25（分支 feat/4-e-oneclick-launcher）
+
+**给同学的启动简化成「双击两下」：首次 `install.bat` 向导一次，之后桌面「妙答」一个图标。** 针对真实使用反馈的四个痛点——启动步骤多/窗口多、首次安装配置麻烦、出错不会排查、日常误操作（重复双击、关错窗口）。`start-my-edge.bat` / `start-web.bat` / `start-watch.bat` 等既有入口全部保留不变，`agent/src` 零改动。
+
+### Added
+
+- **`scripts/setup.mjs` + `install.bat`（首启向导，幂等）**：① Node 版本检查（< 18 给人话指引）；② node_modules 缺失才 `npm install`；③ `.env.local` 缺失从 `.env.example` 复制、三件套任一为空且终端可交互时逐项询问并写回——**分发方预填即整段跳过**（统一发密钥 / 每人自己的两种模式都兼容），stdin 不可交互时只报告不卡死；④ 桌面「妙答」快捷方式：PowerShell `[Environment]::GetFolderPath('Desktop')` 解析桌面（兼容 OneDrive 重定向）+ WScript.Shell 生成 .lnk，PowerShell 不可用退化为桌面 bat 兜底。支持 `--dry-run` 全程演练不写任何东西（落地自查即用它抓到 agentDir 解析多剥一层的 bug）
+- **`scripts/launch-all.mjs` + `start-miaoda.bat`（日常一键）**：受控浏览器（**复用同一个 `launchMyEdge`**；调试端口已活则直接复用、不重启你的 Edge——与旧流程唯一的差异，日常双击不再折腾浏览器）+ 网页工作台（同进程 import `web-server.mjs`，与 start-web.bat 同一入口）+ 自动用默认浏览器打开 `http://127.0.0.1:8787`；工作台端口被占（上次的工作台还在）时不抢端口，提示后直接开页面收场
+- Windows 的 bat 入口保持纯英文（与既有 bat 一致，规避 GBK 控制台乱码），全部人话指引由 Node 脚本输出
+
+### Verified
+
+- `npm test` 218/218（未动 `agent/src`，仅新增 scripts）；两脚本 `node --check` 通过；向导 `--dry-run` 实测四步输出正确
+- **未跑真机**：`launchMyEdge` 会关闭运行中的 Edge（破坏性动作），一键启动的实际浏览器链路未在本机执行；「端口已复用」「PowerShell 不可用兜底」分支仅代码审查。分发前建议找一台干净机器走一遍 install.bat
+
+### Notes
+
+- 桌面快捷方式指向 `start-miaoda.bat`；原有三步流程照旧可用
+
 ## [1.6.21] - 2026-09-25（分支 feat/2-c-web-service）
 
 **全项目冗余与"修过的格式再犯"审计落地：一处让 1.6.15 形态判据失效的接线缺口 + 两处取证/判据缺口 + 六处冗余。** 审计基线：`npm test` 216/216、caps-check 全绿，**已修守卫无一失效**——缺口在"打回修复路径绕过形态体检"这一处接线。

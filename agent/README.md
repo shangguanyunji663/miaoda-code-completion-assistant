@@ -11,6 +11,7 @@
 | AI 能力定义 | 仓库根 `shared/capabilities/*.json` | prompt 单一数据源，Agent 直接读取复用 |
 | 浏览器执行层 | 本目录 `agent/` | 感知页面、自动作答、点评测、翻页、反思循环 |
 | 用户入口 | `start-my-edge.bat` / `start-browser.bat` / `start-watch.bat` / `start-lite.bat` / `start-course.bat` / `start-web.bat` | 用自己的 Edge 启动、独立 profile 启动、常驻监听、刷新触发、课程自动驾驶、网页工作台 |
+| 一键入口（1.7.0） | `install.bat` / `start-miaoda.bat` | **首次**：向导装依赖 + 询问密钥写 `.env.local` + 建桌面快捷方式；**日常**：桌面「妙答」一键起受控 Edge + 网页工作台（端口已活则复用浏览器不重启） |
 
 ## 前置条件
 

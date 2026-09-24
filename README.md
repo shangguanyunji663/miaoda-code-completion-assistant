@@ -106,6 +106,8 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 ```
 
 > **首次接入新平台**，建议先在 `.env.local` 设 `DRY_RUN=1` 干跑一轮，确认识别与生成正确后再关闭。
+>
+> **Windows 一键路径（1.7.0）**：双击 `agent/install.bat`（首启向导：装依赖 + 配置密钥 + 建桌面快捷方式）→ 之后每天双击桌面「妙答」一键启动（受控 Edge + 网页工作台）。下面的手动步骤仍然有效。
 
 ### 命令速查（均在 `agent/` 目录下执行）
 
@@ -253,12 +255,14 @@ miaoda-code-completion-assistant/
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
 │   ├── public/
 │   │   └── index.html              # 网页工作台前端（单文件原生，无构建链）
+│   ├── install.bat                 # 首启向导：装依赖 + 配置密钥 + 桌面快捷方式（1.7.0）
 │   ├── start-my-edge.bat           # 接管你自己的 Edge（双击）
 │   ├── start-browser.bat           # 独立 profile 启动（双击）
 │   ├── start-watch.bat             # 常驻监听（双击）
 │   ├── start-lite.bat              # 刷新触发（双击）
 │   ├── start-course.bat            # 课程自动驾驶（双击）
 │   ├── start-web.bat               # 网页工作台（双击，仅本机访问）
+│   ├── start-miaoda.bat            # 一键启动：受控 Edge + 网页工作台（1.7.0）
 │   ├── .env.example                # 配置模板（不含任何真实值）
 │   ├── CHANGELOG.md                # 变更日志
 │   └── README.md                   # 完整文档：配置项、工作流、设计要点、已知限制
