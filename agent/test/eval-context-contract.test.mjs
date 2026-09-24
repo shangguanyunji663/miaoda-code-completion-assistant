@@ -1,6 +1,10 @@
 // 两条机器护栏（2026-09-23 真机）：
 // ① 覆盖"题面声明为现有输入"的文件 —— 平台提供的数据源，禁止自造/覆盖；
-// ② 题面明文禁双引号而提交仍是 `echo "` —— prompt 压不住（模型按"实测优先"选了双引号），改机器判。
+// ② 题面明文要求语句内用单引号而提交仍用双引号 —— prompt 压不住（模型按"实测优先"选了双引号），改机器判。
+//
+// 1.6.19 收窄 ②：旧版把**外层** `echo "` 也判成违约，而 `wrapDbCommandsInEcho` 每轮又把裸
+// 语句包回 `echo "` —— 两层互相抵消，第 5/6/7 轮提交文本逐字节相同（2026-09-24 真机）。
+// 现在只管数据库语句**内部**的字符串字面量。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -62,12 +66,21 @@ test('题面没把该文件称作"现有"时不动手（另一半判据）', () 
   assert.deepEqual(findDataFileOverwrites(cmds, p).dropped, []);
 });
 
-test('题面禁双引号而提交用 `echo "` ⇒ 机器给出违约结论', () => {
+test('语句内部用双引号 ⇒ 命中，且明确告诉模型外层包裹不要动', () => {
   const problem = '注意：请在 $ 前加 \\，即使用 \\$；不要使用双引号改用 单引号。';
   const bad = '#*** Begin ***#\necho "\ndb.test.find({sex:\\"男\\"});\n"\n#*** End ***#';
   const note = detectQuoteFormViolation(bad, problem);
   assert.match(note, /不要使用双引号/);
-  assert.match(note, /echo "/);
+  assert.match(note, /数据库语句内部/);
+  assert.match(note, /外层 echo 的双引号包裹属平台机制，保持原样不要动/);
+});
+
+test('回归（1.6.19 死循环根因）：外层 echo 包裹本身不算违约', () => {
+  const problem = '注意：请在 $ 前加 \\，即使用 \\$；不要使用双引号改用 单引号。';
+  // 真机第 5/6/7 轮实际写进编辑器的形态：外层 echo "、内层单引号、$ 已转义
+  const ok =
+    '#*** Begin ***#\necho "\ndb.test.find({age:20,sex:\'男\'}).sort({_id:1});db.test.find({\\$or:[{a:1}]}).count()\n"\n#*** End ***#';
+  assert.equal(detectQuoteFormViolation(ok, problem), '');
 });
 
 test('合规提交不误报：题面禁双引号 + 代码已用单引号/无 echo 包裹', () => {

@@ -293,3 +293,32 @@ test('对齐表被误写进代码块内时仍能解析出来（2026-09-23 真机
   // 纯代码零误报：位或表达式与赋值不会被当成对齐表行
   assert.deepEqual(parseAlignmentTable('x = a | b\ny = 1\n'), []);
 });
+
+test('叙述性条目不进要求清单（1.6.19 真机：missing_item ×12 把整层校验自我停用）', () => {
+  const problem = [
+    '编程要求',
+    '现有 person.json 文件内容如下：',
+    '_id\tname\tage\tsex\thobbies',
+    '1\t杨璐\t19\t女\t唱歌，跳舞',
+    '在右侧命令行进行操作：',
+    '将 /home/example/person.json 文件导入到数据库 mydb3 中的 test 集合中。',
+    '在右侧代码行 Begin-End 中编辑，如下：',
+    '执行查询命令，查找年龄为20岁男生的信息，并按照_id升序排序；',
+    '执行查询命令，查找name = 韩*开头的人的信息，并按照_id升序排序；',
+  ].join('\n');
+  const c = extractRequirementContract(problem);
+  assert.equal(c.present, true);
+  assert.equal(
+    c.items.some((s) => /文件内容如下|进行操作：|Begin-End 中编辑/.test(s)),
+    false,
+    `叙述行被当成了要求，模型永远给不出落点：${c.items.join(' | ')}`,
+  );
+  assert.equal(c.items.filter((s) => /执行查询命令/.test(s)).length, 2, '真要求一条都不能少');
+  assert.match(
+    c.items.find((s) => /导入到数据库/.test(s)),
+    /person\.json/,
+    '可执行的数据准备要求必须保留',
+  );
+  // requireText 是 print 守卫的真值来源，不受切条过滤影响
+  assert.match(c.requireText, /现有 person\.json 文件内容如下/);
+});

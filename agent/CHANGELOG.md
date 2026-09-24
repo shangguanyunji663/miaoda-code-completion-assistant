@@ -2,6 +2,47 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.6.20] - 2026-09-24（分支 feat/2-c-web-service）
+
+**mongorestore 关 3 轮止损暴露的那一层：命令"跑完了"不等于命令"干活了"。** 真机 /tasks/XBLSCWNL/4882：三条恢复命令因路径不对失败，模型依次猜 `/opt/collection_1/person/person.bson` → `/opt/collection_1/person.bson` → 「目录 + `-c`」，全错，**全程没有 ls 过一次目录**；而全场最强的一条线索 `don't know what to do with subdirectory "mongodb_1/test1", skipping...` 因为不带 error 字样、退出码又是 0，一次都没进过"输入期报错"材料。期间模型还写下「test1 为空、mongodb_1/collection_1 是空目录」——同一次回显里 `/opt/mongodb/test1/person.bson` 明明恢复了 8 条文档，该结论从未被否证。
+
+### Added
+
+- **`src/cmd-evidence.mjs`**（零依赖纯函数）：把"这行回显算不算失败"从 `act.mjs` 里那条单正则抽出来，分两档——`explicit`（明确错误语法，补齐今天缺的 `Permission denied` / `Failed:` / `unknown option|command|argument` / `duplicate key|E11000`）与 `silent-noop`（工具自述"我跳过了/我不认识/无事可做"却以成功收尾）。**两档都只认通用英文错误/自述语法，不绑定 mongorestore、mongodump 等任何工具名**，mysql `source`、`load`、tar、自写脚本同形
+- `extractMissingPaths` + `pathProbeCommands` + `probeAnchor`：从"路径不存在 / 是目录 / 无法访问"类回显里抠出祖先目录，确定性生成**只读**取证命令（`find <根> -maxdepth N 2>&1 | head -80`，上限 3 条）。每条路径同时给「前两段」与「顶层」两种粒度——单测抓到只取前两段时，被 xterm 换行劈开的半截路径会得到一个根本不存在的根、什么也查不出来
+- **`probeMissingPaths(page, text)`**（`loop.mjs`）：两个调用点——① 混合题数据准备的输入期报错反思之前（此处最便宜，还没进评测）；② 命令行分支评测失败后。**放在输出指纹之后**，与格式探针、数据落地复查同一纪律（提前拼进材料会污染"改了等于没改"的比对基准）。取证文本按「程序只读取证所得，非平台输出」标注，并写明判据：清单里没有的名字就是不存在，不要再换个猜测的名字再试一轮。任一步不满足都放弃并记日志；`runTerminalCommands` 加 `silent` 选项——`find` 命中不存在的目录必然回显 No such file or directory，那是**证据**不是故障，不该刷成"命令报错"
+- `shared/platform-facts.json` 新增 `mongo_dump_restore_task` 段（四条实测 + evidence + date）：目录 + `-d` 被静默跳过并 `done`、`-c` 传目录被判 `is a directory, not a bson file`、不带 `-d` 的整目录恢复可跑通（8 条 ×2，**同时否证了"备份目录是空的"**）、摘掉 `--drop` 重跑报 E11000 duplicate key；两条正确写法（指内层库目录 / `--nsFrom`–`--nsTo`）与 `/opt/collection_*` 真实布局**只进 `unknowns`**——成功形态一次都没实测到
+
+### Verified
+
+- `npm test` **216/216**（新增 `test/cmd-evidence.test.mjs` 10 例：两档判据、真机三条失败回显的祖先目录、注入白名单、无信号零成本）、lint、format:check、caps-check 全绿；`node --check src/loop.mjs` 通过
+- 途中被单测/校验抓到的四处自身缺陷均已修：模板串里的裸反引号导致 `SyntaxError`（caps-check/lint 抓到）、止损计数器被我误写成 `cmdSameOutput ? cmdSameOutput ? 0 : 0 : 0`（**命令行分支"改了等于没改"闸门会静默失效**，已复原为 `+ 1`）、`extractMissingPaths` 只取前两段、platform-facts 里三处 ASCII 双引号与一处重复逗号破坏 JSON（caps-check 拦住）
+- **未跑真机**：`probeMissingPaths` 的取证命令从未在容器里执行过；本关最终能否通过仍取决于 `/opt/collection_1`、`/opt/collection_2` 的真实布局（一次 `find /opt -maxdepth 4` 即定案）
+
+
+
+**mongo 查询关 7 轮失败的四个成因，逐个做成机器护栏。** 真机 `/tasks/XBLSCWNL/4883/step3`：12:53 实测 `mydb3.test` 有 8 条文档 ⇒ 第 4 轮代码栏里的 `remove({})` 把它删光（实际输出回显 `WriteResult({ "nRemoved" : 8 })`）⇒ 第 5/6/7 轮提交文本**逐字节相同**、count 恒为 0，而反思材料里只剩"查询全空"一条线索，于是连着几轮去改引号形态；最终由"改了等于没改"闸门止损。
+
+### Fixed
+
+- **形态判据与执行层兜底互相抵消**（第 5/6/7 轮同指纹的直接原因）：`wrapDbCommandsInEcho` 每轮把模型写的裸语句包成 `echo "`，`detectQuoteFormViolation` 紧接着把这个 `echo "` 判成违反题面「不要使用双引号改用单引号」并喂给反思 ⇒ 模型删包裹 → 被包回 → 再删。现把引号判据的作用域**收窄到数据库语句内部的字符串字面量**（外层 echo 属平台机制），并抽出 `submissionBody` / `looksLikeDbScript` / `statementPrescribesQuoteForm` 让两层共用同一判据
+- **代码栏破坏性语句无人拦**：新增 `stripDestructiveDbStatements`，写入前切除 `remove(` / `.drop()` / `dropDatabase` / `deleteMany` / `mongoimport` / `rm ` 类语句（终端侧同类事故 1.6.15 已有 `findDataFileOverwrites`，代码栏侧此前空白）。落地自查抓到两处自伤并一并修掉：语句切分原先只认 `;`，"一行一条"会被当一整条 ⇒ 改 `;` **与换行**双分隔符（否则条数核对报"只有 1 条"，且逐行 `echo '…'` 形态下会连正确查询一起删掉、留下不成对的引号）
+- **题面明写条数 vs 提交段数**：新增 `parseDeclaredCommandCount`（含中文数字「八 / 十二」）+ `detectCommandCountViolation`，命中即进契约打回。本次漏答的第 6 条（`查找name != 韩*开头的人的信息`，疑因题面笔误「查找查找…」被合并）以前无人可拦——契约层切出 12 条、`missing_item` ×12 触发"同类问题停止打回"，整层被噪声关掉
+- **数据落地核对只看一次**：`verifyDataLanded` 原先只在首次提交前跑；新增 `recheckDataLanded`，每轮评测失败后（放在输出指纹之后，同格式探针的纪律）切标签 → 等 shell 提示符 → 只读探针 → 切回，实测 0 条即走「重置环境 + 重做数据准备」，并把"0 条——不要去改查询语句"的结论注进当轮反思材料
+- **混合题数据准备命令裸打进 bash**：新增 `wrapBareDbStatementsForShell`，终端实测为 bash 时把 `db.` / `show` 语句包成 `mongo --quiet <db> --eval`（无单引号用单引号包，含单引号则双引号并转义 `` $ ` `` 与 `"`），`use X` 整行丢弃（库名随每条命令自带）。本次两轮准备额度全烧在 `show: command not found` / `syntax error near unexpected token` 上
+- **契约层切条噪声**：`现有 X 文件内容如下：` / `在右侧命令行进行操作：` / `在右侧代码行 Begin-End 中编辑，如下：` 三类叙述行不再进要求清单（见 `agents.md` 的 `requirement-contract.mjs` 段）
+
+### Changed
+
+- `shared/platform-facts.json`：旧条目 `quote_form_follows_statement_text`（"题面明文与 echo 包裹互斥、题面优先"）**其 evidence 只有题面措辞、没有任何一次两种形态的输出对比**，按本项目纪律从事实段降级到 `unknowns`；同时新增三条实测——`echo_wrapped_body_reaches_db_eval`（包裹形态的引号内内容确实被提取 eval：两个 count 标签各打印 `0`）、`code_block_statements_mutate_real_environment`（代码栏不是沙箱，`remove({})` 的后果延续到之后所有轮次），并把 `person.json` 是否 JSON 数组的两条互相矛盾观测记进 `unknowns`
+- prompt 侧（`shared/capabilities/*.json`，单一数据源）：生成器规则 10 与反思器「解读守则」第 4 条里所有"不得再套 echo 双引号 / 用 echo 双引号包裹重写"的互相矛盾措辞已改写为「外层包裹由执行层统一决定，不在你的权衡范围内」，并把两条重复的形态规则压成一条；反思器补"删数据语句严禁进代码栏"边界
+
+### Verified
+
+- `npm test` **206/206**、`npm run lint`、`npm run format:check`、`npm run caps-check` 全绿；新增 `test/db-submission-guards.test.mjs`（19 例，含真机第 4/5 轮文本的回归）+ `test/requirement-contract.test.mjs` 叙述行用例；旧用例「题面禁双引号而提交用 `echo "` ⇒ 违约」按新语义改写（它锁的正是本轮修掉的死循环）
+- 用真机五场景脚本端到端跑过 `stripDestructiveDbStatements` → `wrapDbCommandsInEcho` → `detectSubmissionFormViolations` 的流水线（第 4 轮剔除后剩什么、第 5 轮 8 条齐是否零违约、漏一条时报 7 条、内部双引号是否命中、二次包裹/二次剔除幂等）——**自查脚本因此删掉，两处缺陷已修**
+- **未跑真机**：形态定案（echo 包裹 vs 裸语句哪一种能过本关）仍需一次真机各提交一版并留面板原文，`unknowns` 里那条挂着；`recheckDataLanded` 的切标签与「重置环境」接线、`wrapBareDbStatementsForShell` 的实际键入同理未在真机验证
+
 ## [1.6.18] - 2026-09-23（分支 feat/2-c-web-service）
 
 **接入平台自带的「重置环境」**（用户指路：命令行标签栏的工具栏按钮 → 功能菜单 → 重置环境，而不是刷新页面）。

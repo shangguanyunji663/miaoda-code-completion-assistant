@@ -540,22 +540,76 @@ export function findDataFileOverwrites(cmds, problem) {
 }
 
 /**
- * 题面明文规定了提交形态、而提交违反了它 —— 机器判据（零依赖纯函数，2026-09-23 真机）。
- * 为什么不能只靠 prompt：模型面对「题面明文（不要用双引号改用单引号）」与「平台实测通过格式
- * （echo 双引号包裹）」两条互相矛盾的规则时，按项目自己的优先级链（平台实测 > 题面）选了实测——
- * 即使 prompt 已写明"题面优先"仍照旧写 `echo "`（2026-09-23 15:48 真机，新 prompt 确已加载）。
- * 能机器判定的不要再交给 prompt：命中就把结论直接喂给反思。
+ * 题面是否明文规定了提交形态（引号 / `$` 转义）——**共享判据**（零依赖纯函数）。
+ *
+ * 存在理由（2026-09-24 真机，同一道题烧掉第 5/6/7 轮）：`wrapDbCommandsInEcho` 每轮把
+ * 模型写的裸数据库语句确定性包成 `echo "`，紧接着 `detectQuoteFormViolation` 又把这个
+ * `echo "` 判成违反题面「不要使用双引号改用单引号」并喂给反思 ⇒ 模型下一轮删掉包裹、
+ * 执行层再包回去、再判违约……提交文本逐字节相同，永远解不开。两层必须用同一个判据，
+ * 否则 Agent 是在跟自己吵架，而不是在跟平台要答案。
+ * @param {string} problem 当次题干
+ * @returns {boolean}
+ */
+export function statementPrescribesQuoteForm(problem) {
+  return /不要使用双引号|改用\s*单引号|使用单引号/.test(String(problem ?? ''));
+}
+
+/**
+ * 取提交文本里 Begin/End 之间的正文（无标记时整段即正文）。兜底与判据共用，
+ * 保证两者看到的是同一段文本。
+ * @param {string} text
+ * @returns {{body: string, head: string, tail: string}|null} null = 无 Begin/End 标记
+ */
+export function submissionBody(text) {
+  const src = String(text ?? '');
+  const m = src.match(
+    /^([\s\S]*?#\*+\s*Begin\s*\*+?#\s*\n?)([\s\S]*?)(\n?#\*+\s*End\s*\*+?#[\s\S]*)$/i,
+  );
+  if (!m) return { body: src, head: '', tail: '', bare: true };
+  return { body: m[2], head: m[1], tail: m[3], bare: false };
+}
+
+/**
+ * 剥掉**外层**的 echo 包裹形态，只留数据库语句本身（零依赖纯函数）。
+ * 三种写法都要认：`echo "` 独占一行、`echo "db.x…"` 同行、`echo 'db.x…'` 同行。
+ * 外层引号属平台机制（把引号内内容交数据库 eval），**不是**题面所禁的"双引号"——
+ * 题面那句「不要使用双引号改用单引号」针对的是语句内部的字符串字面量（`sex:"男"`）。
+ * @param {string} line
+ * @returns {string} 去外层包裹后的语句文本
+ */
+function stripOuterEcho(line) {
+  let t = String(line ?? '').trim();
+  if (/^echo\s+["']$/.test(t)) return '';
+  if (t === '"' || t === "'") return '';
+  t = t.replace(/^echo\s+["']/, '');
+  if (/["']$/.test(t)) t = t.slice(0, -1);
+  return t;
+}
+
+/**
+ * 题面明文要求语句内用单引号、而提交在数据库语句**内部**用了双引号 —— 机器判据。
+ *
+ * 1.6.19 收窄作用域：旧版把外层 `echo "` 一起判成违约，于是"外层包裹"这一平台机制
+ * 与题面要求被混为一谈，并与 `wrapDbCommandsInEcho` 互相抵消（见该函数注释）。
+ * 现在只看剥掉外层包裹之后的语句文本：残留 `"`（含 `\"`）才是真违约。
  * @param {string} code 实际提交文本
  * @param {string} problem 当次题干
  * @returns {string} 违规说明（空串 = 无违规）
  */
 export function detectQuoteFormViolation(code, problem) {
-  const p = String(problem ?? '');
   const c = String(code ?? '');
-  if (!p || !c) return '';
-  if (!/不要使用双引号|改用\s*单引号|使用单引号/.test(p)) return '';
-  if (!/echo\s*"/.test(c) && !/\\"/.test(c)) return '';
-  return '题面明文要求「不要使用双引号改用单引号」，而提交里仍有 `echo "` 形态（引号用了双引号 / 有 `\\"` 转义）。按题面改写成单引号形态，不要保留 echo 双引号包裹。';
+  if (!c || !statementPrescribesQuoteForm(problem)) return '';
+  const sub = submissionBody(c);
+  const offenders = sub.body
+    .split(/\r?\n/)
+    .map(stripOuterEcho)
+    .filter((l) => l.includes('"'));
+  if (!offenders.length) return '';
+  return (
+    `题面明文要求「不要使用双引号改用单引号」，而**数据库语句内部**仍用了双引号：` +
+    `${offenders[0].slice(0, 90)}。只把语句里的字符串字面量改成单引号` +
+    `（例：sex:"男" → sex:'男'）；**外层 echo 的双引号包裹属平台机制，保持原样不要动**。`
+  );
 }
 
 /**
@@ -599,6 +653,205 @@ export function detectEscapeViolation(code, problem) {
 }
 
 /**
+ * 这段正文是不是「数据库 shell 脚本」形态（零依赖纯函数）。
+ * 与 `wrapDbCommandsInEcho` 的触发判据同源思路：**行级 ≥70%** 才认，避免误伤
+ * Python/Java 编程题（那里的 `list.remove(x)`、`Statement.execute()` 都不该被切）。
+ * 允许整行以 `echo "` / `echo '` 开头（平台机制的外层包裹）。
+ * @param {string} body
+ * @returns {boolean}
+ */
+export function looksLikeDbScript(body) {
+  const lines = String(body ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    // 真机形态是 `echo "` 独占一行、正文若干行、`"` 收尾——两头的包裹行不含语句，
+    // 计入分母会把比例稀释到 0.7 以下（1.6.19 单测抓到的假阴性）
+    .filter((l) => !/^(?:echo\s+["']|["'])$/.test(l));
+  if (!lines.length) return false;
+  const hit = lines.filter((l) =>
+    /^(?:echo\s+["'])?\s*(?:db\s*\.|show\s|use\s|mongo(?:import|export|restore|dump)?\b)/.test(l),
+  ).length;
+  return hit / lines.length >= 0.7;
+}
+
+/**
+ * 按 `;` **与换行**切出语句，并保留每条在原文中的偏移（零依赖纯函数）。
+ *
+ * 为什么两种分隔符都要认（1.6.19，落地自查抓到的两处缺陷）：
+ * ① 只认 `;` 时，"一条命令一行"的正文会被当成**一整条**——条数核对报出"提交只有 1 条"，
+ *    把本来正确的产物打回去反复重生成；
+ * ② 更坏的是破坏性剔除：整段只有一条"语句"时，只要它含 remove/mongoimport，
+ *    **整段都被切掉**，连着把同段里其余正确查询一起销毁。
+ * 分号不做字符串内豁免：平台本身按分号切分逐条 eval，与之对齐才不会出现"我们数 8 条、
+ * 平台只认 7 条"这种两套口径。
+ * @param {string} text
+ * @returns {Array<{sql: string, start: number, end: number}>}
+ */
+export function splitStatements(text) {
+  const s = String(text ?? '');
+  const out = [];
+  let from = 0;
+  for (let i = 0; i <= s.length; i++) {
+    if (i !== s.length && s[i] !== ';' && s[i] !== '\n') continue;
+    const raw = s.slice(from, i);
+    if (raw.trim()) out.push({ sql: raw.trim(), start: from, end: i });
+    from = i + 1;
+  }
+  return out;
+}
+
+/** 删数据 / 覆盖平台数据的语句与 shell 命令（只应存在于命令行，代码栏里出现即拦下） */
+const DESTRUCTIVE_DB_STMT =
+  /\.\s*(?:remove|drop|dropDatabase|dropCollection|deleteMany|deleteOne|truncate)\s*\(|^\s*(?:echo\s+["'])?\s*(?:mongo(?:import|export|restore|dump)\b|rm\s+)/;
+
+/**
+ * 剔除代码栏里的**破坏性语句**（零依赖纯函数，2026-09-24 真机）。
+ *
+ * 事故：第 4 轮反思给出策略「首行执行 mongoimport 导入数据」，于是 Begin-End 里同时出现
+ * `mongoimport`（在 eval 环节必定失败：`bad JSON array format`）与 `db.test.remove({})`
+ * （**必定成功**：`WriteResult({"nRemoved": 8})`）。结果平台提供的 8 条文档被我方删光，
+ * 此后每一轮 count 都是 0，而反思读到的现象是"查询全空"，遂一路去改查询形态。
+ * 与 2026-09-23 那次「cat > 覆盖平台提供的 person.json」同类：**平台的数据源一旦被
+ * 自己改坏，后续所有评测反馈都不再反映模型的代码**，且无法从题面文本复原。
+ * 终端侧那次已有 `findDataFileOverwrites` 兜着，代码栏侧此前是空白。
+ *
+ * 只**切除**命中的那一段原文（其余字节与外层 echo 形态不动），这样条数核对与 echo 兜底
+ * 看到的仍是同一份文本。语句以 `;` 或换行为界（见 `splitStatements`）：逐行
+ * `echo 'mongoimport …'` 这种"一行一条"的写法必须整行删掉，不能只删引号内的内容——
+ * 那会留下不成对的引号，把后面每一条正确查询一起毁掉（1.6.19 落地自查抓到）。
+ * @param {string} text 整段提交内容（含 Begin/End 注释）
+ * @returns {{code: string, dropped: string[]}}
+ */
+export function stripDestructiveDbStatements(text) {
+  const src = String(text ?? '');
+  const sub = submissionBody(src);
+  if (!sub || !looksLikeDbScript(sub.body)) return { code: src, dropped: [] };
+  const hits = splitStatements(sub.body).filter((s) => DESTRUCTIVE_DB_STMT.test(s.sql));
+  if (!hits.length) return { code: src, dropped: [] };
+  let body = sub.body;
+  // 从后往前切，避免前面的偏移失效
+  for (const h of hits.slice().reverse()) {
+    body = body.slice(0, h.start) + body.slice(h.end);
+  }
+  body = body
+    .replace(/(echo\s*["'])\s*;+/g, '$1')
+    .replace(/(?:^|\n)\s*;+/g, '\n')
+    .replace(/^\s*;+/, '')
+    .replace(/;{2,}/g, ';');
+  return {
+    code: `${sub.head}${body}${sub.tail}`,
+    dropped: hits.map((h) => h.sql.slice(0, 80)),
+  };
+}
+
+/** 中文数字 → 阿拉伯数字（只覆盖题面常见的「八 / 十一 / 二十」量级，认不出返回 null） */
+function cnNumber(s) {
+  const D = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  const t = String(s ?? '');
+  if (/^\d+$/.test(t)) return Number(t);
+  if (t === '十') return 10;
+  if (Object.prototype.hasOwnProperty.call(D, t)) return D[t];
+  const m = t.match(/^([一二两三四五六七八九])?十([一二三四五六七八九])?$/);
+  if (!m) return null;
+  return (m[1] ? D[m[1]] : 1) * 10 + (m[2] ? D[m[2]] : 0);
+}
+
+/**
+ * 题面明写的命令条数（零依赖纯函数）：「上述操作共有八条命令」→ 8。
+ * 题面没写就返回 null——这条判据只在题面自己给了数字时才生效，跨平台 fail-open。
+ * @param {string} problem
+ * @returns {number|null}
+ */
+export function parseDeclaredCommandCount(problem) {
+  const t = String(problem ?? '');
+  const m = t.match(
+    /共(?:有)?\s*([0-9]{1,3}|[零一二两三四五六七八九十]{1,3})\s*条\s*(?:命令|查询|语句|操作)/,
+  );
+  if (!m) return null;
+  const n = cnNumber(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * 提交的语句段数与题面声明条数是否一致 —— 机器判据（零依赖纯函数，2026-09-24 真机）。
+ *
+ * 为什么必须机器判：真机提交的 7 条对 8 个标签，平台按**位置**把结果塞进标签，于是
+ * `0` 出现在「查找name != 韩*开头的人的信息」这一标签下、最后一个标签后面空着——
+ * 现象是"22 处差异"，看起来像查询写错，实际是少答一条。模型这次漏答有客观原因：
+ * 题面自己把第 7 条写成了「查找查找name != 韩*开头的人的个数」（叠字），读起来像把
+ * 第 6 条合并进去了。契约层本应拦住漏答，但它切出 12 条、`missing_item` ×12 触发了
+ * "判定依据不可靠，停止打回"的止损，等于没有检查。题面既然白纸黑字给了数字，
+ * 数一遍分号段就是确定性判据，不需要模型自觉。
+ * @param {string} submitted 实际提交文本
+ * @param {string} problem 当次题干
+ * @returns {string} 违规说明（空串 = 无违规 / 题面未声明条数）
+ */
+export function detectCommandCountViolation(submitted, problem) {
+  const c = String(submitted ?? '');
+  const declared = parseDeclaredCommandCount(problem);
+  if (!declared || !c) return '';
+  const sub = submissionBody(c);
+  if (!looksLikeDbScript(sub.body)) return '';
+  // 与条数口径对齐：先把外层 echo 包裹剥成纯语句，再按分号切
+  const sql = sub.body.split(/\r?\n/).map(stripOuterEcho).filter(Boolean).join('\n');
+  const actual = splitStatements(sql).length;
+  if (actual === declared) return '';
+  return (
+    `题面明文写了「共 ${declared} 条命令」，而提交里只有 ${actual} 条（按分号/换行切分）` +
+    (actual < declared ? '，漏答' : '，多出') +
+    `。平台是**按位置**把每条命令的输出塞进对应的结果标签的——少一条会让后面每一个标签` +
+    `整体错位，现象是"全部结果都对不上"，与查询写错无关。` +
+    `请对照题面的要求清单补齐/删减到正好 ${declared} 条，一条命令一段，顺序照题面。`
+  );
+}
+
+/**
+ * 把裸写的数据库 shell 语句包成一次性客户端调用（零依赖纯函数，2026-09-24 真机）。
+ *
+ * 事故：混合题的「命令行数据准备」里，模型把 `show dbs`、`use mydb3`、
+ * `db.test.find({age:20,sex:'男'})` **直接打进 bash**——bash 不是 mongo REPL，
+ * 前者 `command not found`、后者 `syntax error near unexpected token`，两轮准备额度
+ * 全烧在这些噪音上（12:53:24 与 12:53:32）。终端环境是实测出来的（`detectTerminalEnv`
+ * 已给出 bash），所以"该不该包"不需要模型判断，交给代码。
+ *
+ * 引号策略：语句内没有 `'` 时用单引号包（bash 完全不做展开，最稳）；含 `'` 时改用双引号
+ * 并转义 `\ ` ` $` 与 `"`——`$` 不转义会被 bash 当变量吃掉，那正是题面在代码栏要求 `\$`
+ * 的同一个原因。
+ * @param {string[]} cmds 准备命令列表
+ * @param {{db?: string}} [opt] 题面声明的目标库名（`use X` 也用它兜底）
+ * @returns {{cmds: string[], wrapped: Array<{no: number, from: string, to: string}>}}
+ */
+export function wrapBareDbStatementsForShell(cmds, opt = {}) {
+  const list = Array.isArray(cmds) ? cmds : [];
+  const wrapped = [];
+  const out = [];
+  list.forEach((raw, i) => {
+    const stmt = String(raw ?? '').trim();
+    const useM = stmt.match(/^use\s+([A-Za-z_][\w$]*)\s*;?$/);
+    if (useM) {
+      // bash 里没有 `use`（实测 `-bash: use: command not found`）；库名改由每条被包裹的
+      // 语句自带（--quiet <db>），这行整体丢弃即可。
+      wrapped.push({ no: i + 1, from: stmt, to: `（丢弃：库名已随每条 mongo --eval 传入）` });
+      return;
+    }
+    if (!/^(?:db\s*\.|show\s)/.test(stmt)) {
+      out.push(raw);
+      return;
+    }
+    const db = opt.db || '';
+    const prefix = `mongo${db ? ` --quiet ${db}` : ''}`;
+    const evalArg = stmt.includes("'")
+      ? `"${stmt.replace(/[\\`$"]/g, (ch) => (ch === '"' ? '\\"' : `\\${ch}`))}"`
+      : `'${stmt}'`; // 无单引号时用单引号包：bash 完全不做展开，最稳
+    const to = `${prefix} --eval ${evalArg}`;
+    wrapped.push({ no: i + 1, from: stmt.slice(0, 60), to: to.slice(0, 90) });
+    out.push(to);
+  });
+  return { cmds: out, wrapped };
+}
+
+/**
  * 提交形态的一次性机器体检（把上面几条汇总，供 loop 在提交点统一调用）。
  * @param {string} code 实际提交文本
  * @param {string} problem 当次题干
@@ -609,6 +862,7 @@ export function detectSubmissionFormViolations(code, problem) {
     detectQuoteFormViolation(code, problem),
     detectDbCollectionRefViolation(code),
     detectEscapeViolation(code, problem),
+    detectCommandCountViolation(code, problem),
   ].filter(Boolean);
 }
 
@@ -1064,11 +1318,8 @@ export function wrapDbCommandsInEcho(text) {
   // 调用或字符串字面量）与其它平台命令（SELECT/use 等）。判据：
   //  ① 行级统计：去 Begin/End 后至少 70% 非空行是 db. 命令或 use 语句；
   //  ② 排除明显编程语言特征（函数/类/导入/赋值/控制流等）开头。
-  const bodyMatch = src.match(
-    /^([\s\S]*?#\*+\s*Begin\s*\*+?#\s*\n?)([\s\S]*?)(\n?#\*+\s*End\s*\*+?#[\s\S]*)$/i,
-  );
-  const body = bodyMatch ? bodyMatch[2] : src;
-  const lines = body
+  const sub = submissionBody(src);
+  const lines = sub.body
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
@@ -1084,9 +1335,9 @@ export function wrapDbCommandsInEcho(text) {
   if (cmdLike / lines.length < 0.7) return { code: src, wrapped: false };
   if (/echo\s*"/.test(src)) return { code: src, wrapped: false };
   const escapeDollar = (s) => s.replace(/(?<!\\)\$/g, '\\$');
-  if (bodyMatch) {
-    const wrapped = `echo "\n${escapeDollar(body)}\n"`;
-    return { code: `${bodyMatch[1]}${wrapped}${bodyMatch[3]}`, wrapped: true };
+  if (!sub.bare) {
+    const wrapped = `echo "\n${escapeDollar(sub.body)}\n"`;
+    return { code: `${sub.head}${wrapped}${sub.tail}`, wrapped: true };
   }
   return { code: `echo "\n${escapeDollar(src)}\n"`, wrapped: true };
 }

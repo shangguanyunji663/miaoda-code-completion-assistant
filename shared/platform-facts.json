@@ -93,22 +93,39 @@
     "zadd 的 score 是否接受 int（题面示例用 int 3/0，实测待单独确认；当前证据表明接受）",
     "题面「预期输出」是否为字节级精确（本次已用实测判定 u 前缀问题，但其他空白差异未逐一验证）",
     "python2_syntax 段各形态的 SyntaxError 原文（依据是 runtime 段实测的 Python 2 + 语言规范，尚未拿到本平台的报错回显逐条留证）",
-    "本关最大执行时间的实际值是否总是出现在结果面板文本里（1.5.0 的等待预算按该栏动态抬高，读不到时回落到 EVAL_TIMEOUT_MS）",
+    "/opt/collection_1 与 /opt/collection_2 的**真实目录布局**：2026-09-24 那一关三轮分别猜过 /opt/collection_1/person/person.bson、/opt/collection_1/person.bson、以及「目录 + -c」，全部落空，而**全程没有 ls 过一次**。一条 `find /opt -maxdepth 4` 即可定案（已接线为失败轮的自动只读取证，但该命令本身还没在真机上跑过）",
+    "「整库备份目录恢复成另一个名字的库」的正确写法到底是哪一种：题面示例形态是把目标指到内层库目录（`-d test /home/mongod/test`），还是 `--nsInclude/--nsFrom/--nsTo` 命名空间重映射，或 `--gzip`/`--dir` 组合——只观测到「外层目录 + `-d`」会被静默跳过，**成功形态一次都没有实测到**",
     "检索式解析关改成「用 set 收集同义词后 list() 转换」之后整题能否通过：三组顺序已实测定案为 py2 set 迭代序，但从未按该写法真机提交过一次（该关 5 轮额度当时已烧完）",
     "大哈希（字段数或值长度超过 Redis ziplist 阈值）时 hgetall 回包顺序是否仍等于写入顺序——本档案的链路结论来自「纯 Python 2 模拟预测的键序与真机实际输出逐字吻合」这一间接印证，未在 Redis 侧直接观测（容器内 redis-server 评测时才起，起服务属改动环境，未做）",
-    "微博关参考实现究竟按哪种写入顺序（**已不构成卡点**：该关 2026-09-23 真机通过——`user:{id}` 按可见 6 键的某个解、`post:{id}` 补 posted 字段后即匹配；参考实现的具体写法仍未直接取证，也不需要了）"
+    "微博关参考实现究竟按哪种写入顺序（**已不构成卡点**：该关 2026-09-23 真机通过——`user:{id}` 按可见 6 键的某个解、`post:{id}` 补 posted 字段后即匹配；参考实现的具体写法仍未直接取证，也不需要了）",
+    "【代码栏形态，2026-09-24 起待定案】mongo/Redis 查询类关卡的正解到底是哪一种：(A) `echo \"` 双引号包裹整段 + 语句内单引号 + `\\$`；(B) 题面明文那种不带 echo 的裸语句 + `\\$` + 单引号。目前只观测到 **(A) 能把命令送进数据库 eval**（两个 count 标签各打印 0），(B) **从未真正提交过一次**——每一轮都被 `wrapDbCommandsInEcho` 改写成 (A)，因此\"(B) 才是该关正解\"从来没有证据。旧版把这条当作事实写（\"该形态与 echo 包裹互斥、题面明文优先\"），依据只有题面措辞本身，2026-09-24 已降级到这里；定案需要一次真机各提交一版并留下面板原文",
+    "person.json 到底是不是 JSON 数组：代码栏里跑 `mongoimport` 回显 `bad JSON array format - found no opening bracket '['`（暗示是逐行 JSON、需 `--jsonArray`），而命令行里不带 `--jsonArray` 却 `imported 8 documents`（暗示是数组）。两条观测指向不同，未单独取证；注意代码栏里那句本来就不该存在（shell 命令不进代码栏）"
   ],
   "code_block_db_task": {
-    "note": "代码栏（Begin-End）写数据库操作命令的题：代码栏内容被平台以数据库 shell 的 --eval 执行（错误回显带 @(shell eval):1:N）。另有一类旧关卡把代码栏当 bash 脚本执行（回显 step2/query.sh: line N: syntax error）。两种形态的提交写法不同，**判据是题面明文**：题面写了引号/转义要求就照题面，未写才用 echo 包裹形态。",
+    "note": "代码栏（Begin-End）写数据库操作命令的题：代码栏内容**先过 bash、再被平台提取引号内文本交数据库 shell eval**（错误回显分别形如 step3/query.sh: line N: syntax error 与 @(shell eval):1:N）。两种执行环节都在，所以『echo 双引号包裹』与『题面明文的裸语句』是否等价**尚未定案**（见 unknowns），当前判据：外层包裹由执行层兜底决定，题面的引号要求只管语句内部的字符串字面量。",
     "exec_via_db_eval": true,
     "exec_via_db_eval_evidence": "2026-09-23 15:20 真机 /tasks/XBLSCWNL/4883：实际输出回显 `E QUERY [js] SyntaxError: missing ; before statement @(shell eval):1:14`",
+    "echo_wrapped_body_reaches_db_eval": true,
+    "echo_wrapped_body_reaches_db_eval_evidence": "2026-09-24 12:59 真机 /tasks/XBLSCWNL/4883 step3：代码栏写 `echo \"` + 分号分隔的 7 条 db.getSiblingDB 语句（含 `\\$`），实际输出里第 7、8 个标签后各打印 `0`——count() 被执行了（0 是因为集合当时被我方 remove 删空），说明引号内内容确实被提取并逐条 eval；bash 环节没有把整段原样吐进实际输出",
+    "code_block_statements_mutate_real_environment": true,
+    "code_block_statements_mutate_real_environment_evidence": "2026-09-24 12:58 同关：代码栏里那句 `db.test.remove({})` 在实际输出回显 `WriteResult({ \"nRemoved\" : 8 })`——**平台提供、且我方已在命令行导入并实测过 8 条的文档被真的删掉了**，此后每轮 count 恒为 0。代码栏不是沙箱，写进去的删除语句后果延续到之后所有轮次",
     "shell_cmds_must_not_be_in_code_block": true,
     "shell_cmds_must_not_be_in_code_block_evidence": "同上：代码栏混入 `mongoimport --db mydb2 --collection test --file …`（shell 命令）后整份 eval 解析失败，面板 7 个查询标签后全部为空",
-    "quote_form_follows_statement_text": true,
-    "quote_form_follows_statement_text_evidence": "同上关卡题面明文：「每条命令以；号隔开（由于测试需要，请在 $ 前加\\（转义符），即使用 \\$，平时在命令窗口练习不需要加\\；不要使用双引号改用 单引号）」——该形态与「echo 双引号包裹」互斥，题面明文优先",
     "test_panel_has_two_bodies": true,
     "test_panel_has_two_bodies_evidence": "同上：面板标题行 `p.output-title-container` 的下一个兄弟 `div.diff-panel-container` 里有**两个并列 body**（预期 2492 字符 / 实际 267 字符）；实际输出因报错比预期短一个数量级，抓取侧曾按「两列量级比 > 0.3」拒绝对而误判成\"预期段为空\"",
-    "date": "2026-09-23"
+    "date": "2026-09-24"
+  },
+  "mongo_dump_restore_task": {
+    "note": "mongodump/mongorestore 关卡（容器内 MongoDB 4.0.0 + mongo-tools，终端为 bash）。核心风险是 mongorestore 的**静默空操作**：它以 `done` 收尾、退出码 0，实际一条数据都没恢复，回显里连 error 字样都没有——只按「有没有报错」判断命令成败会完全失灵。",
+    "dir_target_with_dash_db_is_silently_skipped": true,
+    "dir_target_with_dash_db_is_silently_skipped_evidence": "2026-09-24 14:18 真机 /tasks/XBLSCWNL/4882（mongorestore 关）终端回显原文：`mongorestore -h 127.0.0.1:27017 -d mytest1 --drop /opt/mongodb_1` → `the --db and --collection args should only be used when restoring from a BSON file...` → `building a list of collections to restore from /opt/mongodb_1 dir` → `don't know what to do with subdirectory \"mongodb_1/test1\", skipping...` → `done`。整库备份目录里还有一层库目录（test1/），mongorestore 直接跳过整个子目录、零恢复量，但退出码 0；mytest1/mytest4 两条同形同结果",
+    "collection_flag_with_directory_target_is_rejected": true,
+    "collection_flag_with_directory_target_is_rejected_evidence": "同关卡：`mongorestore -d mytest2 -c person --drop /opt/collection_1` → `checking for collection data in /opt/collection_1` → `Failed: error scanning filesystem: file /opt/collection_1 is a directory, not a bson file`（这一条**有** Failed 字样，与上一条的静默形成对照）",
+    "whole_dump_dir_restore_succeeds_without_dash_db": true,
+    "whole_dump_dir_restore_succeeds_without_dash_db_evidence": "同关卡：`mongorestore -h 127.0.0.1:27017 --drop /opt/mongodb` → `reading metadata for test1.person from /opt/mongodb/test1/person.metadata.json` → `finished restoring test1.person (8 documents)`、`finished restoring test2.student (8 documents)` → `done`。即 ① 备份数据本身是完好的（8 条 ×2），② 不带 `-d` 的整目录恢复是走得通的。这直接否证了模型当轮写下的「test1 为空、mongodb_1 与 collection_1 是空目录」——它连 ls 都没跑过",
+    "rerun_without_drop_yields_duplicate_key": true,
+    "rerun_without_drop_yields_duplicate_key_evidence": "同关卡 14:22：把 `--drop` 摘掉重跑 → `error: multiple errors in bulk operation: - E11000 duplicate key error collection: test1.person index: _id_ dup key: { : 1 }`（1..8 全列），末尾仍打 `finished restoring test1.person (8 documents)` + `done`。含义是**数据已经在库里**，不是连接或客户端问题；为消掉这行报错而去掉 --drop 反而会让面板状态与预期无关",
+    "date": "2026-09-24"
   },
   "task_env": {
     "reset_entry": "命令行标签栏右侧的工具栏按钮（DOM: a[title=\"工具栏\"]，图标 icon-gongjuxiang）→ 弹出「功能」菜单 → 「重置环境」",

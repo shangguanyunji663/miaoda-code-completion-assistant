@@ -9,6 +9,7 @@ import { cfg } from './config.mjs';
 import { createLogger } from './logger.mjs';
 import { checkStop } from './control.mjs';
 import { readEvalPanel, isTerminalAtPrompt, readTerminalLines } from './perceive.mjs';
+import { isFailureEcho } from './cmd-evidence.mjs';
 
 // 按钮文本关键词（按优先级排序，模糊匹配）。
 // 不同平台用词不同，这里给一份较全的兜底列表，实际按站点精调时改这里即可。
@@ -756,10 +757,11 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   const targetFrame = term.frame;
 
   await target.click({ timeout: 8000 }).catch(() => {}); // 聚焦终端
-  // 输入期报错检测（2026-09-09 用户要求）：每条命令执行完做行级差分，
-  // 新增回显行命中报错特征立即记录并打日志，随返回值交给反思材料
-  const ERROR_PATTERN =
-    /(command not found|not found|No such file|SyntaxError|Syntax error|Error:|error:|exception|Traceback|refused|timed? ?out|Unrecognized option|无法识别|错误|失败)/i;
+  // 输入期检测（2026-09-09 用户要求；1.6.20 起判据移入 cmd-evidence.mjs）：
+  // 每条命令执行完做行级差分，新增回显行命中失败特征即记录并交反思材料。
+  // 移出去的原因是判据不再只有一条"错误措辞"正则——还得认"**退出码 0 但工具自述没干活**"
+  // 那一档（`don't know what to do with subdirectory …, skipping...` + `done`），
+  // 真机里这条最强线索因为不带 error 字样而从未进过反思材料，模型连猜三轮空目录。
   // 输入期报错检测的游标：**不能拿行数当游标**（见 newTerminalLines 的说明）。
   // 改为持有上一次的整份可见行快照，逐条按内容求差；基线必须在键入**之前**取——
   // 否则第 1 条命令的窗口会包含整屏历史（2026-09-23 C-19）。
@@ -793,17 +795,23 @@ export async function runTerminalCommands(page, commands, opts = {}) {
     const nowLines = (await readTerminalLines(page)).map((s) => s.trimEnd());
     const newLines = newTerminalLines(prevLines, nowLines).filter((s) => s.trim());
     prevLines = nowLines;
-    const errs = newLines.filter((l) => ERROR_PATTERN.test(l));
+    const errs = newLines.filter((l) => isFailureEcho(l));
     if (errs.length) {
       termErrors.push({ no: ci + 1, cmd, errs });
-      // 窗口行数一并打出来：它是"归因是否可信"的判据（窗口 ≫ 该条命令的输出量 = 可疑）
-      log(
-        `命令 ${ci + 1} 输入期报错（${errs.length} 行，本条窗口 ${newLines.length} 行）：${errs[0].slice(0, 100)}`,
-      );
+      // 只读取证一类调用方（loop 的 probeMissingPaths）刻意不刷日志：它的 `find`
+      // 命中不存在的目录时必然回显 No such file or directory，那是**证据**不是故障
+      if (!opts.silent) {
+        // 窗口行数一并打出来：它是"归因是否可信"的判据（窗口 ≫ 该条命令的输出量 = 可疑）
+        log(
+          `命令 ${ci + 1} 输入期异常（${errs.length} 行，本条窗口 ${newLines.length} 行）：${errs[0].slice(0, 100)}`,
+        );
+      }
     }
   }
   log(
-    `已向终端键入 ${commands.length} 条命令（自适应间隔 ${gapMin}~${gapMax}ms、键速 ${typeDelay}ms/字符${termErrors.length ? `，输入期报错 ${termErrors.length} 条` : ''}）`,
+    opts.silent
+      ? `已向终端键入 ${commands.length} 条只读取证命令`
+      : `已向终端键入 ${commands.length} 条命令（自适应间隔 ${gapMin}~${gapMax}ms、键速 ${typeDelay}ms/字符${termErrors.length ? `，输入期异常 ${termErrors.length} 条` : ''}）`,
   );
   return { executed: commands.length, termErrors };
 }

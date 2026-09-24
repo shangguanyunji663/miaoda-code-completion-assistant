@@ -65,6 +65,9 @@ import {
   findSquashedHeredocs,
   findDataFileOverwrites,
   detectSubmissionFormViolations,
+  detectCommandCountViolation,
+  stripDestructiveDbStatements,
+  wrapBareDbStatementsForShell,
   parseImportTarget,
   emptyMarkerBlocks,
   sanitizeShellSubmission,
@@ -83,6 +86,7 @@ import {
   findRedundantPrints,
 } from './requirement-contract.mjs';
 import { rankCandidates } from './candidate-rank.mjs';
+import { extractMissingPaths, pathProbeCommands, probeAnchor } from './cmd-evidence.mjs';
 import {
   describeOutputDiff,
   diffSkipReason,
@@ -387,6 +391,22 @@ function finalizeSubmission(template, code) {
     sanitizeNote = san.changes.map((n) => `- ${n}`).join('\n');
     log(`shell 护栏清洗 ${san.changes.length} 处：${san.changes.slice(0, 3).join('；')}`);
   }
+  // 代码栏破坏性语句剔除（1.6.19）：`db.x.remove({})` / `mongoimport` 出现在 Begin-End 里
+  // 一定会**改掉平台提供的环境数据**（2026-09-24 真机：第 4 轮 remove({}) 删掉 8 条文档，
+  // 之后每轮 count 都是 0，反思却一路以为是查询形态写错）。数据被改坏后评测反馈不再反映
+  // 代码，且无法从题面复原——与终端侧 findDataFileOverwrites 同一纪律，在提交前切掉。
+  const destr = stripDestructiveDbStatements(submitted);
+  if (destr.dropped.length) {
+    submitted = destr.code;
+    const note = destr.dropped
+      .map((d) => `- 已剔除（代码栏由平台交数据库 eval，删除类语句会真的改坏平台提供的数据）: ${d}`)
+      .join('\n');
+    sanitizeNote = [sanitizeNote, note].filter(Boolean).join('\n');
+    log(
+      `已剔除 ${destr.dropped.length} 条破坏性语句（数据准备只属于「命令行」）：` +
+        destr.dropped.join(' ／ '),
+    );
+  }
   // 数据库命令题 echo 双引号包裹兜底（1.0.1）：平台对代码栏双重执行（bash 环节 +
   // 提取 echo 引号内容做数据库 eval），AI 即使被守则要求仍可能输出裸命令 →
   // bash 报错污染实际输出。这里确定性包裹（幂等：已包裹/普通编程题零触发）。
@@ -481,6 +501,110 @@ async function verifyDataLanded(page, problem) {
 }
 
 /**
+ * 评测**失败之后**复查数据落地（1.6.19，只读）。
+ *
+ * 为什么 `verifyDataLanded` 跑一次不够：混合题的代码栏内容是被平台交数据库 eval 的，
+ * 模型写进代码栏的一句 `db.test.remove({})` 就能把我方刚导入的数据删光（2026-09-24 真机
+ * 第 4 轮：实际输出里明确回显 `WriteResult({ "nRemoved" : 8 })`）。此后每轮 count 都是 0，
+ * 而反思看到的唯一现象是"标签后全空"——于是连续四轮去改引号形态，谁都没注意到库已经空了。
+ * 旧版只在首次提交前核对一次，**中途的环境破坏完全不可见**。
+ *
+ * 代价：切标签 + 轮询等终端 + 一条只读探针 ≈3~5s，换掉的是一轮反思（20~110s AI 调用）
+ * 加一次评测；且任何一步不满足都放弃并记日志，不阻断主流程（与格式探针同一纪律）。
+ * @param {() => Promise<string>} [onEmpty] 实测为 0 条时的恢复动作（混合题传入"重置环境 +
+ *   重做数据准备"）；在终端就绪的窗口内调用，返回值并入 note。
+ * @returns {Promise<{count?: number, note: string}>} note 空串 = 不适用或未能实测
+ */
+async function recheckDataLanded(page, problem, onEmpty) {
+  if (!parseImportTarget(problem)) return { note: '' };
+  let backToCode = false;
+  try {
+    const tab = await switchTaskTab(page, '命令行');
+    if (!tab.found) {
+      log('数据落地复查跳过：页面没有「命令行」标签');
+      return { note: '' };
+    }
+    backToCode = true;
+    await waitForTerminal(page, 6000).catch(() => {});
+    const waited = await waitForTerminalEnv(
+      page,
+      terminalReadyOpts((e) => e.kind === 'bash'),
+    );
+    if (waited.env?.kind !== 'bash') {
+      log(
+        `数据落地复查跳过：终端未回到 shell 提示符${describeTerminalWait(waited.env?.kind, waited.env?.last, waited)}`,
+      );
+      return { note: '' };
+    }
+    const r = await verifyDataLanded(page, problem);
+    if (r.count === 0 && typeof onEmpty === 'function') {
+      const extra = await onEmpty().catch((e) => {
+        log(`数据恢复动作异常（忽略）：${e?.message ?? e}`);
+        return '';
+      });
+      return { count: r.count, note: [r.note, extra].filter(Boolean).join('\n') };
+    }
+    return r;
+  } catch (e) {
+    log(`数据落地复查异常（忽略，不阻断反思）：${e?.message ?? e}`);
+    return { note: '' };
+  } finally {
+    if (backToCode) {
+      await switchTaskTab(page, '代码文件').catch(() => {});
+      await settle(page).catch(() => {});
+    }
+  }
+}
+
+/**
+ * 路径类失败的**只读取证**（1.6.20，与格式探针同一纪律）。
+ *
+ * 存在理由（2026-09-24 真机 mongorestore 关，3 轮止损）：三条命令因路径不对而失败，
+ * 模型依次猜 `/opt/collection_1/person/person.bson`、`/opt/collection_1/person.bson`、
+ * "传目录 + `-c`"，全错——**而它一次都没有看过目录里到底有什么**。这类事实一条 `find`
+ * 就能定死（≈2 秒），猜的代价是一轮评测 + 一轮反思。终端回显里也没有答案：那三个路径
+ * 报错只证明了"这些名字不存在"，存在的是哪个名字只有文件系统知道。
+ *
+ * 通用性：判据与工具无关——只认"路径不存在 / 是目录 / 无法访问"这类回显形态，
+ * mongorestore、mysql `source`、`load`、tar、自写脚本同形。任一步不满足都放弃并记日志。
+ * @param {string} text 本轮材料（输入期报错 / 明细 / 终端回显拼起来的那段）
+ * @returns {Promise<string>} 注入反思材料的中文段；无信号或取证失败返回空串
+ */
+async function probeMissingPaths(page, text) {
+  const roots = extractMissingPaths(text);
+  if (!roots.length) return '';
+  const cmds = pathProbeCommands(roots);
+  if (!cmds.length) return '';
+  log(
+    `回显里有 ${roots.length} 个"路径不存在/形态不符"的信号 → 跑只读取证：${cmds.join(' ; ').slice(0, 140)}`,
+  );
+  try {
+    checkStop('路径只读取证');
+    await runTerminalCommands(page, cmds, { silent: true });
+    await page.waitForTimeout(700);
+    const echo = await readTerminalText(page);
+    if (!echo) {
+      log('路径取证未取得回显（终端读取为空），本轮不注入目录清单');
+      return '';
+    }
+    // 只截本轮那段：锚定到最后一次出现的取证命令行（xterm 换行可能劈开它，退化为尾部）
+    const anchor = `find ${probeAnchor(roots)}`;
+    const at = echo.lastIndexOf(anchor);
+    const seg = (at >= 0 ? echo.slice(at) : echo.slice(-1600)).trim();
+    return (
+      `\n\n=== 目录实测（程序只读取证所得，非平台输出）===\n` +
+      `命令：${cmds.join(' ; ')}\n${seg.slice(0, 1600)}\n` +
+      `判据：以上是文件系统里**真实存在**的路径。清单里没有的名字就是不存在——` +
+      `不要再换一个猜测的路径名去试一轮；要么用清单里出现过的路径，要么按题面示例改**参数形态**` +
+      `（例如"整库备份目录 + 目标库名"这类映射不被支持时，指向清单里的内层目录）。`
+    );
+  } catch (e) {
+    log(`路径取证未完成（忽略，不阻断主流程）：${e?.message ?? e}`);
+    return '';
+  }
+}
+
+/**
  * 客户端可用性实测（cmdline 与 mixed 分支共用）。
  * bash 环境且题干涉及数据库时才探测：实测结论注入 prompt（clientFact），
  * 缺失客户端即刻入禁令（bannedCmds），供执行层别名替换与下一轮生成使用。
@@ -511,7 +635,7 @@ async function probeDbClients(page, envGen, problem, bannedCmds) {
  * @param {Set<string>} bannedCmds 实测不存在的命令集
  * @returns {{cmds: string[], sanitizeNote: string}} sanitizeNote 为空串表示未清洗
  */
-function applyCommandGuards(cmds, bannedCmds, problem = '') {
+function applyCommandGuards(cmds, bannedCmds, problem = '', env = null) {
   const replaced = cmds.map((c, i) => {
     const m = c.match(/^(\S+)([\s\S]*)$/);
     const alias = m && bannedCmds.has(m[1]) ? COMMAND_ALIASES[m[1]] : null;
@@ -519,8 +643,21 @@ function applyCommandGuards(cmds, bannedCmds, problem = '') {
     log(`执行层替换：命令 ${i + 1} 首词 ${m[1]}（实测不存在）→ ${alias}`);
     return alias + m[2];
   });
+  // 终端是 bash 时把裸写的 db./show/use 语句包成 `mongo --quiet <db> --eval`（1.6.19）：
+  // 这类语句打进 bash 必报 syntax error / command not found（2026-09-24 真机两轮准备额度
+  // 全烧在这上面），而"该不该包"是实测环境决定的，不需要模型判断。
+  const shellWrap =
+    env?.kind === 'bash'
+      ? wrapBareDbStatementsForShell(replaced, { db: parseImportTarget(problem)?.db ?? '' })
+      : { cmds: replaced, wrapped: [] };
+  if (shellWrap.wrapped.length) {
+    log(
+      `bash 终端：${shellWrap.wrapped.length} 条数据库 shell 语句已包成 mongo --eval ` +
+        `（原形态打进 bash 必报错）：${shellWrap.wrapped.map((w) => `#${w.no}`).join('、')}`,
+    );
+  }
   const changes = [];
-  const cleaned = replaced.map((c) => {
+  const cleaned = shellWrap.cmds.map((c) => {
     const s = sanitizeShellSubmission(c);
     if (s.changes.length) changes.push(...s.changes);
     return s.code;
@@ -542,6 +679,9 @@ function applyCommandGuards(cmds, bannedCmds, problem = '') {
     cmds: ow.kept,
     sanitizeNote: [
       ...changes.map((n) => `- ${n}`),
+      ...shellWrap.wrapped.map(
+        (w) => `- 已改写（终端是 bash，裸 shell 语句打不进去）: 命令 ${w.no} ${w.from} → ${w.to}`,
+      ),
       ...ow.dropped.map((d) => `- 已剔除（覆盖平台提供的输入文件）: ${d.cmd.slice(0, 80)}`),
     ].join('\n'),
   };
@@ -722,6 +862,10 @@ async function solveOnceInner(page, probe) {
   // 注意：cmdline 分支内不得再声明同名局部变量——曾因遮蔽导致逃生舱转代码
   // 分支时丢失实测事实（0.9.x 静默回归点）
   let clientFact = '';
+  // 混合题的数据准备恢复动作（1.6.19）：代码栏里一句 remove({}) 就能把我方刚导入的数据
+  // 删光（2026-09-24 真机），事后每轮 count 都是 0 而模型只会去改查询形态。代码分支评测
+  // 失败后要能"重置环境 + 重做准备"，故把这套动作提到分支外共享。
+  let restorePrep = null;
 
   // ---- 混合题（0.9.1）：题干同时要求"命令行操作 + 代码栏编写"（如先在
   // 命令行插入文档、再在 Begin-End 写查询）。旧版二选一路由在此二难：
@@ -750,11 +894,13 @@ async function solveOnceInner(page, probe) {
         terminalState: `${envGen.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
       });
       if (prep.length) {
+        let lastPrepCmds = [];
         // 数据准备最多两轮：第一轮若输入期报错（入口命令不存在、子命令被敲进
         // bash 等），反思一轮自愈后重做，避免"插入失败 → 代码查询空结果"连锁失败
         for (let p = 1; p <= 2 && prep.length; p++) {
           checkStop(`混合题数据准备（第 ${p} 轮）`);
-          const guarded = applyCommandGuards(prep, bannedCmds, problem);
+          const guarded = applyCommandGuards(prep, bannedCmds, problem, envGen);
+          lastPrepCmds = guarded.cmds;
           log(`混合题前置：向终端键入 ${guarded.cmds.length} 条数据准备命令（第 ${p} 轮）`);
           const r = await runTerminalCommands(page, guarded.cmds);
           if (r.executed) await settle(page);
@@ -767,12 +913,16 @@ async function solveOnceInner(page, probe) {
           for (const c of extractMissingCommands(r.termErrors)) bannedCmds.add(c);
           const envNow = await detectTerminalEnv(page);
           const termEcho = await readTerminalText(page);
+          // 路径类失败立刻取证（1.6.20）：准备命令多含文件路径（`--file /home/example/x.json`
+          // 之类），这里比 cmdline 分支更该取证——它还没进评测，一条 find 就能把下一轮的
+          // 猜测换成事实。
+          const prepPathNote = await probeMissingPaths(page, `${inputErrors}\n${termEcho ?? ''}`);
           const fixed = await reflectCommands({
             problem: slimForReflection(problem),
             previousCommands: guarded.cmds,
             evalResult:
               `（数据准备命令在终端执行阶段报错，尚未进入平台评测；平台只评测右侧代码栏内容，必须先把这些数据准备命令修对再继续。）\n\n` +
-              `=== 输入期报错 ===\n${inputErrors}${termEcho ? `\n\n=== 终端回显 ===\n…${termEcho.slice(-1500)}` : ''}`,
+              `=== 输入期报错 ===\n${inputErrors}${termEcho ? `\n\n=== 终端回显 ===\n…${termEcho.slice(-1500)}` : ''}${prepPathNote}`,
             terminalState: `${envNow.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
           });
           if (!fixed.commands?.length) break;
@@ -780,6 +930,23 @@ async function solveOnceInner(page, probe) {
         }
         // 数据落地核对（1.6.17）：导入跑完**必须实测**目标集合条数，否则「查询全空」会被误读成
         // 查询写错（真机就是这么烧掉 8 轮的）。结论并进 clientFact：该通道已流向生成与反思两侧。
+        // 恢复动作在这里定义、在代码分支复用——重置环境后重跑的是**实际键入过的那份**命令
+        //（lastPrepCmds），不是模型原文：护栏改写/剔除过的形态才是验证过能跑通的。
+        restorePrep = async () => {
+          const reset = await resetTaskEnv(page);
+          if (!reset.ok) {
+            log(`数据未落库，但「重置环境」未能执行（${reset.reason}）—— 按现状继续，不要自造数据`);
+            return '';
+          }
+          await settle(page);
+          if (lastPrepCmds.length) {
+            log(`重置环境后重做数据准备（${lastPrepCmds.length} 条）`);
+            await runTerminalCommands(page, lastPrepCmds);
+          }
+          const re = await verifyDataLanded(page, problem);
+          if (re.note) log(`重置后复核：${re.note}`);
+          return re.note ?? '';
+        };
         const landed = await verifyDataLanded(page, problem);
         if (landed.note) {
           log(landed.note);
@@ -787,20 +954,8 @@ async function solveOnceInner(page, probe) {
         }
         // 仍未落库 ⇒ 用平台自带「重置环境」恢复（刷新题目页不恢复环境：1.6.18），再重做一轮准备
         if (landed.count === 0) {
-          const reset = await resetTaskEnv(page);
-          if (reset.ok) {
-            await settle(page);
-            const again = applyCommandGuards(prep, bannedCmds, problem);
-            if (again.cmds.length) {
-              log(`重置环境后重做数据准备（${again.cmds.length} 条）`);
-              await runTerminalCommands(page, again.cmds);
-            }
-            const re = await verifyDataLanded(page, problem);
-            if (re.note) log(`重置后复核：${re.note}`);
-            clientFact = [clientFact, re.note].filter(Boolean).join('\n');
-          } else {
-            log(`数据未落库，但「重置环境」未能执行（${reset.reason}）—— 按现状继续，不要自造数据`);
-          }
+          const n = await restorePrep();
+          clientFact = [clientFact, n].filter(Boolean).join('\n');
         }
       } else {
         log('混合题前置：命令行数据准备生成结果为空，跳过，直接代码栏作答');
@@ -841,6 +996,9 @@ async function solveOnceInner(page, probe) {
     let cmdSameOutput = false;
     // 命令形态问题留痕（喂反思）：如 heredoc 被压成一行——这类命令会吞掉后续命令
     let shapeNote = '';
+    // 终端环境（首轮感知后跨轮复用）：applyCommandGuards 需要它才能判断
+    // "裸写的 db./show 该不该包成 mongo --eval"。声明在 for 之外，反思轮的 cmds 同样受益。
+    let termEnv = null;
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
       checkStop(`命令行第 ${attempt}/${cfg.loop.maxRetry} 轮`);
       if (cmds === null) {
@@ -853,6 +1011,7 @@ async function solveOnceInner(page, probe) {
         // 环境感知：生成前先探测终端当前 shell（bash / mongosh / …），
         // 把事实与该环境的书写约束注入 prompt，防止 AI 搞错环境
         const { env: envGen, note: envNote } = await perceiveTerminalEnvReady(page);
+        termEnv = envGen;
         log(`终端环境识别：${envGen.kind}${envGen.db ? `（当前库 ${envGen.db}）` : ''}${envNote}`);
         // 客户端实测：bash 环境且题干涉及数据库时，实测本机有哪些客户端
         //（mongosh 不存在只有 mongo 这类事实，靠实测不靠模型记忆）
@@ -879,7 +1038,7 @@ async function solveOnceInner(page, probe) {
       // 执行层兜底（0.9.1 真机：模型无视【实测禁令】仍逐轮输出 mongosh）+ shell 护栏
       // 清洗（中文标签行/全角分号）。生成与反思产出的命令都经过这一处，
       // 替换/清洗后输入期报错检测照常生效。
-      const guarded = applyCommandGuards(cmds, bannedCmds, problem);
+      const guarded = applyCommandGuards(cmds, bannedCmds, problem, termEnv);
       cmds = guarded.cmds;
       sanitizeNote = guarded.sanitizeNote;
 
@@ -993,6 +1152,10 @@ async function solveOnceInner(page, probe) {
         } else if (cfp) {
           log(`实际输出指纹 ${cfp}（与上一轮不同）`);
         }
+        // 路径类失败 → 只读取证（1.6.20）。放在指纹**之后**：取证文本也要拼进 lastEval，
+        // 提前拼会污染"改了等于没改"的比对基准（与格式探针、数据落地复查同一纪律）。
+        const pathNote = await probeMissingPaths(page, lastEval);
+        if (pathNote) lastEval = `${lastEval}${pathNote}`;
       }
       if (v.passed) {
         // 通过收尾：关闭庆祝弹窗（如有），返回等待用户操作
@@ -1306,7 +1469,14 @@ async function solveOnceInner(page, probe) {
         kind: 'redundant_print',
         message: `这行 print 属多余——题面「编程要求」没有要求任何输出，它打印的是评测程序自己负责的行：${f.text}`,
       }));
-      const allProblems = [...(chkA.problems ?? []), ...empties, ...strayPrints];
+      // 题面明写的命令条数 vs 提交段数（1.6.19）：少答一条时平台按**位置**把输出塞进结果
+      // 标签，后面每个标签都错位，现象是"全部对不上"、看起来像查询写错。这类缺口本轮就
+      // 该补上，不该花一次评测去发现（真机 2026-09-24：7 条对 8 个标签烧了 3 轮）。
+      const countNote = detectCommandCountViolation(submitted, problem);
+      const countProblems = countNote
+        ? [{ no: 0, label: '命令条数', kind: 'cmd_count', message: countNote }]
+        : [];
+      const allProblems = [...(chkA.problems ?? []), ...empties, ...strayPrints, ...countProblems];
       if (chkA.advisories?.length && c === 0) {
         log(
           `题面对齐提示（不影响提交）：${chkA.advisories.map((a) => `第${a.no}条 ${a.kind}`).join('、')}`,
@@ -1435,6 +1605,21 @@ async function solveOnceInner(page, probe) {
         );
       } else if (fp) {
         log(`实际输出指纹 ${fp}（与上一轮不同）`);
+      }
+
+      // ---- 评测后数据落地复查（1.6.19）----
+      // 代码栏内容是被平台交数据库 eval 的，模型写进去的一句 remove({}) 能把刚导入的数据
+      // 删光（2026-09-24 真机第 4 轮实际输出回显 `WriteResult({ "nRemoved" : 8 })`）；此后
+      // 每轮 count 都是 0，而反思材料里唯一的线索是"标签后全空"，于是连着四轮去改引号形态。
+      // 旧版只在首次提交前核对一次，中途的环境破坏完全不可见。放在指纹之后（同格式探针
+      // 的纪律：复查结论也要拼进 lastEval，提前拼会污染"改了等于没改"的比对基准）。
+      if (!stale && restorePrep) {
+        const landedNow = await recheckDataLanded(page, problem, restorePrep);
+        if (landedNow.note) {
+          log(`评测后数据落地复查（第 ${attempt} 轮）：${landedNow.note.split('\n')[0]}`);
+          lastEval = `${lastEval}\n\n=== 数据落地实测（本轮评测后复查，程序只读所得）===\n${landedNow.note}`;
+          clientFact = [clientFact, landedNow.note].filter(Boolean).join('\n');
+        }
       }
 
       // 容器格式反解（1.6.8）：顺序类差异交给平台的 Python 2 算，不算就只能拿评测去试。
