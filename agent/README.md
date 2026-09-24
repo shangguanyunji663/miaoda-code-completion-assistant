@@ -10,7 +10,7 @@
 |---|---|---|
 | AI 能力定义 | 仓库根 `shared/capabilities/*.json` | prompt 单一数据源，Agent 直接读取复用 |
 | 浏览器执行层 | 本目录 `agent/` | 感知页面、自动作答、点评测、翻页、反思循环 |
-| 用户入口 | `start-my-edge.bat` / `start-browser.bat` / `start-watch.bat` / `start-lite.bat` / `start-course.bat` | 用自己的 Edge 启动、独立 profile 启动、常驻监听、刷新触发、课程自动驾驶 |
+| 用户入口 | `start-my-edge.bat` / `start-browser.bat` / `start-watch.bat` / `start-lite.bat` / `start-course.bat` / `start-web.bat` | 用自己的 Edge 启动、独立 profile 启动、常驻监听、刷新触发、课程自动驾驶、网页工作台 |
 
 ## 前置条件
 
@@ -59,7 +59,7 @@ npm run probe
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流，见下方「网页工作台」） |
 | `npm run caps-check` | 校验配置类 JSON：能力文件（必填字段、prompt 占位符与 `paramsSchema` 声明一致性）+ 平台事实档案（事实段必须带 evidence/date、待验证项必须隔离在 `unknowns`）——编辑 `shared/capabilities/` 或 `shared/platform-facts.json` 后先跑 |
-| `npm test` | 运行单测（156 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 能力配置/事实档案校验 + 运行控制，Node 内置 `node:test`，零新增依赖） |
+| `npm test` | 运行单测（218 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 命令行回显判据与数据库提交护栏 + 能力配置/事实档案校验 + 运行控制，Node 内置 `node:test`，零新增依赖） |
 | `npm run lint` | ESLint 静态检查（`eslint.config.js`） |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 | `npm run format:check` | 只检查格式不写入，适合放进 CI |
@@ -147,8 +147,8 @@ probe（感知）→ 生成/作答 → 写入编辑器 → 静置保存 → 点�
 
 - **题型自动分类**：选择题/填空题按结构信号识别（`choice` 检测到 radio/checkbox、`blank` 检测到文本输入框）；代码题、**命令行题**与**混合题**先读左侧题干做 **AI 意图判定**（`task_router_1`：`code` 写代码文件 / `cmdline` 敲命令 / `mixed` 先命令行数据准备再写代码栏），判定后自动切换到对应工作区 tab 再执行
 - **代码题**：生成 → 写入前本地守卫（`py2-guard.mjs` 拦 Python 2 必定 SyntaxError 的 py3 语法，命中即打回修正、不浪费一次评测）→ 评测 → 失败则带着「题目 + 上一版代码 + 评测输出」反思修复 → 重评，最多 `MAX_RETRY` 次。**本轮结果必须被观测到才算数**：提交文本与上一轮不同时，绝不采信"面板与点击前一致"的遗留反馈（1.5.0；这类假证据曾让反思编出不存在的机制并改出语法都不过的代码）
-- **命令行题**（头歌类平台的数据库/运维任务）：生成命令序列 → 逐条真实键入 xterm 终端（每条回车后自适应等提示符返回，`TERMINAL_GAP_MIN_MS`~`TERMINAL_GAP_MAX_MS`；含中文的命令由执行层合成 paste 事件直入 xterm 保证键入保真，纯 ASCII 走键盘逐字符）→ 评测；未通过时由 `cmdline_reflection_fixer_1` 结合评测输出重新生成完整命令序列再重试。bash 环境且题干涉数据库时，先实测客户端可用性（mongosh 是否存在这类硬事实进 prompt、缺失者入禁令并执行层别名替换），避免子命令被敲进 bash
-- **混合题**（如「先命令行插入文档、再代码栏写查询」）：**先命令行插入题面文档到指定库（必需，1.0.0 实测评测环境共享终端数据库、未插入则查询结果为空）**，再落入代码分支作答；代码栏数据库命令题用 `echo "` 双引号包裹裸查询（分号 `;` 分隔、`$`→`\$`，1.0.0 生成/反思守则——平台对代码栏双重执行：bash 环节 + 提取 echo 引号内内容做数据库 eval）
+- **命令行题**（头歌类平台的数据库/运维任务）：生成命令序列 → 逐条真实键入 xterm 终端（每条回车后自适应等提示符返回，`TERMINAL_GAP_MIN_MS`~`TERMINAL_GAP_MAX_MS`；含中文的命令由执行层合成 paste 事件直入 xterm 保证键入保真，纯 ASCII 走键盘逐字符）→ 评测；未通过时由 `cmdline_reflection_fixer_1` 结合评测输出重新生成完整命令序列再重试。bash 环境且题干涉数据库时，先实测客户端可用性（mongosh 是否存在这类硬事实进 prompt、缺失者入禁令并执行层别名替换），避免子命令被敲进 bash；输入期报错判据认**两档**——明确错误语法与「退出码 0 但工具自述没干活」的静默空操作（`cmd-evidence.mjs`，1.6.20），路径类失败自动跑只读 `find` 取证（敲探针前先等 bash 提示符，1.6.21）
+- **混合题**（如「先命令行插入文档、再代码栏写查询」）：**先命令行插入题面文档到指定库（必需，1.0.0 实测评测环境共享终端数据库、未插入则查询结果为空）**，再落入代码分支作答；代码栏数据库命令题用 `echo "` 双引号包裹裸查询（分号 `;` 分隔、`$`→`\$`，1.0.0 生成/反思守则——平台对代码栏双重执行：bash 环节 + 提取 echo 引号内内容做数据库 eval）；代码栏提交前由执行层确定性兜底：裸语句自动包 echo（幂等）、破坏性语句（`remove({})` / `mongoimport`）剔除、题面明文形态机器体检随 `finalizeSubmission` 每次拼接重检（1.6.19–1.6.21）
 - **选择题/填空题**：直接作答后评测；当前版本不做多轮反思
 
 ## 多标签页挑页规则（探测/解题/once/run/dump 共用）

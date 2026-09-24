@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.6.6-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.6.21-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -123,7 +123,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
-| `npm test` | 跨平台（`node --test` 无参数，不依赖 shell 展开通配符）。运行单测（156 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
+| `npm test` | 跨平台（`node --test` 无参数，不依赖 shell 展开通配符）。运行单测（218 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 命令行回显判据与数据库提交护栏 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -205,6 +205,7 @@ miaoda-code-completion-assistant/
 │   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定 + 平台事实注入
 │   │   ├── py2-guard.mjs           # 写入前本地守卫：检出 Python 2 下必定 SyntaxError 的 py3 语法
 │   │   ├── requirement-contract.mjs # 题面契约：切条 + 对齐表 + 冗余 print 守卫（漏要求 / 幻觉引用 / 复制评测程序输出当场打回）
+│   │   ├── cmd-evidence.mjs        # 终端回显失败判据（明确错误 / 静默空操作两档）+ 路径只读取证命令生成
 │   │   ├── format-probe.mjs        # 容器格式反解探针：借平台的 Python 2 算"该按什么顺序写"（FORMAT_PROBE）
 │   │   ├── candidate-rank.mjs      # 多候选择优：四道闸门当评分器 + 多数派投票（CANDIDATES，默认关）
 │   │   ├── output-diff.mjs         # 输出差异定位器：差异分类（顺序/键序/空白/缺行/值差）+ 排序假设排除 + 服务端报错解读
@@ -220,13 +221,23 @@ miaoda-code-completion-assistant/
 │   │   ├── port-check.mjs          # 启动自检 CDP 调试端口
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
-│   ├── test/                       # 单测：17 个文件 / 156 项（node:test，零新增依赖）
+│   ├── test/                       # 单测：23 个文件 / 218 项（node:test，零新增依赖）
 │   │   ├── ai.test.mjs             # 核心纯函数（判定 / 拼接 / 渲染 / 解析）
 │   │   ├── pick-target.test.mjs    # 四级挑页链
 │   │   ├── click-fallback.test.mjs # 按钮点击有界重扫 + exists 语义
 │   │   ├── eval-freshness.test.mjs # 评测结果防陈旧 + 动态预算（假时钟）
 │   │   ├── py2-guard.test.mjs      # Python 2 语法守卫（含零误报对照样本）
 │   │   ├── output-fingerprint.test.mjs # "改了等于没改"的实际输出指纹
+│   │   ├── output-diff.test.mjs    # 输出差异定位：差异分类 / 排序假设排除 / 服务端报错解读
+│   │   ├── format-probe.test.mjs   # 容器格式反解探针（只读纯计算 / 白名单 / 可照抄结论）
+│   │   ├── candidate-rank.test.mjs # 多候选择优（闸门评分 + 多数派投票）
+│   │   ├── requirement-contract.test.mjs # 题面契约切条与对齐校验（叙述行不进清单）
+│   │   ├── eval-context-contract.test.mjs # 「现有输入」文件覆盖 + 语句内单引号两道机器判据
+│   │   ├── command-lines-fence.test.mjs # 命令解析：围栏逐行剥离 + 提示符剥离
+│   │   ├── terminal-env.test.mjs   # 终端环境识别等待与 unknown 三态描述
+│   │   ├── terminal-input-window.test.mjs # 输入期报错窗口（按内容求重叠，C-19）
+│   │   ├── cmd-evidence.test.mjs   # 回显失败两档判据 + 祖先目录取证
+│   │   ├── db-submission-guards.test.mjs # 数据库提交护栏（破坏性语句 / 条数 / 形态 / echo 包裹）
 │   │   ├── slim-for-reflection.test.mjs
 │   │   ├── reload-draft-guard.test.mjs
 │   │   ├── capability-schema.test.mjs
@@ -236,8 +247,9 @@ miaoda-code-completion-assistant/
 │   │   └── stop-abort.test.mjs
 │   ├── eslint.config.js            # ESLint flat config
 │   ├── .prettierrc                 # 格式化规则
+│   ├── .prettierignore             # Prettier 排除项（mimosa 插件运行态 src/.mimosa/）
 │   ├── docs/
-│   │   └── TROUBLESHOOTING.md      # 25 个真实踩坑与排查方法论
+│   │   └── TROUBLESHOOTING.md      # 27 个真实踩坑与排查方法论
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
 │   ├── public/
 │   │   └── index.html              # 网页工作台前端（单文件原生，无构建链）
@@ -287,7 +299,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 156 项单测必须全绿
+npm test          # 218 项单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 
@@ -331,7 +343,7 @@ npm run lint      # ESLint 零问题
 |---|---|
 | [`同学使用指南.md`](同学使用指南.md) | **傻瓜式教程**：从零装环境到自动做题，给第一次用的同学 |
 | [`agent/README.md`](agent/README.md) | 完整文档：全部配置项、三种工作模式详解、设计要点、平台兼容性 |
-| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 25 个真实踩坑（环境级 + 代码级）与排查方法论 |
+| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 27 个真实踩坑（环境级 + 代码级）与排查方法论 |
 | [`agent/CHANGELOG.md`](agent/CHANGELOG.md) | 变更日志 |
 | [`shared/capabilities/README.md`](shared/capabilities/README.md) | AI 能力配置说明 |
 | [`AGENTS.md`](AGENTS.md) | 面向 AI 开发代理的项目说明与硬约束 |
