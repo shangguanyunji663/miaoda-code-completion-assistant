@@ -89,3 +89,7 @@ uploaded_image.png
 
 # ZCode 本地运行态（plans 等），纯本地产物不入库
 .zcode/
+
+# 妙答桌面版（feat/5-f-electron-desktop）：Electron 依赖与打包产物
+desktop/node_modules/
+desktop/dist/
