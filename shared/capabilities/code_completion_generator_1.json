@@ -3,7 +3,7 @@
   "pluginKey": "@official-plugins/ai-text-generate",
   "pluginVersion": "1.0.21",
   "name": "代码补全生成器",
-  "description": "基于算法题题目描述与代码模板，在Begin/End标记之间补全代码实现，输出完整可提交代码，注重边界情况处理与代码风格一致性",
+  "description": "基于算法题题目描述与代码模板，在Begin/End标记之间补全代码实现，输出完整可提交代码；只做题面要求的事，按平台实测环境取最朴素写法",
   "icon": "",
   "paramsSchema": {
     "type": "object",

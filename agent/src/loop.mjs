@@ -1,5 +1,5 @@
 // EXPORTS: solveOnce, runLoop, watchLoop, liteLoop, courseLoop, slimForReflection,
-//          looksLikeOwnDraft, outputFingerprint, pickEvalEvidence
+//          looksLikeOwnDraft, outputFingerprint, pickEvalEvidence, finalizeSubmission
 // 主编排：感知 → 意图判定 → 生成/作答 → 提交评测 → 读结果 → 失败反思 → 成功翻页。
 //
 // 单题流程（代码题 / 命令行题 / 混合题，按题干意图分流）：
@@ -346,12 +346,20 @@ function verdictOf(evalText) {
 }
 
 /**
- * 拼接 + 执行层护栏，得到「真正会写进编辑器的那份文本」。
+ * 拼接 + 执行层护栏 + 题面明文提交形态体检，得到「真正会写进编辑器的那份文本」。
  * 从主循环里抽出来复用：反思修正、守卫打回重生成后都走同一条流水线，
  * 避免哪一处漏了清洗或漏了留痕。
- * @returns {{submitted: string, sanitizeNote: string, emptyBlocks: number[]}}
+ *
+ * 形态体检（detectSubmissionFormViolations）放在流水线**末尾**对最终文本执行——
+ * 1.6.21 前它只在主路径拼接后跑一次：守卫/契约打回修复出的新文本不过体检，
+ * 修复前的违约结论还会被 again.sanitizeNote 覆盖丢失。判据要看的正是
+ * "包完 echo、切完破坏性语句之后"提交长什么样（引号判据自己会剥外层包裹）。
+ * @param {string} template 平台原始模板
+ * @param {string} code AI 输出代码
+ * @param {string} [problem] 当次题干（形态判据的输入；不传则跳过体检）
+ * @returns {{submitted: string, sanitizeNote: string, emptyBlocks: number[], formViolations: string[]}}
  */
-function finalizeSubmission(template, code) {
+export function finalizeSubmission(template, code, problem = '') {
   // 实际提交评测的是"模板拼接后"的版本；反思必须带上它而不是 AI 原始
   // 输出，否则 AI 审的是一份没提交过的文本（2026-09-09 用户指出）
   let submitted = spliceIntoTemplate(template, code);
@@ -415,7 +423,15 @@ function finalizeSubmission(template, code) {
     submitted = wrap.code;
     log('数据库命令题 echo 双引号包裹兜底（bash 环节零噪音，平台提取引号内命令 eval）');
   }
-  return { submitted, sanitizeNote, emptyBlocks };
+  // 题面明文提交形态的机器判据（1.6.15）对最终文本执行，结论随 sanitizeNote 下发反思：
+  // 每次拼接（含守卫/契约打回修复后的再拼接）都重检，而不是沿用上一次的结论
+  const formViolations = problem ? detectSubmissionFormViolations(submitted, problem) : [];
+  if (formViolations.length) {
+    sanitizeNote = [sanitizeNote, ...formViolations.map((v) => `- ${v}`)]
+      .filter(Boolean)
+      .join('\n');
+  }
+  return { submitted, sanitizeNote, emptyBlocks, formViolations };
 }
 
 /** 残缺产物检测（2026-09-15 放开轮数实验沉淀）：思考超限断流→强制关思考的重试轮
@@ -580,6 +596,20 @@ async function probeMissingPaths(page, text) {
   );
   try {
     checkStop('路径只读取证');
+    // 先等 shell 提示符（1.6.21，与格式探针、数据落地复查同一纪律）：评测失败后终端
+    // 可能停在某个 REPL 里（上一轮序列以进 mongo/redis REPL 收尾很常见），`find` 敲进
+    // REPL 只会变成一条解析错误、取证段整段失真。等不到 bash 就放弃并记日志。
+    const waited = await waitForTerminalEnv(
+      page,
+      terminalReadyOpts((e) => e.kind === 'bash'),
+    );
+    if (waited.env?.kind !== 'bash') {
+      log(
+        `路径只读取证跳过：终端未回到 bash 提示符` +
+          `${describeTerminalWait(waited.env?.kind, waited.env?.last, waited)}`,
+      );
+      return '';
+    }
     await runTerminalCommands(page, cmds, { silent: true });
     await page.waitForTimeout(700);
     const echo = await readTerminalText(page);
@@ -1311,7 +1341,7 @@ async function solveOnceInner(page, probe) {
           ),
         );
         const cands = made.map((g) => {
-          const f = finalizeSubmission(codeProbe.code, g.code);
+          const f = finalizeSubmission(codeProbe.code, g.code, problem);
           return {
             code: g.code,
             alignment: g.alignment,
@@ -1372,20 +1402,21 @@ async function solveOnceInner(page, probe) {
       return { ok: false, kind: 'code', reason: 'empty-code' };
     }
 
-    // 拼接 + 执行层护栏 → 实际提交评测的文本
+    // 拼接 + 执行层护栏 → 实际提交评测的文本。题面明文提交形态的机器判据（1.6.15）
+    // 已并入 finalizeSubmission 流水线末尾（1.6.21）：prompt 规则在同一形态上已被证伪
+    // 一次，不能再只靠规则；守卫/契约打回修复出的新文本同样重检，修复前的违约结论
+    // 也不会被 again.sanitizeNote 覆盖丢失（旧版在这里只算一次，打回一覆盖就没了）。
     let submitted;
-    ({ submitted, sanitizeNote } = finalizeSubmission(codeProbe.code, code));
-
-    // 题面明文提交形态的机器判据（1.6.15）：题面禁双引号而提交仍是 `echo "` ⇒ 结论随
-    // sanitizeNote 进反思材料（prompt 规则在同一形态上已被证伪一次，不能再只靠规则）。
-    const formViolations = detectSubmissionFormViolations(submitted, problem);
+    let formViolations;
+    ({ submitted, sanitizeNote, formViolations } = finalizeSubmission(
+      codeProbe.code,
+      code,
+      problem,
+    ));
     if (formViolations.length) {
       log(
         `题面提交形态违约 ${formViolations.length} 处（已随反思材料下发）：${formViolations[0].slice(0, 90)}`,
       );
-      sanitizeNote = [sanitizeNote, ...formViolations.map((v) => `- ${v}`)]
-        .filter(Boolean)
-        .join('\n');
     }
 
     // ---- 写入前本地 Python 2 语法守卫（1.5.0）----
@@ -1418,9 +1449,14 @@ async function solveOnceInner(page, probe) {
       }
       code = repaired.code;
       pendingAlignment = repaired.analysis ?? '';
-      const again = finalizeSubmission(codeProbe.code, code);
+      const again = finalizeSubmission(codeProbe.code, code, problem);
       submitted = again.submitted;
       sanitizeNote = again.sanitizeNote;
+      if (again.formViolations.length) {
+        log(
+          `修复后再检：题面提交形态违约 ${again.formViolations.length} 处（已随反思材料下发）：${again.formViolations[0].slice(0, 90)}`,
+        );
+      }
     }
     const finalChk = checkPython2Syntax(submitted);
     if (!finalChk.ok) {
@@ -1524,9 +1560,14 @@ async function solveOnceInner(page, probe) {
       }
       code = repaired.code;
       pendingAlignment = repaired.analysis ?? '';
-      const again = finalizeSubmission(codeProbe.code, code);
+      const again = finalizeSubmission(codeProbe.code, code, problem);
       submitted = again.submitted;
       sanitizeNote = again.sanitizeNote;
+      if (again.formViolations.length) {
+        log(
+          `修复后再检：题面提交形态违约 ${again.formViolations.length} 处（已随反思材料下发）：${again.formViolations[0].slice(0, 90)}`,
+        );
+      }
     }
 
     checkStop('写入编辑器');

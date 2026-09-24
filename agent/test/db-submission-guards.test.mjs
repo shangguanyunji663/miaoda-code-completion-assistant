@@ -10,12 +10,14 @@ import {
   stripDestructiveDbStatements,
   parseDeclaredCommandCount,
   detectCommandCountViolation,
+  detectShellInvocationViolation,
   looksLikeDbScript,
   splitStatements,
   submissionBody,
   wrapBareDbStatementsForShell,
   wrapDbCommandsInEcho,
 } from '../src/ai.mjs';
+import { finalizeSubmission } from '../src/loop.mjs';
 
 const B = '#********* Begin *********#';
 const E = '#********* End *********#';
@@ -203,4 +205,43 @@ test('回归：echo 兜底包出来的文本，不会被形态判据说成违约
     [],
     `外层 echo 包裹不应判违约：${vs.join(' | ')}`,
   );
+});
+
+// ---------- 1.6.21：代码栏 shell 调用形态判据 ----------
+
+test('代码栏里的 heredoc 起始 / mongo 命令前缀被点名，裸语句与 shell 脚本主体不误伤', () => {
+  // heredoc 行混在 db 语句中间（真机事故形态：反思给出"用 heredoc 导入"策略）
+  const src = `${B}\ndb.test.find({age:20});db.test.find({sex:'男'});db.test.count()\nmongo <<'EOF'\n${E}\n`;
+  const note = detectShellInvocationViolation(src);
+  assert.match(note, /shell 调用形态/);
+  assert.match(note, /mongo/);
+  // 纯裸语句（执行层会包 echo）零触发
+  assert.equal(detectShellInvocationViolation(`${B}\ndb.test.find({age:20})\n${E}\n`), '');
+  // 普通 shell 脚本主体（looksLikeDbScript 不过）不越权——宁漏不误报
+  assert.equal(
+    detectShellInvocationViolation(`${B}\ncat > /tmp/a <<'EOF'\nhello\nEOF\n${E}\n`),
+    '',
+  );
+  // 已被破坏性剔除覆盖的 mongoimport 不在本判据重复点名
+  assert.equal(
+    detectShellInvocationViolation(
+      `${B}\nmongoimport --db mydb3 --file /home/example/person.json\n${E}\n`,
+    ),
+    '',
+  );
+});
+
+// ---------- 1.6.21：形态体检随 finalizeSubmission 每次拼接一起执行 ----------
+
+test('finalizeSubmission 返回 formViolations；修复后的文本重检而不是沿用旧结论', () => {
+  const tpl = `${B}\n\n${E}\n`;
+  const bad = "db.mydb3.test.find({age:20,sex:'男'})";
+  const first = finalizeSubmission(tpl, bad, '在代码栏编写查询。');
+  assert.ok(
+    first.formViolations.some((v) => /库名/.test(v)),
+    `应检出 db.<库名>.<集合名> 形态：${first.formViolations.join(' | ')}`,
+  );
+  assert.ok(first.sanitizeNote.includes('库名'), '违约说明随 sanitizeNote 下发反思材料');
+  const fixed = finalizeSubmission(tpl, "db.test.find({age:20,sex:'男'})", '在代码栏编写查询。');
+  assert.deepEqual(fixed.formViolations, [], '修复后的文本应重检为零违约');
 });

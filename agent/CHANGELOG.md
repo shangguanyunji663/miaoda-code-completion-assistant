@@ -2,6 +2,31 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [1.6.21] - 2026-09-25（分支 feat/2-c-web-service）
+
+**全项目冗余与"修过的格式再犯"审计落地：一处让 1.6.15 形态判据失效的接线缺口 + 两处取证/判据缺口 + 六处冗余。** 审计基线：`npm test` 216/216、caps-check 全绿，**已修守卫无一失效**——缺口在"打回修复路径绕过形态体检"这一处接线。
+
+### Fixed
+
+- **形态体检只在每轮首次拼接后跑一次，打回修复路径既不复查、还会覆盖丢失已有证据**（`loop.mjs`）：`detectSubmissionFormViolations`（引号形态 / `db.<库名>.<集合名>` / `$` 未转义 / 条数）原在 `finalizeSubmission` 之后的主路径算一次、结论追加进 `sanitizeNote`；而 py2 守卫修正与题面对齐修正两条打回路径都会 `sanitizeNote = again.sanitizeNote` **整体覆盖**——修复后的新文本若重新引入 `db.mydb3.test.` 或语句内双引号，本轮无人拦、反思材料也拿不到上一轮的违约证据（1.6.15 加这批判据的理由恰是"prompt 规则已被证伪一次，不能再只靠规则"）。现把体检并入 `finalizeSubmission` **流水线末尾**（对包完 echo、切完破坏性语句的最终文本执行，引号判据自己会剥外层包裹），每次拼接（含两条打回修复路径）都重检并随 `formViolations` 返回；`finalizeSubmission` 转为导出（纯函数）供单测。条数核对在契约循环内原本就每轮重算，不受影响
+- **`probeMissingPaths` 敲探针前没等 shell 提示符**（`loop.mjs`）：三个只读探针里只有它直接敲命令——命令行分支评测失败后终端可能停在某个 REPL 里（上一轮序列以进 mongo/redis REPL 收尾很常见），`find` 敲进 REPL 只会变成一条解析错误、"目录实测"段整段失真。现先 `waitForTerminalEnv` 等 bash 提示符（与格式探针、数据落地复查同一对 `terminalReadyOpts`），等不到就放弃并记日志
+- **代码栏 shell 调用形态从纯 prompt 约束补上机器判据**：新增 `detectShellInvocationViolation`（`ai.mjs`）——heredoc 起始（`<<'EOF'` 类）、`mongo`/`mongosh` 命令前缀、行首 `:` 前缀，三类形态本平台实测全部失败而此前只有 prompt 纪律（`findSquashedHeredocs` 只管终端命令数组，`wrapDbCommandsInEcho` 甚至会把含 heredoc 的正文整段包进 echo）。门控 `looksLikeDbScript`（Java/C++ 的 `<<` 位移、普通 shell 脚本整体跳过，宁漏不误报）；只**检出**不改写（heredoc 正文可能含分号，与 findSquashedHeredocs 同一取舍）。并入 `detectSubmissionFormViolations`
+
+### Changed
+
+- `wrapDbCommandsInEcho` 的「是不是数据库脚本」触发判据收敛到共享的 `looksLikeDbScript`——原先内联的 70% 统计只认 `db.`/`use`，与共享判据（还认 `show`/`mongo*`）已经分叉：含 `show dbs` 的正文会被破坏性剔除判成"db 脚本"却不会被包裹。首行编程语言守卫与幂等检查保持不变
+- `buildPlatformFactsBlock` 注入前剥掉 `_readme`——那是给维护者的填写规则，整包 JSON 注入进每个 prompt 是每次调用 500+ 字的纯噪音（`unknowns` 照旧注入："哪些没定案"对模型有价值）
+- `shared/capabilities/cmdline_runner_1.json` 修复重复的第 9 条编号（1.6.15 插入「现有 X 文件」规则时未重排，实际 13 条编号只到 12）
+- `shared/capabilities/code_completion_generator_1.json` 的 description 与角色纪律对齐（原「注重边界情况处理与代码风格一致性」与"不是软件工程师"、规则 22"不加题面没要求的边界防御"相反；description 不进 prompt，仅文件自述）
+- 三处文档错位/过期：`ai.mjs` 头部 EXPORTS 清单补全（原 16 项、实际 38 项导出）；`requirement-contract.mjs` 头部补 `formatAlignmentProblems`；`act.mjs` 里 `dismissPassModal` 的 JSDoc 从 `resetTaskEnv` 头上挪回本函数
+- 新增 `agent/.prettierignore` 排除 `src/.mimosa/`（mimosa 插件的本地运行态文件已被 gitignore，但会被 prettier 扫到、污染 format:check）
+
+### Verified
+
+- `npm test` **218/218**（新增 2 例：shell 形态判据的命中/门控、`finalizeSubmission` 返回 `formViolations` 且修复后重检）、`npm run lint`、`npm run format:check`、`npm run caps-check` 全绿
+- **未跑真机**：形态体检并入流水线的收益场景（契约打回修复后重新引入形态违约）需要一道契约层激活的 db 查询题才观察得到；`probeMissingPaths` 的 bash 等待在"上一轮以进 REPL 收尾"的失败轮才生效
+- **有意保留**：条数核对仍在两处各算一次——`detectSubmissionFormViolations` → sanitizeNote 兜底契约层未激活/止损后的下发；契约循环 → contractEvalText 驱动打回。两者用途不同，材料里文本重复可接受
+
 ## [1.6.20] - 2026-09-24（分支 feat/2-c-web-service）
 
 **mongorestore 关 3 轮止损暴露的那一层：命令"跑完了"不等于命令"干活了"。** 真机 /tasks/XBLSCWNL/4882：三条恢复命令因路径不对失败，模型依次猜 `/opt/collection_1/person/person.bson` → `/opt/collection_1/person.bson` → 「目录 + `-c`」，全错，**全程没有 ls 过一次目录**；而全场最强的一条线索 `don't know what to do with subdirectory "mongodb_1/test1", skipping...` 因为不带 error 字样、退出码又是 0，一次都没进过"输入期报错"材料。期间模型还写下「test1 为空、mongodb_1/collection_1 是空目录」——同一次回显里 `/opt/mongodb/test1/person.bson` 明明恢复了 8 条文档，该结论从未被否证。

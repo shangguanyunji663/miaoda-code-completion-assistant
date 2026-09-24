@@ -1,8 +1,14 @@
-// EXPORTS: chat, generateCode, reflectAndFix, extractCodeFromMarkdown,
-//          splitAnalysisAndCode, detectVerdict, listChatModels,
+// EXPORTS: chat, readCapability, renderTemplate, buildPlatformFactsBlock,
+//          generateCode, reflectAndFix, answerQuestion, parseAnswers, answerBatch,
 //          classifyProblemIntent, generateCommands, reflectCommands, parseCommandLines,
-//          sanitizeShellSubmission, stripNonCodeLines, findSquashedHeredocs,
-//          buildPlatformFactsBlock, readCapability
+//          detectVerdict, listChatModels, extractCodeFromMarkdown, splitAnalysisAndCode,
+//          spliceIntoTemplate, emptyMarkerBlocks, stripNonCodeLines, findSquashedHeredocs,
+//          findDataFileOverwrites, sanitizeShellSubmission, wrapDbCommandsInEcho,
+//          wrapBareDbStatementsForShell, submissionBody, statementPrescribesQuoteForm,
+//          looksLikeDbScript, splitStatements, stripDestructiveDbStatements,
+//          parseImportTarget, parseDeclaredCommandCount, detectSubmissionFormViolations,
+//          detectQuoteFormViolation, detectDbCollectionRefViolation, detectEscapeViolation,
+//          detectCommandCountViolation, detectShellInvocationViolation
 // AI 调用层。
 // 设计要点：
 //   1. prompt 单一数据源 —— 直接读取仓库根 shared/capabilities/*.json 中的 prompt 模板，
@@ -43,6 +49,8 @@ export function buildPlatformFactsBlock() {
   const file = cfg.paths.platformFactsFile;
   try {
     const obj = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // `_readme` 是给维护者的填写规则，对模型是纯噪音——注入前剥掉（文件本身不动）
+    delete obj._readme;
     const body = JSON.stringify(obj, null, 2);
     if (!factsLogged) {
       factsLogged = true;
@@ -807,6 +815,48 @@ export function detectCommandCountViolation(submitted, problem) {
 }
 
 /**
+ * 代码栏里的 shell 调用形态判据（零依赖纯函数，1.6.21）：heredoc 起始（`<<'EOF'` 类）、
+ * `mongo`/`mongosh` 命令前缀、行首 `:` 前缀。这三类形态在本平台实测全部失败（平台对代码栏
+ * 先过 bash、再把引号内内容交数据库 eval；`mongo …`/heredoc 在 bash 环节报语法错或把后续
+ * 内容当正文吞掉），代码栏里只该写数据库语句本身——外层包裹由执行层统一加，导入/写文件等
+ * shell 操作只属于「命令行」。此前这三条只有 prompt 纪律（生成器规则 10、反思器守则 4），
+ * 而 `findSquashedHeredocs` 只管终端命令数组、`wrapDbCommandsInEcho` 甚至会把含 heredoc 的
+ * 正文整段包进 echo——是"能机器判定的不要交给 prompt"剩下的最后一个没落地的形态禁令。
+ *
+ * 门控：仅当正文整体是数据库脚本形态（looksLikeDbScript）才启用——Java/C++ 的 `<<` 位移、
+ * 普通 shell 脚本整体跳过（宁漏不误报）；`mongoimport` 类已被 stripDestructiveDbStatements
+ * 剔除，不在本判据重复点名。只**检出**不改写：heredoc 正文可能含分号，硬拆有误伤风险
+ * （与 findSquashedHeredocs 同一取舍）。
+ * @param {string} code 实际提交文本
+ * @returns {string} 违规说明（空串 = 无违规 / 非 db 脚本正文）
+ */
+export function detectShellInvocationViolation(code) {
+  const c = String(code ?? '');
+  if (!c) return '';
+  const sub = submissionBody(c);
+  if (!looksLikeDbScript(sub.body)) return '';
+  const offenders = sub.body
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(
+      (l) =>
+        l &&
+        !/^#/.test(l) &&
+        !/^\/\//.test(l) &&
+        (/<<-?['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(l) ||
+          /^(?:mongo|mongosh)\b/.test(l) ||
+          l.startsWith(':')),
+    );
+  if (!offenders.length) return '';
+  return (
+    `代码栏里混入了 shell 调用形态（heredoc 起始 / mongo 命令前缀 / 行首冒号前缀）：` +
+    `${offenders[0].slice(0, 90)}。本平台对代码栏先过 bash、再把引号内内容交数据库 eval，` +
+    `这三类形态实测全部失败（bash 报语法错或 eval 解析错）。代码栏里只写数据库语句本身` +
+    `（外层包裹由执行层统一加，不用你管）；写文件、导入数据等 shell 操作只属于「命令行」。`
+  );
+}
+
+/**
  * 把裸写的数据库 shell 语句包成一次性客户端调用（零依赖纯函数，2026-09-24 真机）。
  *
  * 事故：混合题的「命令行数据准备」里，模型把 `show dbs`、`use mydb3`、
@@ -853,6 +903,8 @@ export function wrapBareDbStatementsForShell(cmds, opt = {}) {
 
 /**
  * 提交形态的一次性机器体检（把上面几条汇总，供 loop 在提交点统一调用）。
+ * 全部对「拼接+护栏后的最终文本」执行（1.6.21 起随 finalizeSubmission 每次拼接重检）；
+ * 代码栏 shell 调用形态判据（1.6.21）也在此列。
  * @param {string} code 实际提交文本
  * @param {string} problem 当次题干
  * @returns {string[]} 每条为一句可读的违约说明（空数组 = 无违规）
@@ -863,6 +915,7 @@ export function detectSubmissionFormViolations(code, problem) {
     detectDbCollectionRefViolation(code),
     detectEscapeViolation(code, problem),
     detectCommandCountViolation(code, problem),
+    detectShellInvocationViolation(code),
   ].filter(Boolean);
 }
 
@@ -1316,7 +1369,9 @@ export function wrapDbCommandsInEcho(text) {
   // 触发条件收紧（1.1.0 通用性）：仅当「代码栏主体是 db.<集合>.<方法>( 数据库命令集」
   // 且未被 echo 包裹时才包裹——避免误伤编程题（Python/Java/Node 脚本里可能含 db.
   // 调用或字符串字面量）与其它平台命令（SELECT/use 等）。判据：
-  //  ① 行级统计：去 Begin/End 后至少 70% 非空行是 db. 命令或 use 语句；
+  //  ① 行级统计：与破坏性剔除/形态判据**共用同一份** looksLikeDbScript（≥70% 数据库
+  //    语句行；1.6.21 前这里内联的统计只认 db./use，与共享判据分叉——含 show dbs 的
+  //    正文会被判成"db 脚本"却不会被包裹）；
   //  ② 排除明显编程语言特征（函数/类/导入/赋值/控制流等）开头。
   const sub = submissionBody(src);
   const lines = sub.body
@@ -1331,8 +1386,7 @@ export function wrapDbCommandsInEcho(text) {
   ) {
     return { code: src, wrapped: false };
   }
-  const cmdLike = lines.filter((l) => /^db\s*\./.test(l) || /^use\s+\w+/i.test(l)).length;
-  if (cmdLike / lines.length < 0.7) return { code: src, wrapped: false };
+  if (!looksLikeDbScript(sub.body)) return { code: src, wrapped: false };
   if (/echo\s*"/.test(src)) return { code: src, wrapped: false };
   const escapeDollar = (s) => s.replace(/(?<!\\)\$/g, '\\$');
   if (!sub.bare) {

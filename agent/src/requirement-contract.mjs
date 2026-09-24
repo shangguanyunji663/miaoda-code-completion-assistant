@@ -1,5 +1,5 @@
 // EXPORTS: extractRequirementContract, renderContractBlock, parseAlignmentTable,
-//          validateAlignment, findRedundantPrints
+//          validateAlignment, findRedundantPrints, formatAlignmentProblems
 // 题面契约层（1.6.0）：把"照题面写"从模型的自觉，变成程序可校验的动作。
 //
 // 为什么不是"再补一条 prompt 守则"（用户明确要求：不能每题靠人工纠正）：

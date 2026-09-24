@@ -875,17 +875,6 @@ export async function probeTerminalClients(
 }
 
 /**
- * 通过后关闭「恭喜您通过本关」庆祝弹窗（2026-09-09 用户新增需求）。
- * 弹窗不关会一直遮挡编辑器与结果面板；关闭后 watch/lite 自然回到等待态
- * （watch 等切换下一题、lite 等刷新），导航权保留给用户——本函数只关
- * 弹窗，绝不触发任何导航。
- * 关闭顺序：「完成」按钮（平台标准收尾动作）→ ⊗ 关闭叉（class 含
- * close/Close 的可见元素）→ Escape 兜底；每步失败静默，不影响主流程。
- * 页面无弹窗时直接返回，零副作用。
- * @param {import('playwright-core').Page} page
- * @returns {Promise<{dismissed: boolean, way?: string, reason?: string}>}
- */
-/**
  * 重置实验环境（2026-09-23，用户指路 + 只读 DOM 探针确认结构）。
  * 入口：命令行标签栏右侧的**工具栏按钮**（`a[title="工具栏"]`，图标 `icon-gongjuxiang`，
  * 用户口中的"公文包"）→ 弹出「功能」菜单 → 点「重置环境」→ 确认。
@@ -922,6 +911,17 @@ export async function resetTaskEnv(page) {
   return { ok: true };
 }
 
+/**
+ * 通过后关闭「恭喜您通过本关」庆祝弹窗（2026-09-09 用户新增需求）。
+ * 弹窗不关会一直遮挡编辑器与结果面板；关闭后 watch/lite 自然回到等待态
+ * （watch 等切换下一题、lite 等刷新），导航权保留给用户——本函数只关
+ * 弹窗，绝不触发任何导航。
+ * 关闭顺序：「完成」按钮（平台标准收尾动作）→ ⊗ 关闭叉（class 含
+ * close/Close 的可见元素）→ Escape 兜底；每步失败静默，不影响主流程。
+ * 页面无弹窗时直接返回，零副作用。
+ * @param {import('playwright-core').Page} page
+ * @returns {Promise<{dismissed: boolean, way?: string, reason?: string}>}
+ */
 export async function dismissPassModal(page) {
   const marker = page.getByText('恭喜您通过', { exact: false }).first();
   if (!(await marker.isVisible().catch(() => false))) {
