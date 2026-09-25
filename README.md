@@ -16,7 +16,7 @@
 
 </div>
 
-> **📖 分支说明**：本分支（`feat/2-c-web-service`）= master 基线 + **网页工作台**——`npm run web`（或双击 `start-web.bat`）打开 `http://127.0.0.1:8787`，点按钮代替命令行做题，仅本机可访问。**无新增依赖**，从 master 切换后无需重新 `npm install`。原有 CLI 用法（watch / lite / course）全部保留。另有两个功能分支：`feat/3-d-capability-guard`（能力配置自动校验）、`feat/1-ad-mcp-server`（MCP 出口，让 AI 编程助手替你做题，**该分支有新增依赖**）；基于本分支还切出两个**给同学减负**的分支——`feat/4-e-oneclick-launcher`（一键安装向导 + 桌面「妙答」一键启动，agent 1.7.0，说明见其分支上的《一键启动说明.md》）与 `feat/5-f-electron-desktop`（Electron 安装版桌面程序，即本分支，说明见《桌面版说明.md》与 [`desktop/README.md`](desktop/README.md)）。
+> **📖 分支说明**：本分支（`feat/5-f-electron-desktop`）= `feat/2-c-web-service` 基线 + **Electron 安装版桌面程序**（桌面包 **0.2.0**，agent 与源分支同源、当前 **1.6.25**）：同学拿到手是带图标与托盘的**安装版/便携版**，双击即起「受控 Edge + 网页工作台」，无需命令行。说明见《[桌面版说明.md](桌面版说明.md)》、分步操作见《[桌面版使用手册.md](桌面版使用手册.md)》、构建与打包见 [`desktop/README.md`](desktop/README.md)。**`agent/src` 与 `shared/` 相对源分支不另改逻辑**（桌面版只是壳，用 Electron 自带 Node 子进程跑 agent 既有入口）。姊妹分支：`feat/2-c-web-service`（网页工作台本体，agent 1.6.25）、`feat/4-e-oneclick-launcher`（一键 bat 入口，agent 1.7.1，说明见其分支上的《一键启动说明.md》）、`feat/3-d-capability-guard`（能力配置自动校验）、`feat/1-ad-mcp-server`（MCP 出口，让 AI 编程助手替你做题，**该分支有新增依赖**）。
 > **平台知识 / 适配逻辑源头**：本分支是 `shared/platform-facts.json`（平台实测事实单一数据源，1.2.0）与四级挑页链、编辑器写入策略、模板拼接兜底、按钮点击兜底等**平台适配逻辑**（1.3.0）的源头，已回灌至 master / `feat/1-ad-mcp-server` / `feat/3-d-capability-guard`，故各分支解题行为一致；`control.mjs`（「停止做题」，1.4.0）与 1.4.x 系列真机根因修复为本分支独有。
 
 ---
@@ -265,7 +265,7 @@ miaoda-code-completion-assistant/
 ├── shared/
 │   ├── capabilities/               # AI prompt 单一数据源（7 个能力配置）
 │   └── platform-facts.json         # 平台实测事实单一数据源（统一注入所有能力 prompt）
-├── desktop/                        # Electron 桌面壳（本分支 0.1.0）：构建见 desktop/README.md，用户说明见《桌面版说明.md》
+├── desktop/                        # Electron 桌面壳（本分支 0.2.0）：构建见 desktop/README.md，用户说明见《桌面版说明.md》/《桌面版使用手册.md》
 ├── AGENTS.md                       # 面向 AI 开发代理的项目说明
 ├── LICENSE                         # MIT
 └── README.md                       # 你正读的这份
@@ -344,6 +344,7 @@ npm run lint      # ESLint 零问题
 |---|---|
 | [`同学使用指南.md`](同学使用指南.md) | **傻瓜式教程**：从零装环境到自动做题，给第一次用的同学 |
 | [`桌面版说明.md`](桌面版说明.md) | **本分支专用**：Electron 桌面版的用户说明、与一键 bat 的取舍、验证边界 |
+| [`桌面版使用手册.md`](桌面版使用手册.md) | **本分支专用**：给同学的分步操作手册（装 → 首次配置 → 每天怎么用 → 排障 FAQ → 隐私边界） |
 | [`desktop/README.md`](desktop/README.md) | 桌面版构建与打包细节（开发者向） |
 | [`agent/README.md`](agent/README.md) | 完整文档：全部配置项、三种工作模式详解、设计要点、平台兼容性 |
 | [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 29 个真实踩坑（环境级 + 代码级）与排查方法论 |

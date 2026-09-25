@@ -4,69 +4,232 @@
 <meta charset="utf-8" />
 <title>妙答 · 首次配置</title>
 <style>
-  :root { color-scheme: light; }
-  * { box-sizing: border-box; }
+  /* 与 agent/public/index.html 工作台、托盘图标同一品牌体系：墨蓝底 + 靛蓝主色 + 对勾标识 */
+  :root {
+    color-scheme: dark;
+    --bg0:#070a10; --card:#101726; --card-hi:#141c2e; --inset:#0a0f1a;
+    --line:#1e2a44; --line2:#2a3a5e;
+    --fg:#e9eef8; --dim:#96a2b8; --faint:#6d7a93;
+    --brand:#4f8cff; --brand-deep:#2e6be6; --brand-soft:rgba(79,140,255,.13);
+    --ok:#35d99a; --ok-soft:rgba(53,217,154,.12);
+    --bad:#ff7a76; --bad-soft:rgba(255,122,118,.12);
+    --warn:#ffc65c; --warn-soft:rgba(255,198,92,.1);
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; }
   body {
-    margin: 0; padding: 28px 32px; font-family: "Microsoft YaHei", system-ui, sans-serif;
-    background: #f5f7fb; color: #1f2733;
+    margin:0; color:var(--fg); overflow-y:auto;
+    font:14px/1.7 "Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+    background:
+      radial-gradient(700px 380px at 12% -8%, rgba(79,140,255,.12), transparent 60%),
+      radial-gradient(560px 360px at 105% 108%, rgba(53,217,154,.06), transparent 55%),
+      var(--bg0);
+    background-attachment:fixed;
   }
-  h1 { font-size: 20px; margin: 0 0 6px; }
-  p.sub { margin: 0 0 22px; color: #5a6572; font-size: 13px; line-height: 1.7; }
-  label { display: block; font-size: 13px; font-weight: 600; margin: 14px 0 6px; }
-  .hint { font-weight: 400; color: #8a94a0; margin-left: 6px; }
+  body::before {
+    content:""; position:fixed; inset:0; pointer-events:none;
+    background-image:radial-gradient(rgba(140,170,230,.055) 1px, transparent 1.4px);
+    background-size:26px 26px;
+  }
+  .sheet {
+    position:relative; max-width:470px; margin:0 auto; padding:34px 34px 28px;
+  }
+  header { text-align:center; margin-bottom:20px; animation:rise .45s ease both; }
+  .logo { width:52px; height:52px; margin-bottom:10px; }
+  h1 { font-size:20px; margin:0 0 4px; letter-spacing:.5px; }
+  .sub { color:var(--dim); font-size:12.5px; }
+
+  .card {
+    background:linear-gradient(180deg,var(--card-hi),var(--card));
+    border:1px solid var(--line); border-radius:16px; padding:22px 24px;
+    box-shadow:0 14px 40px rgba(2,5,10,.5);
+    animation:rise .45s .06s cubic-bezier(.22,.7,.3,1) both;
+  }
+  @keyframes rise { from { opacity:0; transform:translateY(8px); } }
+
+  .lead { color:var(--dim); font-size:13px; margin:0 0 18px; }
+  .lead b { color:var(--fg); }
+
+  .field { margin-bottom:15px; }
+  .field label {
+    display:flex; align-items:center; gap:7px;
+    font-size:13px; font-weight:600; margin-bottom:6px;
+  }
+  .field label svg { flex:none; opacity:.85; }
+  .field label .hint { font-weight:400; color:var(--faint); font-size:12px; margin-left:auto; text-align:right; }
+  .input-wrap { position:relative; display:flex; }
   input {
-    width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #cdd5df;
-    border-radius: 8px; background: #fff; outline: none;
+    width:100%; padding:11px 13px; font-size:14px; outline:none;
+    color:var(--fg); background:var(--inset);
+    border:1px solid var(--line); border-radius:10px;
+    font-family:Consolas,"Cascadia Mono","Microsoft YaHei",monospace;
+    transition:border-color .15s, box-shadow .15s;
   }
-  input:focus { border-color: #2f6fed; box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.15); }
-  button {
-    margin-top: 26px; width: 100%; padding: 12px; font-size: 15px; font-weight: 700;
-    color: #fff; background: #2f6fed; border: 0; border-radius: 8px; cursor: pointer;
+  input::placeholder { color:var(--faint); font-family:"Segoe UI","Microsoft YaHei",sans-serif; }
+  input:focus { border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft); }
+  input.invalid { border-color:var(--bad); box-shadow:0 0 0 3px var(--bad-soft); }
+  .toggle-pw {
+    position:absolute; right:6px; top:50%; transform:translateY(-50%);
+    border:0; background:transparent; color:var(--faint); cursor:pointer;
+    font-size:12px; padding:4px 8px; border-radius:6px; font-family:inherit;
   }
-  button:disabled { background: #9db7f5; cursor: wait; }
-  .warn { margin-top: 18px; padding: 10px 12px; background: #fff7e6; border: 1px solid #ffe1a6;
-    border-radius: 8px; font-size: 12.5px; color: #8a6116; line-height: 1.7; }
-  .done { color: #1a7f37; font-weight: 600; }
+  .toggle-pw:hover { color:var(--dim); background:rgba(255,255,255,.05); }
+  .field .err { display:none; color:var(--bad); font-size:12px; margin-top:5px; }
+  .field.invalid .err { display:block; }
+  .field.invalid label { color:var(--bad); }
+
+  button.primary {
+    margin-top:8px; width:100%; padding:13px; font-size:15px; font-weight:700;
+    letter-spacing:2px; cursor:pointer; color:#0a1020; border:0; border-radius:11px;
+    font-family:inherit;
+    background:linear-gradient(135deg,var(--brand),var(--brand-deep));
+    box-shadow:0 6px 20px rgba(59,118,240,.35), inset 0 1px 0 rgba(255,255,255,.18);
+    transition:transform .12s, filter .15s, box-shadow .15s;
+  }
+  button.primary:not(:disabled):hover { transform:translateY(-1px); filter:brightness(1.08); }
+  button.primary:disabled { opacity:.55; cursor:wait; transform:none; filter:none; }
+  button.primary.done {
+    background:linear-gradient(135deg,#3ecf95,#22b57a); color:#06281a;
+    box-shadow:0 6px 20px rgba(53,217,154,.3);
+  }
+
+  .privacy {
+    display:flex; gap:10px; align-items:flex-start;
+    margin:16px 0 0; padding:11px 13px; border-radius:10px;
+    background:var(--warn-soft); border:1px solid rgba(255,198,92,.28);
+    font-size:12.5px; color:#e8d9ae; line-height:1.65;
+  }
+  .privacy svg { flex:none; margin-top:2px; }
+  .privacy b { color:var(--warn); }
+  .status { min-height:20px; margin-top:12px; text-align:center; font-size:13px; color:var(--dim); }
+  .status.ok { color:var(--ok); font-weight:600; }
+  .status.bad { color:var(--bad); font-weight:600; }
+  footer { text-align:center; color:var(--faint); font-size:11.5px; margin-top:18px;
+    animation:rise .45s .12s ease both; }
 </style>
 </head>
 <body>
-  <h1>妙答 · 首次配置</h1>
-  <p class="sub">只需要填一次。这三项由发你工具的人提供；填完点「保存并启动」，之后每天双击妙答图标即可。</p>
+<div class="sheet">
+  <header>
+    <svg class="logo" viewBox="0 0 38 38" aria-hidden="true">
+      <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#5e97ff"/><stop offset="1" stop-color="#2e6be6"/>
+      </linearGradient></defs>
+      <rect x="1.5" y="1.5" width="35" height="35" rx="9" fill="url(#lg)"/>
+      <path d="M11 19.5l5.5 5.5L27 14" fill="none" stroke="#fff" stroke-width="4"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>妙答 · 首次配置</h1>
+    <div class="sub">只需要填这一次</div>
+  </header>
 
-  <label>AI 端点地址<span class="hint">OpenAI 兼容端点，一般以 /v1 结尾</span></label>
-  <input id="baseUrl" placeholder="https://xxx.xxx/v1" spellcheck="false" />
+  <div class="card">
+    <p class="lead">下面三项由<b>发你工具的人</b>提供。填完点「保存并启动」，之后每天双击妙答图标即可直接用。</p>
 
-  <label>AI 密钥<span class="hint">形如 sk-xxxx 的一长串，等同密码</span></label>
-  <input id="apiKey" placeholder="sk-..." spellcheck="false" type="password" />
+    <div class="field" id="fBaseUrl">
+      <label>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8fd0ff" stroke-width="2"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
+        AI 端点地址
+        <span class="hint">一般以 /v1 结尾</span>
+      </label>
+      <div class="input-wrap">
+        <input id="baseUrl" placeholder="https://xxx.xxx/v1" spellcheck="false" autofocus />
+      </div>
+      <div class="err">请填写端点地址（不知道就问发你工具的人）</div>
+    </div>
 
-  <label>模型名<span class="hint">不确定就填发你工具的人给的那个</span></label>
-  <input id="model" placeholder="模型名称" spellcheck="false" />
+    <div class="field" id="fApiKey">
+      <label>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8fd0ff" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3l1.5 1.5-2 2L21 8l-2.5 2.5-1.5-1.5-3 3"/></svg>
+        AI 密钥
+        <span class="hint">形如 sk-xxxx 的一长串，等同密码</span>
+      </label>
+      <div class="input-wrap">
+        <input id="apiKey" placeholder="sk-..." spellcheck="false" type="password" />
+        <button class="toggle-pw" id="togglePw" type="button">显示</button>
+      </div>
+      <div class="err">请填写密钥（形如 sk- 开头的一长串）</div>
+    </div>
 
-  <button id="save">保存并启动</button>
-  <div class="warn" id="status">三件套只保存在你电脑的 agent/.env.local 里，不外发、不上传。</div>
+    <div class="field" id="fModel">
+      <label>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8fd0ff" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+        模型名
+        <span class="hint">不确定就照发你工具的人给的填</span>
+      </label>
+      <div class="input-wrap">
+        <input id="model" placeholder="模型名称" spellcheck="false" />
+      </div>
+      <div class="err">请填写模型名</div>
+    </div>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
-    $('save').addEventListener('click', async () => {
-      const cfg = {
-        AI_BASE_URL: $('baseUrl').value.trim(),
-        AI_API_KEY: $('apiKey').value.trim(),
-        AI_MODEL: $('model').value.trim(),
-      };
-      const missing = Object.entries(cfg).filter(([, v]) => !v).map(([k]) => k);
-      if (missing.length) {
-        $('status').textContent = '还有未填项：' + missing.join('、');
-        $('status').classList.add('done');
-        $('status').style.color = '#c0392b';
-        return;
-      }
-      $('save').disabled = true;
-      $('status').textContent = '正在保存…';
+    <button class="primary" id="save">保存并启动</button>
+    <div class="status" id="status"></div>
+
+    <div class="privacy">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffc65c" stroke-width="2"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      <span><b>只保存在你自己电脑</b>的 agent/.env.local 文件里，不外发、不上传、不随安装包分发。</span>
+    </div>
+  </div>
+
+  <footer>配置错了也不怕：删除 agent 目录下的 .env.local 再启动妙答，会重新弹出本窗口。</footer>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const FIELDS = [
+    { input: $('baseUrl'), box: $('fBaseUrl') },
+    { input: $('apiKey'), box: $('fApiKey') },
+    { input: $('model'), box: $('fModel') },
+  ];
+
+  $('togglePw').addEventListener('click', () => {
+    const pw = $('apiKey');
+    const show = pw.type === 'password';
+    pw.type = show ? 'text' : 'password';
+    $('togglePw').textContent = show ? '隐藏' : '显示';
+  });
+
+  // 输入即消除红框，避免校验错误一直挂着
+  for (const { input, box } of FIELDS) {
+    input.addEventListener('input', () => box.classList.remove('invalid'));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save').click(); });
+  }
+
+  $('save').addEventListener('click', async () => {
+    const cfg = {
+      AI_BASE_URL: $('baseUrl').value.trim(),
+      AI_API_KEY: $('apiKey').value.trim(),
+      AI_MODEL: $('model').value.trim(),
+    };
+    const missing = FIELDS.filter(({ input }) => !input.value.trim());
+    if (missing.length) {
+      for (const { box } of missing) box.classList.add('invalid');
+      $('status').className = 'status bad';
+      $('status').textContent = `还有 ${missing.length} 项没填（已用红框标出）`;
+      (missing[0].input).focus();
+      return;
+    }
+    const btn = $('save');
+    btn.disabled = true;
+    btn.textContent = '正在保存…';
+    $('status').className = 'status';
+    $('status').textContent = '';
+    try {
       await window.miaoda.saveConfig(cfg);
-      $('status').textContent = '✓ 已保存，正在启动妙答…';
-      $('status').style.color = '#1a7f37';
-      setTimeout(() => window.close(), 600);
-    });
-  </script>
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '保存并启动';
+      $('status').className = 'status bad';
+      $('status').textContent = '保存失败：' + (e?.message ?? e);
+      return;
+    }
+    btn.classList.add('done');
+    btn.textContent = '✓ 已保存，正在启动妙答…';
+    $('status').className = 'status ok';
+    $('status').textContent = '首次启动需准备受控浏览器，最多约一分钟';
+    setTimeout(() => window.close(), 600);
+  });
+</script>
 </body>
 </html>

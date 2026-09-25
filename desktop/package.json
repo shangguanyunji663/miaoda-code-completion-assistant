@@ -1,9 +1,9 @@
 {
   "name": "miaoda-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "妙答桌面版：Electron 壳 + 首次配置向导 + 托盘常驻。agent 代码零改动，经 ELECTRON_RUN_AS_NODE 复用其 web-server 与 my-edge。",
+  "description": "妙答桌面版：Electron 壳 + 首次配置向导 + 托盘常驻。agent 逻辑零改动，经 ELECTRON_RUN_AS_NODE 复用其 web-server 与 my-edge。",
   "main": "src/main.mjs",
   "scripts": {
     "start": "electron .",

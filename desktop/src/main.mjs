@@ -58,19 +58,51 @@ async function portAlive(port, timeoutMs = 800) {
   }
 }
 
-/** 32×32 纯色 BMP（Electron nativeImage 可直接解码；免二进制资产） */
-function makeIconBmp(size = 32, [r, g, b] = [45, 111, 237]) {
+/**
+ * 32×32 品牌图标 BMP（4× 超采样，Electron nativeImage 直接解码；免二进制资产）。
+ * 图形 = 靛蓝渐变圆角方块 + 白色对勾——与 setup.html / agent/public/index.html
+ * 的页面标识同一图形；托盘 16/24px 缩放后对勾仍清晰。
+ * 顶 #2d6fed → 底 #2e6be6（BGR 字面量：顶 [237,111,45] 底 [230,107,46]）。
+ */
+function makeIconBmp(size = 32) {
+  const SS = 4, R = 7.5 * SS; // 圆角半径（细网格）
+  // 对勾两段（32 网格坐标，线半径 1.7）：短边 (10,18.5)→(14.5,23)，长边 (14.5,23)→(23,12.5)
+  const segs = [[10, 18.5, 14.5, 23], [14.5, 23, 23, 12.5]];
+  const onCheck = (bx, by) =>
+    segs.some(([x1, y1, x2, y2]) => {
+      const dx = x2 - x1, dy = y2 - y1;
+      const t = Math.max(0, Math.min(1, ((bx - x1) * dx + (by - y1) * dy) / (dx * dx + dy * dy)));
+      const px = x1 + t * dx, py = y1 + t * dy;
+      return (bx - px) ** 2 + (by - py) ** 2 <= 1.7 ** 2;
+    });
+  const inRoundedRect = (gx, gy) => {
+    // 细网格坐标 0..size*SS；越出圆角的角落按到角点距离判定
+    const sx = gx < R || gx > size * SS - R ? (gx < R ? R - gx : gx - (size * SS - R)) : 0;
+    const sy = gy < R || gy > size * SS - R ? (gy < R ? R - gy : gy - (size * SS - R)) : 0;
+    return sx * sx + sy * sy <= R * R;
+  };
   const rowSize = size * 4;
   const pixels = Buffer.alloc(rowSize * size);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const edge = x < 3 || x >= size - 3 || y < 3 || y >= size - 3;
-      const inner = x > 9 && x < 22 && y > 9 && y < 22;
+      let inside = 0, white = 0;
+      for (let sy = 0; sy < SS; sy++) {
+        for (let sx = 0; sx < SS; sx++) {
+          const gx = x * SS + sx + 0.5, gy = y * SS + sy + 0.5; // 细网格
+          if (!inRoundedRect(gx, gy)) continue;
+          inside++;
+          if (onCheck(gx / SS, gy / SS)) white++;
+        }
+      }
+      const total = SS * SS;
+      const wFrac = inside ? Math.min(1, white / inside) : 0;
+      const t = y / (size - 1); // 方块顶→底渐变
+      const B = Math.round(237 + (230 - 237) * t) + (255 - Math.round(237 + (230 - 237) * t)) * wFrac;
+      const G = Math.round(111 + (107 - 111) * t) + (255 - Math.round(111 + (107 - 111) * t)) * wFrac;
+      const R0 = Math.round(45 + (46 - 45) * t) + (255 - Math.round(45 + (46 - 45) * t)) * wFrac;
       const i = (size - 1 - y) * rowSize + x * 4; // BMP 自底向上
-      pixels[i + 3] = 255;
-      if (edge) [pixels[i], pixels[i + 1], pixels[i + 2]] = [b, g, r];
-      else if (inner) [pixels[i], pixels[i + 1], pixels[i + 2]] = [255, 255, 255];
-      else [pixels[i], pixels[i + 1], pixels[i + 2]] = [r, g, b];
+      pixels[i] = B; pixels[i + 1] = G; pixels[i + 2] = R0;
+      pixels[i + 3] = Math.round((inside / total) * 255);
     }
   }
   const header = Buffer.alloc(54);
@@ -84,6 +116,9 @@ function makeIconBmp(size = 32, [r, g, b] = [45, 111, 237]) {
   header.writeUInt16LE(32, 28);
   return Buffer.concat([header, pixels]);
 }
+
+// 品牌图标（托盘 + 两个窗口共用；开发模式任务栏可见，打包版用 exe 图标）
+const appIcon = nativeImage.createFromBuffer(makeIconBmp());
 
 // ---- 子进程管理（agent web-server；退出前一并结束） ----
 let webChild = null;
@@ -175,10 +210,11 @@ function registerIpc() {
 async function ensureEnvFile() {
   if (fs.existsSync(ENV_FILE)) return true;
   const win = new BrowserWindow({
-    width: 580,
-    height: 640,
+    width: 620,
+    height: 700,
     resizable: false,
     title: `${APP_NAME} · 首次配置`,
+    icon: appIcon,
     webPreferences: { preload: path.join(__dirname, 'preload.mjs') },
   });
   await win.loadFile(path.join(__dirname, 'setup.html'));
@@ -199,7 +235,7 @@ let quitting = false;
 let hideTipShown = false;
 
 function createTray() {
-  tray = new Tray(nativeImage.createFromBuffer(makeIconBmp()));
+  tray = new Tray(appIcon);
   tray.setToolTip(APP_NAME);
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -222,6 +258,7 @@ function createMainWindow() {
     width: 1280,
     height: 880,
     title: APP_NAME,
+    icon: appIcon,
     autoHideMenuBar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
