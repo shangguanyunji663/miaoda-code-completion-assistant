@@ -68,6 +68,7 @@ import {
   detectCommandCountViolation,
   stripDestructiveDbStatements,
   wrapBareDbStatementsForShell,
+  planReplExit,
   parseImportTarget,
   emptyMarkerBlocks,
   sanitizeShellSubmission,
@@ -86,7 +87,15 @@ import {
   findRedundantPrints,
 } from './requirement-contract.mjs';
 import { rankCandidates } from './candidate-rank.mjs';
-import { extractMissingPaths, pathProbeCommands, probeAnchor } from './cmd-evidence.mjs';
+import {
+  extractMissingPaths,
+  pathProbeCommands,
+  probeAnchor,
+  detectMissingPremise,
+  requiredPathsFromProblem,
+  topLevelRoots,
+  taskCreatesOwnData,
+} from './cmd-evidence.mjs';
 import {
   describeOutputDiff,
   diffSkipReason,
@@ -583,16 +592,45 @@ async function recheckDataLanded(page, problem, onEmpty) {
  *
  * 通用性：判据与工具无关——只认"路径不存在 / 是目录 / 无法访问"这类回显形态，
  * mongorestore、mysql `source`、`load`、tar、自写脚本同形。任一步不满足都放弃并记日志。
+ *
+ * 前置数据缺失体检（1.6.23）：取证段里"题面引用的源目录在顶层目录清单中全部缺席"
+ * （如 `/opt` 实测为空目录）时，`detectMissingPremise` 把结论从"猜错路径名"升级成
+ * "前置数据（上一关备份产物）在本环境不存在"——这类不是命令形态问题，任何改写都造不出
+ * 数据，注入反思材料的段里写明处置（补前置数据），并打日志提示调用方。
+ *
+ * 路径来源分工（1.6.24）：**题面点名哪些目录，题面说了算；目录里有什么，实测说了算**。
+ * 回显里的路径不可信到能当判据输入——xterm 按列硬换行会把 `/opt/collection_1` 劈成
+ * 上行末的 `/opt` + 下行开头的 `/collection_1`，于是"根"清单里混进**幽灵顶层目录**
+ * （真机 2026-09-25 第 2 轮三条取证命令全是 `find /collection_1/...` 这种碎片：既查不出
+ * 东西，又让缺失判据对着一台不存在的根"三条全中"）。所以这里把题面路径的顶层目录**始终
+ * 补进探针清单**（它一条 `find /opt -maxdepth 4` 就能摊开整棵树），并把 `requiredTops`
+ * 交给判据做 ⓪ 号闸——题面没点名的根一律不参与"前置数据缺失"结论。
  * @param {string} text 本轮材料（输入期报错 / 明细 / 终端回显拼起来的那段）
- * @returns {Promise<string>} 注入反思材料的中文段；无信号或取证失败返回空串
+ * @param {string} [problem] 题干原文（题面点名路径的来源，不会被终端劈行）
+ * @returns {Promise<{note: string, premiseMissing: boolean, premiseLanded: boolean}>}
+ * note 为注入反思材料的中文段（含"目录实测"与必要的"前置数据体检"）；
+ * premiseMissing 为真 = 本轮确定性判定命中"前置数据缺失"；premiseLanded 为真 = 取证段里
+ * **确实看到了**题面点名的源目录（前置数据已存在的正证据，供调用方把缺失结论翻回去）。
+ * 无信号或取证失败时三者均为空/假
  */
-async function probeMissingPaths(page, text) {
-  const roots = extractMissingPaths(text);
-  if (!roots.length) return '';
+async function probeMissingPaths(page, text, problem) {
+  const none = { note: '', premiseMissing: false, premiseLanded: false };
+  const anchors = requiredPathsFromProblem(problem);
+  const requiredTops = topLevelRoots(anchors);
+  const rawEcho = extractMissingPaths(text);
+  // 题面点名了路径，就只认题面那棵树里的信号：回显碎片（`/collection_1/person` 这种被
+  // xterm 劈出来的幽灵根）拿去 find 既查不出东西，又白占 3 条预算里的一条
+  const echoRoots = anchors.length
+    ? rawEcho.filter((r) => requiredTops.some((t) => r === t || String(r).startsWith(t + '/')))
+    : rawEcho;
+  // 题面顶层目录排在最前：pathProbeCommands 亦按"顶层优先"取前 3 条，两者叠加保证
+  // "整棵树的实测清单"不会因为回显抠出一堆碎片而被挤出预算
+  const roots = [...new Set([...requiredTops, ...echoRoots])];
+  if (!roots.length) return none;
   const cmds = pathProbeCommands(roots);
-  if (!cmds.length) return '';
+  if (!cmds.length) return none;
   log(
-    `回显里有 ${roots.length} 个"路径不存在/形态不符"的信号 → 跑只读取证：${cmds.join(' ; ').slice(0, 140)}`,
+    `回显里有 ${rawEcho.length} 个"路径不存在/形态不符"的信号${anchors.length ? `（题面点名 ${anchors.length} 个源目录）` : ''} → 跑只读取证：${cmds.join(' ; ').slice(0, 140)}`,
   );
   try {
     checkStop('路径只读取证');
@@ -608,29 +646,58 @@ async function probeMissingPaths(page, text) {
         `路径只读取证跳过：终端未回到 bash 提示符` +
           `${describeTerminalWait(waited.env?.kind, waited.env?.last, waited)}`,
       );
-      return '';
+      return none;
     }
     await runTerminalCommands(page, cmds, { silent: true });
     await page.waitForTimeout(700);
     const echo = await readTerminalText(page);
     if (!echo) {
       log('路径取证未取得回显（终端读取为空），本轮不注入目录清单');
-      return '';
+      return none;
     }
-    // 只截本轮那段：锚定到最后一次出现的取证命令行（xterm 换行可能劈开它，退化为尾部）
-    const anchor = `find ${probeAnchor(roots)}`;
-    const at = echo.lastIndexOf(anchor);
+    // 只截本轮那段。锚点优先级：① 第一条探针**命令全文**（提示符回显行内原样包含；
+    // 具体根嵌套时——`/opt/mongodb` vs `/opt/mongodb_1`——旧版用 `find ${roots[0]}` 做
+    // 锚点，lastIndexOf 会命中的是**后一条**探针命令行（`find /opt/mongodb` 是
+    // `find /opt/mongodb_1` 的前缀子串），把顶层目录那段（T 的空清单恰是"前置数据
+    // 缺失"判据的唯一证据）整个截掉；② 顶层根的命令片段（`find /opt -maxdepth`，
+    // 后面跟的是空格而非 `/`，不会撞上具体根命令行）；③ 旧锚点兜底。xterm 按列劈行时
+    // 命令可能断行，认不到就退化为尾部 1600 字符。
+    const top = roots.find((r) => String(r).split('/').filter(Boolean).length === 1);
+    let at = echo.lastIndexOf(cmds[0]);
+    if (at < 0 && top) at = echo.lastIndexOf(`find ${top} -maxdepth`);
+    if (at < 0) at = echo.lastIndexOf(`find ${probeAnchor(roots)}`);
     const seg = (at >= 0 ? echo.slice(at) : echo.slice(-1600)).trim();
-    return (
+    const segLines = seg.split(/\r?\n/);
+    // 正证据：取证段里出现"题面点名的源目录本身"作为 find 输出行（行首即该路径）——
+    // 说明数据在，只是命令写得不对。调用方据此把之前的缺失结论翻回去。
+    const premiseLanded = anchors.some((a) => segLines.some((l) => l.startsWith(a)));
+    let note =
       `\n\n=== 目录实测（程序只读取证所得，非平台输出）===\n` +
-      `命令：${cmds.join(' ; ')}\n${seg.slice(0, 1600)}\n` +
-      `判据：以上是文件系统里**真实存在**的路径。清单里没有的名字就是不存在——` +
-      `不要再换一个猜测的路径名去试一轮；要么用清单里出现过的路径，要么按题面示例改**参数形态**` +
-      `（例如"整库备份目录 + 目标库名"这类映射不被支持时，指向清单里的内层目录）。`
-    );
+      `命令：${cmds.join(' ; ')}\n${seg.slice(0, 1600)}\n`;
+    // 前置数据缺失体检（1.6.23）：题面引用的源目录在顶层目录实测清单里**全部缺席**
+    //（如 /opt 是空目录）时，"用清单里出现过的路径"这条路不存在——结论必须升级成
+    // "前置数据（上一关的备份产物）在本环境不存在，改写本关命令不可能造出数据"，
+    // 否则模型只能回退去改工具参数、连烧多轮逐字节相同的评测。
+    const prem = detectMissingPremise(anchors.length ? anchors : roots, seg, { requiredTops });
+    // 判据尾巴按实测结果分档。旧版无论清单里有什么都固定给两个出口（"用清单里的路径"
+    // 或"改参数形态"），而清单为空时第一个出口根本不可选——等于**程序亲自把模型指示到
+    // "去改参数形态"**，这正是 2026-09-25 连烧三轮的推手之一（模型完全照办了）。
+    note += prem.missing
+      ? `判据：清单里没有的名字就是不存在，且题面点名的源目录一个都不在——本轮**不是**参数形态问题（见下一节）。`
+      : `判据：以上是文件系统里**真实存在**的路径。清单里没有的名字就是不存在——` +
+        `不要再换一个猜测的路径名去试一轮；要么用清单里出现过的路径，要么按题面示例改**参数形态**` +
+        `（例如"整库备份目录 + 目标库名"这类映射不被支持时，指向清单里的内层目录）。`;
+    if (prem.missing) {
+      note += prem.note;
+      log(
+        `前置数据体检：题目引用的源目录 ${prem.specifics.join('、')} 在 ${prem.top} 实测清单中全部缺席` +
+          '——判定前置数据缺失（处置：补前置数据，勿再试本关命令）',
+      );
+    }
+    return { note, premiseMissing: prem.missing, premiseLanded };
   } catch (e) {
     log(`路径取证未完成（忽略，不阻断主流程）：${e?.message ?? e}`);
-    return '';
+    return none;
   }
 }
 
@@ -679,15 +746,25 @@ function applyCommandGuards(cmds, bannedCmds, problem = '', env = null) {
   const shellWrap =
     env?.kind === 'bash'
       ? wrapBareDbStatementsForShell(replaced, { db: parseImportTarget(problem)?.db ?? '' })
-      : { cmds: replaced, wrapped: [] };
+      : { cmds: replaced, wrapped: [], dropped: [] };
   if (shellWrap.wrapped.length) {
     log(
-      `bash 终端：${shellWrap.wrapped.length} 条数据库 shell 语句已包成 mongo --eval ` +
+      `bash 终端：${shellWrap.wrapped.length} 条数据库 shell 语句已改写成一次性客户端调用 ` +
         `（原形态打进 bash 必报错）：${shellWrap.wrapped.map((w) => `#${w.no}`).join('、')}`,
     );
   }
+  // 终端在数据库 REPL 里、命令却写着 bash 形态 ⇒ 序列开头先 `exit`（1.6.25）。
+  // 不改写模型给的任何一条，保留原语义；不改环境识别本身。
+  const replExit = planReplExit(env, shellWrap.cmds);
+  if (replExit.exitFor.length) {
+    log(
+      `终端在 ${env.kind} REPL 里，序列含 ${replExit.exitFor.length} 条 bash 形态命令（首词 ${replExit.exitFor
+        .map((e) => e.head)
+        .join('、')}）→ 先键入 exit 退回 bash`,
+    );
+  }
   const changes = [];
-  const cleaned = shellWrap.cmds.map((c) => {
+  const cleaned = replExit.cmds.map((c) => {
     const s = sanitizeShellSubmission(c);
     if (s.changes.length) changes.push(...s.changes);
     return s.code;
@@ -709,8 +786,18 @@ function applyCommandGuards(cmds, bannedCmds, problem = '', env = null) {
     cmds: ow.kept,
     sanitizeNote: [
       ...changes.map((n) => `- ${n}`),
+      ...(replExit.exitFor.length
+        ? [
+            `- 已在序列开头插入 exit（当前终端在 ${env.kind} REPL 里，而下面这些命令是 bash 形态、在 REPL 里必报错）: ${replExit.exitFor
+              .map((e) => `${e.head}…`)
+              .join('、')}`,
+          ]
+        : []),
       ...shellWrap.wrapped.map(
         (w) => `- 已改写（终端是 bash，裸 shell 语句打不进去）: 命令 ${w.no} ${w.from} → ${w.to}`,
+      ),
+      ...(shellWrap.dropped ?? []).map(
+        (d) => `- 已丢弃（执行层按当前环境归并）: 命令 ${d.no} ${d.from} —— ${d.to}`,
       ),
       ...ow.dropped.map((d) => `- 已剔除（覆盖平台提供的输入文件）: ${d.cmd.slice(0, 80)}`),
     ].join('\n'),
@@ -722,6 +809,28 @@ function formatInputErrors(termErrors) {
   return (termErrors ?? [])
     .map((e) => `命令 ${e.no}: ${e.cmd}\n${e.errs.map((l) => `  ${l}`).join('\n')}`)
     .join('\n');
+}
+
+/**
+ * 「跳过的必败命令」段（1.6.24）。不只为省时间——**它本身是一条比任何推测都硬的事实**：
+ * 这些命令要读的路径已由序列内前一条命令实测为不存在。不写进材料，模型下一轮只会把它们
+ * 原样再交一遍（真机 2026-09-25：17 条里 12 条报错，反思还在改 mongorestore 的参数形态）。
+ * @param {Array<{no: number, cmd: string, hit: string}>} skipped
+ * @returns {string} 空串表示本轮没有跳过
+ */
+function formatSkipped(skipped) {
+  if (!skipped?.length) return '';
+  return (
+    `\n\n=== 已跳过的必败命令（程序判定，未键入终端）===\n` +
+    skipped
+      .map(
+        (s) => `命令 ${s.no}: ${s.cmd}\n  其操作数 ${s.hit} 已由本序列前面的命令实测为「不存在」`,
+      )
+      .join('\n') +
+    `\n判据：这些命令敲了也只会在同一处失败，故本轮未执行。要继续下去只有两条路——` +
+    `补齐前置数据（见「前置数据体检」/「目录实测」段），或改用实测清单里**真实存在**的路径。` +
+    `把同一批路径再写一遍、只换工具参数，不改变结果。`
+  );
 }
 
 /**
@@ -946,13 +1055,24 @@ async function solveOnceInner(page, probe) {
           // 路径类失败立刻取证（1.6.20）：准备命令多含文件路径（`--file /home/example/x.json`
           // 之类），这里比 cmdline 分支更该取证——它还没进评测，一条 find 就能把下一轮的
           // 猜测换成事实。
-          const prepPathNote = await probeMissingPaths(page, `${inputErrors}\n${termEcho ?? ''}`);
+          const prepPathNote = await probeMissingPaths(
+            page,
+            `${inputErrors}\n${termEcho ?? ''}`,
+            problem,
+          );
+          // 前置数据缺失（1.6.24）：这里比 cmdline 分支更该止损——准备命令的输入文件不在
+          // 环境里，第二次"换写法再试"只是再白敲一遍（旧版把 premiseMissing 丢了，只取
+          // .note，于是明知数据造不出来还是要烧掉第二个准备轮次）。
+          if (prepPathNote.premiseMissing) {
+            log('数据准备阶段实测确认题面点名的源目录不存在——不再重试准备命令，带证据进入下一分支');
+            break;
+          }
           const fixed = await reflectCommands({
             problem: slimForReflection(problem),
             previousCommands: guarded.cmds,
             evalResult:
               `（数据准备命令在终端执行阶段报错，尚未进入平台评测；平台只评测右侧代码栏内容，必须先把这些数据准备命令修对再继续。）\n\n` +
-              `=== 输入期报错 ===\n${inputErrors}${termEcho ? `\n\n=== 终端回显 ===\n…${termEcho.slice(-1500)}` : ''}${prepPathNote}`,
+              `=== 输入期报错 ===\n${inputErrors}${termEcho ? `\n\n=== 终端回显 ===\n…${termEcho.slice(-1500)}` : ''}${formatSkipped(r.skipped)}${prepPathNote.note}`,
             terminalState: `${envNow.desc}${clientFact ? `\n${clientFact}` : ''}${banNote(bannedCmds)}`,
           });
           if (!fixed.commands?.length) break;
@@ -1024,10 +1144,20 @@ async function solveOnceInner(page, probe) {
     let cmdLastFp = '';
     let cmdSameStreak = 0;
     let cmdSameOutput = false;
+    // 前置数据缺失连续命中计数（1.6.24 改锁存语义 + 阈值分档）：见下方 `premiseLimit`
+    // 与 `probeMissingPaths` 调用处的注释。
+    let premiseStreak = 0;
+    // 止损阈值：题面要**你自己产出**这些数据（导出/导入/插入/生成…）时，"当前缺席"是可
+    // 靠本轮命令补上的，需连中 2 轮才判死；题面只是"恢复已存在的备份"（引用上一关产物）时，
+    // 顶层目录实测为空本身就是一手确证——一轮即停，别再白烧一轮 ≈120s 的评测。
+    // 旧版把这个逃生口写成注入文本里的一句"若题面要求由你创建这些数据则忽略"（prompt 层，
+    // 本项目已多次证明是约束力最弱的一层），现在做成判据。
+    const premiseLimit = taskCreatesOwnData(problem) ? 2 : 1;
     // 命令形态问题留痕（喂反思）：如 heredoc 被压成一行——这类命令会吞掉后续命令
     let shapeNote = '';
-    // 终端环境（首轮感知后跨轮复用）：applyCommandGuards 需要它才能判断
-    // "裸写的 db./show 该不该包成 mongo --eval"。声明在 for 之外，反思轮的 cmds 同样受益。
+    // 终端环境：applyCommandGuards 需要它才能判断"裸写的 db./show 该不该改形态、要不要先
+    // exit"。**每轮键入前重新实测**（1.6.25）——首轮值只代表首轮，跨轮复用会和执行层自己
+    // 的改写互相抵消（详见键入前那次 detectTerminalEnv 的注释）。
     let termEnv = null;
     for (let attempt = 1; attempt <= cfg.loop.maxRetry; attempt++) {
       checkStop(`命令行第 ${attempt}/${cfg.loop.maxRetry} 轮`);
@@ -1065,6 +1195,21 @@ async function solveOnceInner(page, probe) {
         }
       }
 
+      // 键入前**重新实测**终端环境（1.6.25）。这是执行层决定"裸语句要不要改成一次性客户端
+      // 调用 / 要不要先 exit"的唯一依据，而它会在一轮之内就变——上一轮序列里一条 `mongo`
+      // 就把终端留在了 REPL 里。旧版复用首轮 envGen（`termEnv` 的注释自己写着"首轮感知后
+      // 跨轮复用"），于是出现三方各说各话：判据层已识别 mongosh 并在 desc 里明令"禁止再
+      // 执行 mongo"、模型照做给了 REPL 形态，执行层却拿着过期的 bash 把语句包成
+      // `mongo --eval '…'` 敲进 REPL ⇒ `SyntaxError @(shell):1:8`，三轮逐字节同形直到
+      // output-unchanged 止损（2026-09-25 18:07 真机）。刻意不等提示符：终端在用，内容
+      // 一定出现过，认不出提示符是真实状态，unknown 时两层护栏都自动不生效（fail-open）。
+      const envTyped = await detectTerminalEnv(page);
+      if (termEnv && envTyped.kind !== termEnv.kind) {
+        log(
+          `终端环境已变化：${termEnv.kind} → ${envTyped.kind}${envTyped.db ? `（当前库 ${envTyped.db}）` : ''}——命令形态按当前实测处理`,
+        );
+      }
+      termEnv = envTyped;
       // 执行层兜底（0.9.1 真机：模型无视【实测禁令】仍逐轮输出 mongosh）+ shell 护栏
       // 清洗（中文标签行/全角分号）。生成与反思产出的命令都经过这一处，
       // 替换/清洗后输入期报错检测照常生效。
@@ -1160,6 +1305,8 @@ async function solveOnceInner(page, probe) {
         if (inputErrors) {
           lastEval = `${lastEval || '（评测输出未捕获，以下为输入期报错）'}\n\n=== 输入期报错 ===\n${inputErrors}`;
         }
+        const skippedNote = formatSkipped(r.skipped);
+        if (skippedNote) lastEval = `${lastEval || '（评测输出未捕获）'}${skippedNote}`;
         // 终端回显在反思时点抓取（而非键入后立刻抓）：sleep/服务启动/连接
         // 超时类命令的报错可能在键入完成后数秒才陆续输出，评测等待期间
         // 终端持续滚动，此时抓取 = 本轮全部显示内容，而非只有输入的命令
@@ -1184,8 +1331,15 @@ async function solveOnceInner(page, probe) {
         }
         // 路径类失败 → 只读取证（1.6.20）。放在指纹**之后**：取证文本也要拼进 lastEval，
         // 提前拼会污染"改了等于没改"的比对基准（与格式探针、数据落地复查同一纪律）。
-        const pathNote = await probeMissingPaths(page, lastEval);
-        if (pathNote) lastEval = `${lastEval}${pathNote}`;
+        const pathResult = await probeMissingPaths(page, lastEval, problem);
+        if (pathResult.note) lastEval = `${lastEval}${pathResult.note}`;
+        // 前置数据缺失体检（1.6.24 改锁存语义）：命中就累加，**只有取证段真看到题面点名的
+        // 源目录（正证据）才清零**。旧版"任一未命中即清零"看着保守，实际是被劈行碎片打败
+        // 的：真机第 2/3 轮 roots 全是 `/collection_1/…` 这种幽灵根 → 判据未命中 → streak
+        // 归零 → 2 连击永远凑不齐，止损形同不存在（第 1 轮明明已经实测出 `/opt` 是空的）。
+        // 未命中又没正证据 = "本轮没判出来"，与"本轮证明数据在"是两回事，不该互相抵消。
+        if (pathResult.premiseLanded) premiseStreak = 0;
+        else if (pathResult.premiseMissing) premiseStreak += 1;
       }
       if (v.passed) {
         // 通过收尾：关闭庆祝弹窗（如有），返回等待用户操作
@@ -1203,6 +1357,25 @@ async function solveOnceInner(page, probe) {
           ok: false,
           kind: 'cmdline',
           reason: 'output-unchanged',
+          attempts: attempt,
+          evalText: lastEval,
+          commands: cmds,
+        };
+      }
+      // 前置数据缺失（1.6.23，1.6.24 改阈值分档）：确定性判定命中 `premiseLimit` 轮——
+      // 题目引用的源数据目录在顶层目录实测清单中全部缺席（如 /opt 是空目录）。这不是命令
+      // 形态问题，任何改写都造不出数据；止损并给出明确处置（补前置数据），而不是继续烧评测
+      // 额度反复重放同一批失败。题面要你自己产出数据的题给 2 轮，纯恢复题给 1 轮。
+      if (premiseStreak >= premiseLimit) {
+        log(
+          `前置数据缺失已实测确认（连续 ${premiseStreak} 轮：题目引用的源目录在顶层目录` +
+            '清单中全部缺席）——停止本题。处置：先补齐前置数据（重做上一关备份 / 重置环境后' +
+            '按课程顺序重做上一关），再回来解本关；不要继续改写本关的恢复/读取命令',
+        );
+        return {
+          ok: false,
+          kind: 'cmdline',
+          reason: 'prerequisite-missing',
           attempts: attempt,
           evalText: lastEval,
           commands: cmds,
@@ -2109,6 +2282,7 @@ async function findListPage(context) {
 async function solveBoard(page) {
   let attempts = 0;
   let passed = 0;
+  let stoppedBy = '';
   while (true) {
     if (!(await waitTaskReady(page))) {
       log('题目区未在超时内渲染（可能不是做题页），结束本板块');
@@ -2118,6 +2292,16 @@ async function solveBoard(page) {
     const r = await solveOnce(page, probe);
     attempts++;
     if (r?.ok) passed++;
+    // 前置数据缺失（1.6.23）：本关的源数据不在环境里（实测确认），后续关卡若依赖
+    // 同一份前置数据会全部同因失败——不再逐关烧 MAX_RETRY，结束本板块并把原因显性化。
+    if (r?.reason === 'prerequisite-missing') {
+      stoppedBy = 'prerequisite-missing';
+      log(
+        '前置数据缺失（实测确认源数据不在环境）——结束本板块。处置：补齐前置数据' +
+          '（重做上一关备份 / 重置环境后按课程顺序重做）再继续课程模式',
+      );
+      break;
+    }
 
     const before = { url: page.url(), taskNo: await readTaskNo(page) };
     const next = await clickNext(page);
@@ -2131,7 +2315,7 @@ async function solveBoard(page) {
     }
     await page.waitForLoadState('domcontentloaded').catch(() => {});
   }
-  return { attempts, passed };
+  return { attempts, passed, stoppedBy };
 }
 
 /** 退出当前小板块：任务页右上角「退出」→ 详情页左上角返回 → 等列表页出现 */
@@ -2164,7 +2348,7 @@ async function exitBoard(page) {
 export async function courseLoop() {
   const { browser, context } = await connectBrowser();
   log('课程模式：自动遍历 课堂实验 → 板块 → 开始学习，逐关作答');
-  const summary = { boards: 0, passed: 0, attempts: 0 };
+  const summary = { boards: 0, passed: 0, attempts: 0, prerequisiteMissing: 0 };
 
   try {
     const listPage = await findListPage(context);
@@ -2261,7 +2445,11 @@ export async function courseLoop() {
         summary.boards++;
         summary.passed += r.passed;
         summary.attempts += r.attempts;
-        log(`小板块结束：${next.title}（通过 ${r.passed}/${r.attempts} 关）`);
+        if (r.stoppedBy === 'prerequisite-missing') summary.prerequisiteMissing++;
+        log(
+          `小板块结束：${next.title}（通过 ${r.passed}/${r.attempts} 关）` +
+            `${r.stoppedBy === 'prerequisite-missing' ? ' · 因前置数据缺失提前结束' : ''}`,
+        );
 
         await exitBoard(boardPage);
         if (boardPage !== listPage) await boardPage.close().catch(() => {});
@@ -2269,7 +2457,8 @@ export async function courseLoop() {
     }
 
     log(
-      `课程模式完成：处理 ${summary.boards} 个小板块，通过 ${summary.passed}/${summary.attempts} 关`,
+      `课程模式完成：处理 ${summary.boards} 个小板块，通过 ${summary.passed}/${summary.attempts} 关` +
+        `${summary.prerequisiteMissing ? `；其中 ${summary.prerequisiteMissing} 个板块因**前置数据缺失**提前结束（源数据不在环境里，需先按课程顺序补齐前置关卡或重置环境）` : ''}`,
     );
   } catch (e) {
     if (!(e instanceof StopRequested)) throw e;

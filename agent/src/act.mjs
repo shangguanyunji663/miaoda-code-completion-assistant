@@ -9,7 +9,7 @@ import { cfg } from './config.mjs';
 import { createLogger } from './logger.mjs';
 import { checkStop } from './control.mjs';
 import { readEvalPanel, isTerminalAtPrompt, readTerminalLines } from './perceive.mjs';
-import { isFailureEcho } from './cmd-evidence.mjs';
+import { isFailureEcho, absentPathsFromEcho, isDeadCommand } from './cmd-evidence.mjs';
 
 // 按钮文本关键词（按优先级排序，模糊匹配）。
 // 不同平台用词不同，这里给一份较全的兜底列表，实际按站点精调时改这里即可。
@@ -735,10 +735,14 @@ export function newTerminalLines(prev, now) {
  * 仅间隔就 ~38s，且对秒级快命令纯浪费、对慢命令又不够）。
  * @param {import('playwright-core').Page} page
  * @param {string[]} commands 按执行顺序的命令列表
- * @param {{typeDelay?: number, gapMin?: number, gapMax?: number}} opts
+ * @param {{typeDelay?: number, gapMin?: number, gapMax?: number, silent?: boolean}} opts
  * @returns {Promise<{executed: number, dryRun?: boolean, reason?: string,
- *   termErrors?: Array<{no: number, cmd: string, errs: string[]}>}>}
- *   termErrors：输入期报错（键入/执行即报错的命令与回现行），供反思材料使用
+ *   termErrors?: Array<{no: number, cmd: string, errs: string[]}>,
+ *   skipped?: Array<{no: number, cmd: string, hit: string}>}>}
+ *   termErrors：输入期报错（键入/执行即报错的命令与回现行），供反思材料使用；
+ *   skipped：被判定"必败"而**没有键入**的命令（操作数已由序列中前一条命令实测为不存在），
+ *   同样进反思材料。`silent`（只读取证）不参与跳过——对不存在的目录敲 find 拿报错
+ *   正是取证要的东西（见函数内注释）。
  */
 export async function runTerminalCommands(page, commands, opts = {}) {
   const typeDelay = opts.typeDelay ?? cfg.terminal.typeDelayMs;
@@ -767,10 +771,25 @@ export async function runTerminalCommands(page, commands, opts = {}) {
   // 否则第 1 条命令的窗口会包含整屏历史（2026-09-23 C-19）。
   let prevLines = (await readTerminalLines(page)).map((s) => s.trimEnd());
   const termErrors = [];
+  // 「必败命令」跳过（1.6.24，用户点名的白费功夫）：序列里前面的命令已经把某个路径实测
+  // 成"不存在"，后面引用同一路径的命令就必然同样失败——照敲只是白等 200~2500ms 的自适应
+  // 间隔、白刷一屏回显，还让"这一轮到底改了什么"变得更难判。真机 2026-09-25：第 1 条
+  // `find /opt` 就摊出 /opt 是空的，后面 9 条 mongorestore 仍照敲，12/17 条报错。
+  // 只读取证（silent）不参与跳过：对不存在的目录敲 find、拿回报错，本身就是取证目的。
+  const absent = [];
+  const skipped = [];
   for (let ci = 0; ci < commands.length; ci++) {
     // 检查点放在命令边界：不在键入中途断，避免终端留下半条命令
     checkStop(`终端键入第 ${ci + 1}/${commands.length} 条`);
     const cmd = commands[ci];
+    if (!opts.silent) {
+      const d = isDeadCommand(cmd, absent, commands.slice(ci));
+      if (d.dead) {
+        skipped.push({ no: ci + 1, cmd, hit: d.hit });
+        log(`命令 ${ci + 1} 跳过（操作数 ${d.hit} 已实测不存在，敲了必败）：${cmd.slice(0, 90)}`);
+        continue;
+      }
+    }
     // 非 ASCII 行（中文文件名/数据值等）走合成 paste；纯 ASCII 仍走键盘
     // 逐字符（快且稳）。合成 paste 失败回退 keyboard.type 并告警（该路径
     // 中文会丢字，输入期报错检测会捕获后续异常）
@@ -795,6 +814,9 @@ export async function runTerminalCommands(page, commands, opts = {}) {
     const nowLines = (await readTerminalLines(page)).map((s) => s.trimEnd());
     const newLines = newTerminalLines(prevLines, nowLines).filter((s) => s.trim());
     prevLines = nowLines;
+    for (const p of absentPathsFromEcho(cmd, newLines)) {
+      if (!absent.includes(p)) absent.push(p);
+    }
     const errs = newLines.filter((l) => isFailureEcho(l));
     if (errs.length) {
       termErrors.push({ no: ci + 1, cmd, errs });
@@ -808,12 +830,13 @@ export async function runTerminalCommands(page, commands, opts = {}) {
       }
     }
   }
+  const typed = commands.length - skipped.length;
   log(
     opts.silent
-      ? `已向终端键入 ${commands.length} 条只读取证命令`
-      : `已向终端键入 ${commands.length} 条命令（自适应间隔 ${gapMin}~${gapMax}ms、键速 ${typeDelay}ms/字符${termErrors.length ? `，输入期异常 ${termErrors.length} 条` : ''}）`,
+      ? `已向终端键入 ${typed} 条只读取证命令`
+      : `已向终端键入 ${typed} 条命令（自适应间隔 ${gapMin}~${gapMax}ms、键速 ${typeDelay}ms/字符${termErrors.length ? `，输入期异常 ${termErrors.length} 条` : ''}${skipped.length ? `，跳过必败 ${skipped.length} 条` : ''}）`,
   );
-  return { executed: commands.length, termErrors };
+  return { executed: typed, skipped, termErrors };
 }
 
 /**
