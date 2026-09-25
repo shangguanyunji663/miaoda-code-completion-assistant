@@ -16,7 +16,7 @@
 
 </div>
 
-> **📖 分支说明**：本分支（`feat/2-c-web-service`）= master 基线 + **网页工作台**——`npm run web`（或双击 `start-web.bat`）打开 `http://127.0.0.1:8787`，点按钮代替命令行做题，仅本机可访问。**无新增依赖**，从 master 切换后无需重新 `npm install`。原有 CLI 用法（watch / lite / course）全部保留。另有两个功能分支：`feat/3-d-capability-guard`（能力配置自动校验）、`feat/1-ad-mcp-server`（MCP 出口，让 AI 编程助手替你做题，**该分支有新增依赖**）；基于本分支还切出两个**给同学减负**的分支——`feat/4-e-oneclick-launcher`（一键安装向导 + 桌面「妙答」一键启动，agent 1.7.0，说明文档《一键启动说明.md》在该分支上）与 `feat/5-f-electron-desktop`（Electron 安装版桌面程序，说明文档《桌面版说明.md》与 `desktop/README.md` 在该分支上）。
+> **📖 分支说明**：本分支（`feat/2-c-web-service`）= master 基线 + **网页工作台**——`npm run web`（或双击 `start-web.bat`）打开 `http://127.0.0.1:8787`，点按钮代替命令行做题，仅本机可访问。**无新增依赖**，从 master 切换后无需重新 `npm install`。原有 CLI 用法（watch / lite / course）全部保留。另有两个功能分支：`feat/3-d-capability-guard`（能力配置自动校验）、`feat/1-ad-mcp-server`（MCP 出口，让 AI 编程助手替你做题，**该分支有新增依赖**）；基于本分支还切出两个**给同学减负**的分支——`feat/4-e-oneclick-launcher`（一键安装向导 + 桌面「妙答」一键启动，agent 1.7.1，说明文档《一键启动说明.md》在该分支上）与 `feat/5-f-electron-desktop`（Electron 安装版桌面程序，桌面包 0.2.0、agent 与本分支同源 1.6.25，说明文档《桌面版说明.md》《桌面版使用手册.md》与 `desktop/README.md` 在该分支上）。
 > **平台知识 / 适配逻辑源头**：本分支是 `shared/platform-facts.json`（平台实测事实单一数据源，1.2.0）与四级挑页链、编辑器写入策略、模板拼接兜底、按钮点击兜底等**平台适配逻辑**（1.3.0）的源头，已回灌至 master / `feat/1-ad-mcp-server` / `feat/3-d-capability-guard`，故各分支解题行为一致；`control.mjs`（「停止做题」，1.4.0）与 1.4.x 系列真机根因修复为本分支独有。
 
 ---
