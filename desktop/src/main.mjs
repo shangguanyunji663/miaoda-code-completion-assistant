@@ -98,7 +98,9 @@ function recordOut(chunk) {
 
 function startAgentWeb() {
   say(`启动 agent 工作台（ELECTRON_RUN_AS_NODE）：${AGENT_DIR}\\src\\web-server.mjs`);
-  webChild = spawn(process.execPath, ['src', 'web-server.mjs'], {
+  // 入口必须是**单个**相对路径参数——拆成 ['src','web-server.mjs'] 两个参数时，
+  // Node 会把 'src' 当入口模块去找，报 MODULE_NOT_FOUND（真机首跑抓到）
+  webChild = spawn(process.execPath, ['src/web-server.mjs'], {
     cwd: AGENT_DIR,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -114,7 +116,7 @@ function startAgentWeb() {
 
 function runAgentCli(args, waitMs = 60000) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ['src', 'cli.mjs', ...args], {
+    const child = spawn(process.execPath, ['src/cli.mjs', ...args], {
       cwd: AGENT_DIR,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
