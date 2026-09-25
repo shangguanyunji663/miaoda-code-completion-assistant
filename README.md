@@ -6,7 +6,7 @@
 
 不绕过任何登录校验，只操作你自己已登录的页面。
 
-[![Version](https://img.shields.io/badge/version-1.6.21-2f6fed?style=flat-square)](agent/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.7.1-2f6fed?style=flat-square)](agent/CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](agent/README.md)
 [![Runtime](https://img.shields.io/badge/runtime-playwright--core-45ba4b?style=flat-square&logo=playwright&logoColor=white)](agent/package.json)
@@ -16,7 +16,7 @@
 
 </div>
 
-> **📖 分支说明**：本分支（`feat/2-c-web-service`）= master 基线 + **网页工作台**——`npm run web`（或双击 `start-web.bat`）打开 `http://127.0.0.1:8787`，点按钮代替命令行做题，仅本机可访问。**无新增依赖**，从 master 切换后无需重新 `npm install`。原有 CLI 用法（watch / lite / course）全部保留。另有两个功能分支：`feat/3-d-capability-guard`（能力配置自动校验）、`feat/1-ad-mcp-server`（MCP 出口，让 AI 编程助手替你做题，**该分支有新增依赖**）；基于本分支还切出两个**给同学减负**的分支——`feat/4-e-oneclick-launcher`（一键安装向导 + 桌面「妙答」一键启动，agent 1.7.0，说明见其分支上的《一键启动说明.md》）与 `feat/5-f-electron-desktop`（Electron 安装版桌面程序，说明见其分支上的《桌面版说明.md》）。
+> **📖 分支说明**：本分支（`feat/4-e-oneclick-launcher`）= `feat/2-c-web-service` 1.6.21 基线 + **给同学减负的一键入口**（agent **1.7.1**）：首次双击 `agent/install.bat`（向导：装依赖 + 配置密钥 + 建桌面「妙答」快捷方式），之后双击桌面「妙答」或 `agent/start-miaoda.bat` 即一次拉起受控 Edge + 网页工作台，逐步操作见 [`一键启动说明.md`](一键启动说明.md)。**无新增依赖**，从其他分支切换后无需重新 `npm install`。原有 CLI 用法（watch / lite / course）与网页工作台全部保留。姊妹分支：`feat/2-c-web-service`（网页工作台本体，agent 1.6.25）、`feat/5-f-electron-desktop`（Electron 安装版桌面程序，说明见其分支上的《桌面版说明.md》）、`feat/3-d-capability-guard`（能力配置自动校验）、`feat/1-ad-mcp-server`（MCP 出口，让 AI 编程助手替你做题，**该分支有新增依赖**）。
 > **平台知识 / 适配逻辑源头**：本分支是 `shared/platform-facts.json`（平台实测事实单一数据源，1.2.0）与四级挑页链、编辑器写入策略、模板拼接兜底、按钮点击兜底等**平台适配逻辑**（1.3.0）的源头，已回灌至 master / `feat/1-ad-mcp-server` / `feat/3-d-capability-guard`，故各分支解题行为一致；`control.mjs`（「停止做题」，1.4.0）与 1.4.x 系列真机根因修复为本分支独有。
 
 ---
@@ -125,7 +125,7 @@ npm run watch     # 常驻监听：切到哪道题就做哪道题
 | `npm run dump` | 导出页面结构快照到 `agent/dumps/`，用于精调识别规则 |
 | `npm run models` | 列出可用文本模型 |
 | `npm run web` | 网页工作台 `http://127.0.0.1:8787`（仅本机可访问：状态 / 探测 / 解题 / 日志流） |
-| `npm test` | 跨平台（`node --test` 无参数，不依赖 shell 展开通配符）。运行单测（218 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 命令行回显判据与数据库提交护栏 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
+| `npm test` | 跨平台（`node --test` 无参数，不依赖 shell 展开通配符）。运行单测（239 项：核心纯函数 + 挑页链 + 评测结果防陈旧 + 实际输出指纹 + Python 2 语法守卫 + 题面契约校验 + 差异分类与容器格式反解 + 命令行回显判据与数据库提交护栏 + 前置数据缺失判定与必败命令跳过 + 能力配置/平台事实档案校验 + 运行控制，零新增依赖） |
 | `npm run lint` | ESLint 静态检查 |
 | `npm run format` | 按 Prettier 风格格式化 `src/` 与 `test/` |
 
@@ -202,12 +202,12 @@ miaoda-code-completion-assistant/
 ├── agent/                          # 浏览器自动执行层（项目主体）
 │   ├── src/
 │   │   ├── cli.mjs                 # CLI 入口：命令解析与分发
-│   │   ├── loop.mjs                # 编排：单题流程 + watch / lite / course 常驻循环
+│   │   ├── loop.mjs                # 编排：单题流程 + watch / lite / course 常驻循环（每轮键入前实测终端环境；前置数据缺失止损 prerequisite-missing）
 │   │   ├── perceive.mjs            # 感知：题干、编辑器、终端、评测结果、DOM 快照
-│   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定 + 平台事实注入
+│   │   ├── ai.mjs                  # 生成：意图路由 / 生成 / 反思 / 结果判定 + 平台事实注入 + 裸 shell 语句按当轮实测环境改写形态
 │   │   ├── py2-guard.mjs           # 写入前本地守卫：检出 Python 2 下必定 SyntaxError 的 py3 语法
 │   │   ├── requirement-contract.mjs # 题面契约：切条 + 对齐表 + 冗余 print 守卫（漏要求 / 幻觉引用 / 复制评测程序输出当场打回）
-│   │   ├── cmd-evidence.mjs        # 终端回显失败判据（明确错误 / 静默空操作两档）+ 路径只读取证命令生成
+│   │   ├── cmd-evidence.mjs        # 终端回显失败判据（明确错误 / 静默空操作两档）+ 路径只读取证命令生成 + 前置数据缺失判定（题面点名路径 × 顶层实测清单）
 │   │   ├── format-probe.mjs        # 容器格式反解探针：借平台的 Python 2 算"该按什么顺序写"（FORMAT_PROBE）
 │   │   ├── candidate-rank.mjs      # 多候选择优：四道闸门当评分器 + 多数派投票（CANDIDATES，默认关）
 │   │   ├── output-diff.mjs         # 输出差异定位器：差异分类（顺序/键序/空白/缺行/值差）+ 排序假设排除 + 服务端报错解读
@@ -216,14 +216,14 @@ miaoda-code-completion-assistant/
 │   │   ├── control.mjs             # 运行控制层：停止请求 + 运行态快照
 │   │   ├── browser-session.mjs     # 常驻进程浏览器会话：懒连接 + 互斥串行 + 断线重连
 │   │   ├── web-server.mjs          # 网页工作台（零新增依赖）：状态 / 探测 / 解题 / 日志流
-│   │   ├── act.mjs                 # 执行：写入、键入、勾选、点评测、翻页、导航
+│   │   ├── act.mjs                 # 执行：写入、键入、勾选、点评测、翻页、导航（跳过操作数已判不存在的必败命令）
 │   │   ├── browser.mjs             # CDP 连接与四级挑页链（hint→URL形状→内容→兜底）
 │   │   ├── task-url.mjs            # 题目页 URL 识别共享小模块（taskKey / isTaskUrl）
 │   │   ├── launch-browser.mjs      # 调试端口拉起（Windows 保留端口自动顺延）
 │   │   ├── port-check.mjs          # 启动自检 CDP 调试端口
 │   │   ├── config.mjs              # 配置层，读 agent/.env.local
 │   │   └── logger.mjs              # 统一日志层：控制台 + 落盘到 logs/
-│   ├── test/                       # 单测：23 个文件 / 218 项（node:test，零新增依赖）
+│   ├── test/                       # 单测：23 个文件 / 239 项（node:test，零新增依赖）
 │   │   ├── ai.test.mjs             # 核心纯函数（判定 / 拼接 / 渲染 / 解析）
 │   │   ├── pick-target.test.mjs    # 四级挑页链
 │   │   ├── click-fallback.test.mjs # 按钮点击有界重扫 + exists 语义
@@ -251,7 +251,7 @@ miaoda-code-completion-assistant/
 │   ├── .prettierrc                 # 格式化规则
 │   ├── .prettierignore             # Prettier 排除项（mimosa 插件运行态 src/.mimosa/）
 │   ├── docs/
-│   │   └── TROUBLESHOOTING.md      # 27 个真实踩坑与排查方法论
+│   │   └── TROUBLESHOOTING.md      # 29 个真实踩坑与排查方法论
 │   ├── inspect-dom.mjs             # 只读 DOM 诊断脚本
 │   ├── public/
 │   │   └── index.html              # 网页工作台前端（单文件原生，无构建链）
@@ -303,7 +303,7 @@ cd agent && npm run dump      # 导出页面结构快照（提交前请自行脱
 **提交前自检**（均在 `agent/` 下执行）：
 
 ```bash
-npm test          # 218 项单测必须全绿
+npm test          # 239 项单测必须全绿
 npm run lint      # ESLint 零问题
 ```
 
@@ -348,7 +348,7 @@ npm run lint      # ESLint 零问题
 | [`同学使用指南.md`](同学使用指南.md) | **傻瓜式教程**：从零装环境到自动做题，给第一次用的同学 |
 | [`一键启动说明.md`](一键启动说明.md) | **分支 feat/4-e-oneclick-launcher 专用**：首启向导 + 桌面「妙答」一键启动 |
 | [`agent/README.md`](agent/README.md) | 完整文档：全部配置项、三种工作模式详解、设计要点、平台兼容性 |
-| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 27 个真实踩坑（环境级 + 代码级）与排查方法论 |
+| [`agent/docs/TROUBLESHOOTING.md`](agent/docs/TROUBLESHOOTING.md) | 29 个真实踩坑（环境级 + 代码级）与排查方法论 |
 | [`agent/CHANGELOG.md`](agent/CHANGELOG.md) | 变更日志 |
 | [`shared/capabilities/README.md`](shared/capabilities/README.md) | AI 能力配置说明 |
 | [`AGENTS.md`](AGENTS.md) | 面向 AI 开发代理的项目说明与硬约束 |

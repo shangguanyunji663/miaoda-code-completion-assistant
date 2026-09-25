@@ -154,3 +154,41 @@ test('serverErrorHints：识别"服务端拒绝写"这类报错并纠正方向�
     /启动失败/,
   );
 });
+
+// 2026-09-25 真机 mongorestore 恢复关：预期 9 个库、实际只有 3 个（前置备份不在环境里，
+// 一个都没恢复出来）。`show dbs` 的列宽按最长库名补齐，于是少 6 个库就少一格空格。
+test('整块缺行时不得把列宽差异说成"照抄空白"（1.6.24，结构性缺失优先）', () => {
+  const expected = [
+    'MongoDB有以下数据库：',
+    'admin    0.000GB',
+    'config   0.000GB',
+    'local    0.000GB',
+    'mytest1  0.000GB',
+    'mytest2  0.000GB',
+    'mytest3  0.000GB',
+    'mytest4  0.000GB',
+    'test1    0.000GB',
+    'test2    0.000GB',
+    'mytest2数据库中的person集合有以下条数据：',
+    '8',
+  ].join('\n');
+  const actual = [
+    'MongoDB有以下数据库：',
+    'admin   0.000GB',
+    'config  0.000GB',
+    'local   0.000GB',
+    'mytest2数据库中的person集合有以下条数据：',
+    '0',
+  ].join('\n');
+  const { pairs, summary } = diffOutputs(expected, actual);
+  assert.match(summary, /结构性缺行 \d+ 处/, 'summary 先点名整块缺行');
+  const ws = pairs.filter((p) => p.kind === 'WHITESPACE');
+  assert.ok(ws.length >= 1, '本例确实会产生空白类差异（否则测不到东西）');
+  for (const p of ws) assert.match(p.note, /成员数量|整块缺行/, '空白类必须带上"连带结果"的限定');
+});
+
+test('没有整块缺行时，空白类差异保持原措辞（不许无病呻吟）', () => {
+  const { pairs } = diffOutputs('a   1\nb   2', 'a 1\nb 2');
+  assert.ok(pairs.every((p) => p.kind === 'WHITESPACE'));
+  assert.ok(!pairs.some((p) => /整块缺行/.test(p.note)));
+});

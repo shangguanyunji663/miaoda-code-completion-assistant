@@ -15,6 +15,7 @@ import {
   splitStatements,
   submissionBody,
   wrapBareDbStatementsForShell,
+  planReplExit,
   wrapDbCommandsInEcho,
 } from '../src/ai.mjs';
 import { finalizeSubmission } from '../src/loop.mjs';
@@ -119,13 +120,42 @@ test('submissionBody 有无标记两种输入都拿到正文', () => {
 
 // ---------- ③ bash 终端下的 shell 包裹 ----------
 
-test('裸 shell 语句包成 mongo --eval（单引号优先，bash 不做任何展开）', () => {
+test('裸 db.* 包成 mongo --eval；show 走交互模式（1.6.25 分开处理）', () => {
   const r = wrapBareDbStatementsForShell(['show dbs', 'db.test.count()'], { db: 'mydb3' });
+  // `show` 是 shell 的交互内建、不是 JS：`mongo --eval 'show dbs'` 实测必报
+  // `SyntaxError … @(shell eval)`（2026-09-25 真机 17:51:57）。平台自己的 Testdb.sh
+  // 用的就是 `echo $sql | mongo --quiet --shell`，照它。
   assert.deepEqual(r.cmds, [
-    "mongo --quiet mydb3 --eval 'show dbs'",
+    "echo 'show dbs' | mongo --quiet mydb3 --shell",
     "mongo --quiet mydb3 --eval 'db.test.count()'",
   ]);
   assert.equal(r.wrapped.length, 2);
+});
+
+test('use 的库名往下带（旧版丢掉 use 却不接住，--eval 打在默认库上）', () => {
+  // 2026-09-25 真机 setProfilingLevel 关：模型连续三轮诊断出"未先切换到 mydb"，
+  // 每一轮执行层都把 `use mydb` 丢掉、又不带库名 ⇒ 永远改不对
+  const r = wrapBareDbStatementsForShell(
+    ['use mydb', 'db.setProfilingLevel(1, 50)', 'show profile'],
+    { db: '' },
+  );
+  assert.deepEqual(r.cmds, [
+    "mongo --quiet mydb --eval 'db.setProfilingLevel(1, 50)'",
+    "echo 'show profile' | mongo --quiet mydb --shell",
+  ]);
+  assert.equal(r.dropped[0].no, 1, 'use 整行进 dropped，不再混进 wrapped');
+  assert.match(r.dropped[0].to, /mydb/);
+});
+
+test('有序列化语句时，光杆 mongo 被丢弃（否则终端就地变成 REPL，后续 --eval 全敲进 REPL）', () => {
+  const r = wrapBareDbStatementsForShell(['mongo', 'use mydb', 'db.setProfilingLevel(1, 50)'], {
+    db: '',
+  });
+  assert.deepEqual(r.cmds, ["mongo --quiet mydb --eval 'db.setProfilingLevel(1, 50)'"]);
+  assert.ok(r.dropped.some((d) => d.from === 'mongo'));
+  // 没有任何语句要包裹时不许动它（模型可能就是单纯要进 REPL）
+  const keep = wrapBareDbStatementsForShell(['mongo', 'ls -l'], {});
+  assert.deepEqual(keep.cmds, ['mongo', 'ls -l']);
 });
 
 test('语句内含单引号时改双引号并转义 $（否则 bash 把 $or 吃掉）', () => {
@@ -137,7 +167,7 @@ test('语句内含单引号时改双引号并转义 $（否则 bash 把 $or 吃�
   assert.ok(r.cmds[0].includes("'男'"), '内部单引号原样保留');
 });
 
-test('use 整行丢弃（库名改由每条 mongo --eval 自带），普通 shell 命令不动', () => {
+test('use 整行丢弃（库名改由每条语句自带），普通 shell 命令不动', () => {
   const r = wrapBareDbStatementsForShell(
     ['use mydb3', 'ls -l /home/example/person.json', 'mongoimport --db mydb3 --file a.json'],
     { db: 'mydb3' },
@@ -146,7 +176,7 @@ test('use 整行丢弃（库名改由每条 mongo --eval 自带），普通 shel
     'ls -l /home/example/person.json',
     'mongoimport --db mydb3 --file a.json',
   ]);
-  assert.equal(r.wrapped[0].no, 1);
+  assert.equal(r.dropped[0].no, 1);
 });
 
 test('未给库名时不带 --quiet <db>（跨平台/未知题面 fail-open）', () => {
@@ -244,4 +274,31 @@ test('finalizeSubmission 返回 formViolations；修复后的文本重检而不�
   assert.ok(first.sanitizeNote.includes('库名'), '违约说明随 sanitizeNote 下发反思材料');
   const fixed = finalizeSubmission(tpl, "db.test.find({age:20,sex:'男'})", '在代码栏编写查询。');
   assert.deepEqual(fixed.formViolations, [], '修复后的文本应重检为零违约');
+});
+
+// ---------- ④ REPL 里写着 bash 形态：先 exit，不改写命令（1.6.25） ----------
+
+test('planReplExit：在 mongo REPL 里敲 mongo/ls → 序列开头插一条 exit', () => {
+  const r = planReplExit({ kind: 'mongosh' }, ["mongo --eval 'db.x.count()'", 'ls -l /opt']);
+  assert.deepEqual(r.cmds.slice(0, 3), ['exit', "mongo --eval 'db.x.count()'", 'ls -l /opt']);
+  assert.deepEqual(
+    r.exitFor.map((e) => e.head),
+    ['mongo', 'ls'],
+  );
+});
+
+test('planReplExit：REPL 里的合法语句一律不动（宁漏不误报）', () => {
+  assert.deepEqual(
+    planReplExit({ kind: 'mongosh' }, ['use mydb', 'db.setProfilingLevel(1, 50)', 'show profile'])
+      .cmds,
+    ['use mydb', 'db.setProfilingLevel(1, 50)', 'show profile'],
+  );
+  assert.deepEqual(planReplExit({ kind: 'mysql' }, ['SHOW DATABASES;']).exitFor, []);
+  assert.deepEqual(planReplExit({ kind: 'redis' }, ['PING', 'KEYS *']).exitFor, []);
+});
+
+test('planReplExit：bash 与 unknown 环境不介入（护栏只在实测 REPL 下生效）', () => {
+  assert.deepEqual(planReplExit({ kind: 'bash' }, ['ls -l', 'mongo']).exitFor, []);
+  assert.deepEqual(planReplExit({ kind: 'unknown' }, ['ls -l']).exitFor, []);
+  assert.deepEqual(planReplExit(null, []).exitFor, []);
 });
