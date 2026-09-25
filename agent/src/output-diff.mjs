@@ -186,6 +186,19 @@ export function diffOutputs(expected, actual) {
       note: `第 ${pos + 1} 个字符起不同（预期 …${JSON.stringify(e.slice(Math.max(0, pos - 12), pos + 18))}｜实际 …${JSON.stringify(a.slice(Math.max(0, pos - 12), pos + 18))}）`,
     });
   }
+  // 整块缺行存在时，"只差空白"多半是**连带结果**而非独立缺陷：`show dbs` 这类输出的列宽
+  // 按最长名字补齐，少 6 个库就少 6 格空格。2026-09-25 真机 mongorestore 关的 13 处差异里
+  // 有 3 处被判成"按预期那一行的空白照抄"——模型对列宽根本无从下手，真因是 mytest1~4 /
+  // test1 / test2 六个库一个都没恢复出来。逐行配对在"一边整块少几行"时必然错位，
+  // 于是把结构性缺失降格成了格式问题。这里至少把它说破。
+  const missCount = pairs.filter((p) => p.kind === 'MISSING_OR_EXTRA').length;
+  if (missCount) {
+    for (const p of pairs) {
+      if (p.kind === 'WHITESPACE') {
+        p.note += `（同一输出还有 ${missCount} 处整块缺行：列宽/对齐常由**成员数量**决定，这不是照抄空白能解决的——先补缺的那几行，本条届时会自行消失）`;
+      }
+    }
+  }
   return { pairs, summary: summarize(pairs) };
 }
 
@@ -194,6 +207,14 @@ function summarize(pairs) {
   const dictPairs = pairs.filter((p) => p.kind === 'DICT_ORDER');
   const orderPairs = pairs.filter((p) => p.kind === 'ORDER_ONLY');
   let summary = `定位到 ${pairs.length} 处实质差异`;
+  const missPairs = pairs.filter((p) => p.kind === 'MISSING_OR_EXTRA');
+  if (missPairs.length) {
+    const few = missPairs.filter((p) => p.expected && !p.actual).length;
+    const extra = missPairs.length - few;
+    summary +=
+      `；**结构性缺行 ${missPairs.length} 处**（实际输出比预期${few ? `少 ${few} 行` : ''}${extra ? `${few ? '、' : ''}多 ${extra} 行` : ''}）` +
+      '——先解决这块：逐行比对在一边整块少几行时必然错位，上面标出的空白/取值差异很可能是错位或成员数量变化的连带结果，不是独立缺陷';
+  }
   if (dictPairs.length) {
     summary +=
       '；其中字典键顺序差异的成因已实测确定：打印顺序 = 评测程序 `str(conn.hgetall(k))` 一侧的 ' +

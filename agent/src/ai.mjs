@@ -868,37 +868,167 @@ export function detectShellInvocationViolation(code) {
  * 引号策略：语句内没有 `'` 时用单引号包（bash 完全不做展开，最稳）；含 `'` 时改用双引号
  * 并转义 `\ ` ` $` 与 `"`——`$` 不转义会被 bash 当变量吃掉，那正是题面在代码栏要求 `\$`
  * 的同一个原因。
+ *
+ * 三种语句不能一视同仁（2026-09-25 真机 setProfilingLevel 关三连击）：
+ * ① `use X` —— 库名必须**接住并往下带**（mongo shell 里 use 的作用域就是"之后的语句"）。
+ *    旧版丢掉 `use X` 却把库名留给 `parseImportTarget(problem)` 兜底，于是 `--eval` 打在
+ *    默认库上：模型连续三轮诊断出"未先切换到 mydb"，每轮都被执行层重新丢掉，改不动。
+ * ② `show …` —— 它是 shell 的**交互内建**，不是 JS；`mongo --eval 'show dbs'` 必报
+ *    `SyntaxError … @(shell eval)`。正确的一次性写法是把语句喂进交互模式：
+ *    `echo 'show dbs' | mongo --quiet --shell`（平台自己的 step2/Testdb.sh 就是这么写的）。
+ * ③ 光杆 `mongo` —— 一旦本序列表面上有语句要被包成一次性调用，它就是**有害**的：会把终端
+ *    就地变成 REPL，之后每条 `mongo --eval` 都敲进 REPL 里，得到
+ *    `SyntaxError: missing ; before statement @(shell):1:8`（同一场事故的下半场）。
  * @param {string[]} cmds 准备命令列表
- * @param {{db?: string}} [opt] 题面声明的目标库名（`use X` 也用它兜底）
- * @returns {{cmds: string[], wrapped: Array<{no: number, from: string, to: string}>}}
+ * @param {{db?: string}} [opt] 题面声明的目标库名（序列里的 `use X` 优先级更高）
+ * @returns {{cmds: string[], wrapped: Array<{no: number, from: string, to: string}>,
+ *   dropped: Array<{no: number, from: string, to: string}>}}
+ *   wrapped = 被改写的语句；dropped = 被整体丢弃的语句（含原因）
  */
 export function wrapBareDbStatementsForShell(cmds, opt = {}) {
   const list = Array.isArray(cmds) ? cmds : [];
   const wrapped = [];
+  const dropped = [];
   const out = [];
+  const quote = (stmt) =>
+    stmt.includes("'")
+      ? `"${stmt.replace(/[\\`$"]/g, (ch) => (ch === '"' ? '\\"' : `\\${ch}`))}"`
+      : `'${stmt}'`; // 无单引号时用单引号包：bash 完全不做展开，最稳
+  // 是否真有语句要走一次性调用——决定光杆 `mongo` 能不能丢
+  const willWrap = list.some((c) => /^(?:(?:db\s*\.)|show\s)/.test(String(c ?? '').trim()));
+  let useDb = '';
+  const target = () => useDb || opt.db || '';
   list.forEach((raw, i) => {
     const stmt = String(raw ?? '').trim();
     const useM = stmt.match(/^use\s+([A-Za-z_][\w$]*)\s*;?$/);
     if (useM) {
+      useDb = useM[1];
       // bash 里没有 `use`（实测 `-bash: use: command not found`）；库名改由每条被包裹的
-      // 语句自带（--quiet <db>），这行整体丢弃即可。
-      wrapped.push({ no: i + 1, from: stmt, to: `（丢弃：库名已随每条 mongo --eval 传入）` });
+      // 语句自带（--quiet <db> / <db> 参数），这行整体丢弃即可。
+      dropped.push({ no: i + 1, from: stmt, to: `库名 ${useM[1]} 已随后续每条语句传入` });
       return;
     }
-    if (!/^(?:db\s*\.|show\s)/.test(stmt)) {
+    if (willWrap && /^mongo(?:sh)?\s*;?$/.test(stmt)) {
+      dropped.push({
+        no: i + 1,
+        from: stmt,
+        to: '会话由每条一次性调用自带，光杆 mongo 会把终端变成 REPL',
+      });
+      return;
+    }
+    if (/^show\s/.test(stmt)) {
+      const to = `echo ${quote(stmt)} | mongo --quiet${target() ? ` ${target()}` : ''} --shell`;
+      wrapped.push({ no: i + 1, from: stmt.slice(0, 60), to: to.slice(0, 90) });
+      out.push(to);
+      return;
+    }
+    if (!/^db\s*\./.test(stmt)) {
       out.push(raw);
       return;
     }
-    const db = opt.db || '';
-    const prefix = `mongo${db ? ` --quiet ${db}` : ''}`;
-    const evalArg = stmt.includes("'")
-      ? `"${stmt.replace(/[\\`$"]/g, (ch) => (ch === '"' ? '\\"' : `\\${ch}`))}"`
-      : `'${stmt}'`; // 无单引号时用单引号包：bash 完全不做展开，最稳
-    const to = `${prefix} --eval ${evalArg}`;
+    const db = target();
+    const to = `mongo${db ? ` --quiet ${db}` : ''} --eval ${quote(stmt)}`;
     wrapped.push({ no: i + 1, from: stmt.slice(0, 60), to: to.slice(0, 90) });
     out.push(to);
   });
-  return { cmds: out, wrapped };
+  return { cmds: out, wrapped, dropped };
+}
+
+/** 只在这些终端里才需要"退回 bash"（REPL 内部不认 shell 命令） */
+const REPL_KINDS = new Set(['mongosh', 'mysql', 'redis', 'psql', 'neo4j']);
+/**
+ * 明显属于 bash 层（或另一个客户端进程）的命令首词。REPL 里敲它们必然报错——
+ * 2026-09-25 真机在 mongo REPL 里敲 `mongo --eval '…'` 得到
+ * `SyntaxError: missing ; before statement @(shell):1:8`（列 8 正是 `mongo ` 之后）。
+ * 表外一律不动（`db.x()` / `SELECT …` / `PING` 都可能是该 REPL 的合法语句）。
+ */
+const BASH_ONLY_HEADS = new Set([
+  'mongo',
+  'mongosh',
+  'mysql',
+  'redis-cli',
+  'psql',
+  'neo4j',
+  'cypher-shell',
+  'mongodump',
+  'mongoimport',
+  'mongoexport',
+  'mongorestore',
+  'mongod',
+  'mongos',
+  'ls',
+  'cd',
+  'pwd',
+  'cat',
+  'echo',
+  'find',
+  'grep',
+  'head',
+  'tail',
+  'less',
+  'more',
+  'mkdir',
+  'rmdir',
+  'touch',
+  'cp',
+  'mv',
+  'rm',
+  'tar',
+  'zip',
+  'unzip',
+  'wget',
+  'curl',
+  'chmod',
+  'chown',
+  'df',
+  'du',
+  'ps',
+  'kill',
+  'pkill',
+  'sleep',
+  'sleep',
+  'systemctl',
+  'service',
+  'vi',
+  'vim',
+  'nano',
+  'numactl',
+  'python',
+  'python2',
+  'python3',
+  'node',
+  'bash',
+  'sh',
+  'source',
+  'export',
+  'history',
+]);
+
+/**
+ * 当前在数据库 REPL 里、而命令序列写的是 bash 形态 ⇒ 规划一次 `exit`（零依赖纯函数）。
+ *
+ * 为什么放在执行层而不是 prompt：环境是实测出来的，"要不要先退回 bash"不需要模型判断；
+ * 而真机证明模型即使**收到**"你在 REPL 里、禁止 bash 命令"的正确提示，也会被执行层拿着
+ * 过期的 bash 结论把命令改回 bash 形态（同一条事故）。这里只做一件事：**在序列开头插一条
+ * `exit`**，保留模型每条命令的原语义，不去改写它们。
+ * @param {{kind?: string}} env 实测终端环境
+ * @param {string[]} cmds 待键入的命令
+ * @returns {{cmds: string[], exitFor: Array<{no: number, head: string, cmd: string}>}}
+ *   exitFor 为空表示不需要（或不该）插入
+ */
+export function planReplExit(env, cmds) {
+  const list = Array.isArray(cmds) ? cmds : [];
+  if (!REPL_KINDS.has(env?.kind) || !list.length) return { cmds: list, exitFor: [] };
+  const exitFor = [];
+  for (let i = 0; i < list.length; i++) {
+    const head = String(list[i] ?? '')
+      .trim()
+      .match(/^(\S+)/)?.[1];
+    if (head && BASH_ONLY_HEADS.has(head))
+      exitFor.push({ no: i + 1, head, cmd: String(list[i]).trim() });
+  }
+  if (!exitFor.length) return { cmds: list, exitFor: [] };
+  return { cmds: ['exit', ...list], exitFor };
 }
 
 /**

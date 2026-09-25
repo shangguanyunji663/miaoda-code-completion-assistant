@@ -1,7 +1,7 @@
 # 变更日志（CHANGELOG）
 
 desktop 独立发包，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
-agent 侧的变更与其版本日志见 [`../agent/CHANGELOG.md`](../agent/CHANGELOG.md)（本包不改动 agent，故 agent 版本号与本包无关）。
+agent 侧的变更与其版本日志见 [`../agent/CHANGELOG.md`](../agent/CHANGELOG.md)（本分支的 agent 与源分支 `feat/2-c-web-service` 同源，当前 **1.6.25**；桌面包自身的版本号与本包目录结构以本文件为准）。
 
 ## [0.1.0] - 2026-09-25（分支 feat/5-f-electron-desktop）
 

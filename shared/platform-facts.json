@@ -125,7 +125,11 @@
     "whole_dump_dir_restore_succeeds_without_dash_db_evidence": "同关卡：`mongorestore -h 127.0.0.1:27017 --drop /opt/mongodb` → `reading metadata for test1.person from /opt/mongodb/test1/person.metadata.json` → `finished restoring test1.person (8 documents)`、`finished restoring test2.student (8 documents)` → `done`。即 ① 备份数据本身是完好的（8 条 ×2），② 不带 `-d` 的整目录恢复是走得通的。这直接否证了模型当轮写下的「test1 为空、mongodb_1 与 collection_1 是空目录」——它连 ls 都没跑过",
     "rerun_without_drop_yields_duplicate_key": true,
     "rerun_without_drop_yields_duplicate_key_evidence": "同关卡 14:22：把 `--drop` 摘掉重跑 → `error: multiple errors in bulk operation: - E11000 duplicate key error collection: test1.person index: _id_ dup key: { : 1 }`（1..8 全列），末尾仍打 `finished restoring test1.person (8 documents)` + `done`。含义是**数据已经在库里**，不是连接或客户端问题；为消掉这行报错而去掉 --drop 反而会让面板状态与预期无关",
-    "date": "2026-09-24"
+    "date": "2026-09-25",
+    "gzipped_dump_needs_gzip_flag": true,
+    "gzipped_dump_needs_gzip_flag_evidence": "2026-09-25 17:51:55 与 17:52:24 真机 /tasks/XBLSCWNL/4882（mongorestore 关）：`mongorestore -h 127.0.0.1:27017 -d mytest4 -c student --drop /opt/mongodb_2/test2/student.bson.gz` → `don't know what to do with file \"/opt/mongodb_2/test2/student.bson.gz\", skipping...` → `done`（退出码 0、零恢复）。`ls -l /opt/mongodb_2/test2` 实测文件名为 `student.bson.gz` / `student.metadata.json.gz`（第一关导出时对 test2 用了 --gzip，而 test1 的备份是未压缩的 `person.bson`）。同一次实测里 `/opt/collection_2/test2/student.bson.gz` 带 `--gzip` 后 `mytest3.student` 恢复出 8 条 ⇒ 差别就在 `--gzip`，与库名/参数顺序无关。",
+    "shell_show_helpers_rejected_by_eval": true,
+    "shell_show_helpers_rejected_by_eval_evidence": "2026-09-25 17:51:57 真机：bash 下 `mongo --eval \"show dbs\"` → `E QUERY    [js] SyntaxError: missing ; before statement @(shell eval):1:5`。`show` / `use` 是 mongo shell 的交互内建、不是 JS 语句，`--eval` 按 JS 解析必报错。平台自己的评测脚本 `cat /data/workspace/myshixun/step2/Testdb.sh`（2026-09-25 只读实测）用的形态是 `echo $sql | mongo --quiet mytest1 --shell`（sql=\"show collections\"）⇒ 一次性执行 shell 内建命令的 可用形态是\"管道进 --shell\"，不是 --eval。"
   },
   "task_env": {
     "reset_entry": "命令行标签栏右侧的工具栏按钮（DOM: a[title=\"工具栏\"]，图标 icon-gongjuxiang）→ 弹出「功能」菜单 → 「重置环境」",
